@@ -1,0 +1,11 @@
+[package]
+name = "loopback-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Pinned exactly. cpal 0.18 was a large API break (streams no longer auto-start,
+# StreamConfig by value, unified Error type) and almost every example online
+# targets <= 0.16. See risk R4 in the migration plan.
+[dependencies]
+cpal = "=0.18.2"

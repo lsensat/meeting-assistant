@@ -1,0 +1,466 @@
+/*
+ * Meeting Assistant — visual system.
+ *
+ * Every colour and dimension here comes from `.claude/styling.md`, which
+ * extracted them verbatim from the CustomTkinter app. Do not add a colour that
+ * is not a token below; if something seems to need one, it almost certainly
+ * needs an existing token used differently.
+ *
+ * Light theme only, deliberately. The Python has a `COLOR_FRAME_DARK` constant
+ * and an appearance mode of "system", but dark was never wired up. A dark
+ * variant needs a real design pass, not an inversion.
+ */
+
+:root {
+  /* base palette */
+  --burgundy:   #6F1D1B;
+  --tan:        #BB9457;
+  --dark-brown: #432818;
+  --sienna:     #99582A;
+  --cream:      #FFE6A7;
+
+  /* surfaces */
+  --app-bg:           #F8F6F1;
+  --frame-light:      #F4EFE6;
+  --panel:            #F1EDE6;
+  --stage:            #ECE6DB;
+  --disabled:         #D8CDBD;
+  --disabled-control: #C9BBA8;
+
+  /* stage chips */
+  --stage-pending-bg: #ECE6DB;  --stage-pending-fg: #5D4B3D;
+  --stage-working-bg: #FFE6A7;  --stage-working-fg: #6F1D1B;
+  --stage-done-bg:    #E7DFC9;  --stage-done-fg:    #432818;
+  --stage-error-bg:   #F4D8D7;  --stage-error-fg:   #6F1D1B;
+
+  /*
+   * Type. `-apple-system` leads the stack so macOS resolves to SF Pro / SF Mono
+   * while Windows still gets Segoe UI and Consolas. This is the documented
+   * macOS delta from the migration plan; the styling doc's Windows-first stack
+   * is preserved as the fallback rather than replaced.
+   */
+  --font: -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, "Consolas", monospace;
+
+  /* geometry */
+  --radius-card:  12px;
+  --radius-panel:  9px;
+  --radius-chip:   8px;
+  --radius-button: 8px;
+  --border: 1px solid var(--tan);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--app-bg);
+  color: var(--dark-brown);
+  font-family: var(--font);
+  font-size: 13px;
+  /* Both windows are fixed size and the layout has no responsive fallback. */
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+/*
+ * Five variants over one base. Hover moves background, text and icon together —
+ * that is the defining detail of this theme and the reason the Python carried
+ * 735 lines of custom widget code. The icon follows for free because it is SVG
+ * with `fill: currentColor`.
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--radius-button);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+  padding: 0 10px;
+}
+
+/*
+ * Heroicons outline: stroked, not filled. `currentColor` on the stroke keeps
+ * hover tinting free, exactly as it did when these were filled paths.
+ * `vector-effect` stops the 1.5 stroke thinning out when the 24px viewBox is
+ * scaled down to 15px.
+ */
+.btn svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.btn--primary   { background: var(--sienna);     color: var(--cream); }
+.btn--secondary { background: var(--tan);        color: var(--dark-brown); }
+.btn--dark      { background: var(--dark-brown); color: var(--cream); }
+.btn--mic       { background: var(--cream);      color: var(--dark-brown); }
+/*
+ * Muted keeps the same cream background and dark icon — only the glyph gains
+ * its diagonal slash. Greying it out would read as "disabled" rather than
+ * "muted", which is the opposite of the state it represents.
+ */
+.btn--mic.is-muted { background: var(--cream); color: var(--dark-brown); }
+.btn--result    { background: var(--tan);        color: var(--dark-brown); }
+
+.btn--primary:hover:not(:disabled)   { background: var(--burgundy); color: var(--cream); }
+.btn--secondary:hover:not(:disabled) { background: var(--sienna);   color: var(--cream); }
+.btn--dark:hover:not(:disabled)      { background: var(--burgundy); color: var(--cream); }
+.btn--mic:hover:not(:disabled)       { background: var(--tan);      color: var(--cream); }
+.btn--result:hover:not(:disabled)    { background: var(--sienna);   color: var(--cream); }
+
+/*
+ * Result buttons have a third state. Until their stage reaches `done` they are
+ * unavailable: flat disabled-control background, cream text and icon, no
+ * pointer. The Python painted this by hand while keeping the widget "normal"
+ * (`app.py:3044-3080`) purely to control the look.
+ */
+.btn--unavailable,
+.btn--unavailable:hover {
+  background: var(--disabled-control);
+  color: var(--cream);
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ main window */
+
+.session-card {
+  background: var(--frame-light);
+  border-radius: var(--radius-card);
+  margin: 10px 12px 8px;
+  padding: 8px 12px 10px;
+}
+
+.status-line {
+  text-align: center;
+  font-size: 13px;
+  min-height: 17px;
+  margin-bottom: 2px;
+}
+
+.timer {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: bold;
+  line-height: 1.1;
+  /* Monospace is load-bearing: the digits must not jitter as the clock ticks. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Timer left, transport right, vertically centred against each other. */
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.transport { display: flex; align-items: center; gap: 12px; }
+
+/*
+ * Mixed fill/stroke icons (the mic pair). The global `.btn svg` rule forces
+ * `fill: none`, which would erase a solid body, so these opt out per path.
+ */
+.icon-mixed .solid { fill: currentColor; stroke: none; }
+.icon-mixed .line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/*
+ * The gap the slash cuts through the mic. Painted in the button's background so
+ * the bar reads as passing in front of the glyph rather than crossing it.
+ */
+.icon-mixed .cut {
+  fill: none;
+  stroke: var(--cream);
+  stroke-width: 4.5;
+  stroke-linecap: round;
+}
+.btn--mic:hover:not(:disabled) .icon-mixed .cut { stroke: var(--tan); }
+
+/*
+ * Cancel: half of Stop's 54px, so the primary action stays visually dominant.
+ * Burgundy is the palette's red — the styling doc forbids introducing a new
+ * colour, and this is the one that already means "destructive" on Stop.
+ */
+#cancel-button {
+  width: 27px;
+  height: 27px;
+  background: var(--burgundy);
+  color: var(--cream);
+}
+#cancel-button:hover:not(:disabled) { background: var(--dark-brown); }
+#cancel-button svg { width: 16px; height: 16px; }
+#cancel-button:disabled {
+  background: var(--disabled-control);
+  color: var(--cream);
+  cursor: default;
+}
+
+/*
+ * The circular transport buttons are a border-radius element containing a
+ * glyph. The Python shipped six 56x56 PNGs — two buttons, three states each —
+ * only because Tk cannot draw a smooth circle.
+ */
+.transport button {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+  padding: 0;
+}
+
+/*
+ * The transport glyphs stay SOLID. They sit on a filled 54px circle, where an
+ * outline reads as a thin wireframe rather than a control — this is why the
+ * original's PNGs looked more substantial. Heroicons' solid play/stop have
+ * rounded corners and proper optical weight.
+ */
+.transport button svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* Cancel is an outline glyph, unlike the solid play/stop it sits beside. */
+.transport button svg.icon-outline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#start-button { background: var(--sienna); color: var(--cream); }
+#start-button:hover:not(:disabled) { background: var(--burgundy); }
+#stop-button  { background: var(--burgundy); color: var(--cream); }
+#stop-button:hover:not(:disabled) { background: var(--dark-brown); }
+
+/*
+ * Matched by ID because `#start-button` / `#stop-button` set the background,
+ * and an ID beats `.transport button:disabled` on specificity — which is why
+ * the disabled Stop button previously rendered at full strength and looked
+ * clickable.
+ */
+#start-button:disabled,
+#stop-button:disabled {
+  background: var(--disabled-control);
+  color: var(--cream);
+  cursor: default;
+}
+
+/* stage chips */
+.stages { display: flex; justify-content: center; gap: 4px; }
+
+.chip {
+  width: 92px;
+  height: 25px;
+  border-radius: var(--radius-chip);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 11px;
+  background: var(--stage-pending-bg);
+  color: var(--stage-pending-fg);
+}
+
+.chip svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chip .marker { font-size: 10px; line-height: 1; }
+
+.chip[data-state="pending"] { background: var(--stage-pending-bg); color: var(--stage-pending-fg); }
+.chip[data-state="working"] { background: var(--stage-working-bg); color: var(--stage-working-fg); }
+.chip[data-state="done"]    { background: var(--stage-done-bg);    color: var(--stage-done-fg); }
+.chip[data-state="error"]   { background: var(--stage-error-bg);   color: var(--stage-error-fg); }
+
+.audio-panel {
+  background: var(--panel);
+  border-radius: var(--radius-panel);
+  margin: 8px 12px;
+  padding: 6px 9px;
+  font-size: 10px;
+  line-height: 1.5;
+  max-width: 330px;
+}
+
+/*
+ * Result row: mute left, the three result controls centred, gear right. The
+ * Python hand-builds a 3-column grid with a uniform group for the outer
+ * columns; space-between with a centred middle group is the same thing.
+ */
+.result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 12px 10px;
+}
+
+.result-row .center { display: flex; gap: 6px; }
+
+#mute-button      { width: 32px;  height: 31px; padding: 0; }
+#transcript-button{ width: 38px;  height: 31px; padding: 0; }
+#folder-button    { width: 38px;  height: 31px; padding: 0; }
+#summary-button   { width: 104px; height: 31px; }
+#settings-button  { width: 34px;  height: 31px; padding: 0; }
+
+/* -------------------------------------------------------- settings window */
+
+/*
+ * `overflow-x: hidden` is a guard, not a fix: nothing inside should exceed the
+ * width now that the fields are relative, and a horizontal scrollbar here means
+ * something has regressed to a fixed width.
+ */
+.settings-body {
+  padding: 0 16px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  height: 100vh;
+}
+
+.section { margin-top: 14px; }
+.section h2 { font-size: 14px; font-weight: bold; margin: 0 0 8px; }
+
+.field { margin-bottom: 10px; }
+.field label { display: block; font-size: 11px; margin-bottom: 3px; }
+.helper { font-size: 10px; margin-top: 3px; }
+
+/*
+ * 1px tan borders on every input. The Python fakes these with a nested-frame
+ * trick (`BorderedContainer`) because CustomTkinter's own border rendering is
+ * blurry at 1px.
+ */
+/*
+ * Widths are relative, not the fixed 490px from the styling doc. That number
+ * assumed a 590px window; hardcoding it means any window-size change silently
+ * produces a horizontal scrollbar, which is exactly what happened when the
+ * settings view first rendered in the 375px main window.
+ */
+select, input[type="text"], textarea {
+  width: 100%;
+  height: 30px;
+  border: var(--border);
+  border-radius: var(--radius-button);
+  background: #fff;
+  color: var(--dark-brown);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+textarea {
+  width: 100%;
+  height: 105px;
+  padding: 6px 8px;
+  resize: none;
+  cursor: text;
+  line-height: 1.4;
+}
+
+input[type="text"] { cursor: text; }
+
+.with-button { display: flex; gap: 6px; align-items: center; }
+.with-button select, .with-button input[type="text"] { flex: 1; min-width: 0; }
+.with-button .btn { width: 36px; height: 30px; padding: 0; }
+
+.switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.switch-row input { cursor: pointer; }
+
+#refresh-devices { width: 175px; height: 28px; }
+#save-settings   { width: 190px; height: 34px; font-size: 13px; }
+
+.save-row { display: flex; justify-content: center; margin-top: 16px; }
+
+/* ---------------------------------------------------------------- tooltip */
+
+/*
+ * 450ms delay, centred below the trigger with a 6px offset, dismissed on both
+ * mouse-leave and mouse-down.
+ */
+#tooltip {
+  position: fixed;
+  z-index: 100;
+  background: var(--dark-brown);
+  color: var(--cream);
+  font-size: 9px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 90ms ease;
+  white-space: nowrap;
+}
+#tooltip.visible { opacity: 1; }
+
+[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------------ modal */
+
+/*
+ * Used for the meeting-title prompt. See the note in index.html for why this
+ * exists instead of `window.prompt()`.
+ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(67, 40, 24, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  background: var(--frame-light);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+  width: 300px;
+}
+
+.modal label { display: block; font-size: 11px; margin-bottom: 5px; }
+
+.modal input[type="text"] {
+  width: 100%;
+  height: 30px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modal-actions .btn { height: 30px; }
+
+.modal p { margin: 0 0 4px; font-size: 12px; line-height: 1.4; }
