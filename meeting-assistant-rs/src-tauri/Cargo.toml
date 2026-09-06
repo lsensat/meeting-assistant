@@ -14,7 +14,9 @@ meeting-core = { path = "../crates/meeting-core" }
 
 # The shell. WKWebView on macOS, WebView2 on Windows. Both are modern engines,
 # so the frontend is plain ES modules with no bundler and no build step.
-tauri = { version = "2", features = [] }
+# `tray-icon` alone is not enough to load an icon from a file: constructing a
+# `tauri::image::Image` from the bundled PNG needs `image-png` as well.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # Native folder picker and "reveal in Finder/Explorer", replacing the Python's
 # `filedialog` and `os.startfile` (`app.py:689`).
 tauri-plugin-dialog = "2"

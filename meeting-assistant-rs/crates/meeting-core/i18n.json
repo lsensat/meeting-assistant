@@ -146,7 +146,21 @@
     "setup_storage_title": "Where to save meetings",
     "setup_storage_body": "Each meeting becomes a folder with the audio, the transcript and the summary.",
     "setup_done_title": "Ready",
-    "setup_done_body": "Press the play button to start recording a meeting. You can change any of this later in Settings."
+    "setup_done_body": "Press the play button to start recording a meeting. You can change any of this later in Settings.",
+    "tray_idle": "Not recording",
+    "tray_recording": "Recording",
+    "tray_processing": "Processing...",
+    "tray_start": "Start Meeting",
+    "tray_finalize": "Finalize Meeting",
+    "tray_cancel": "Cancel Meeting...",
+    "tray_mute": "Mute Microphone",
+    "tray_microphone": "Microphone",
+    "tray_computer_audio": "Computer Audio",
+    "tray_open_folder": "Open Recordings Folder",
+    "tray_settings": "Settings...",
+    "tray_show": "Open Meeting Assistant",
+    "tray_quit": "Quit Meeting Assistant",
+    "tray_hidden_notice": "Meeting Assistant is still running in the menu bar."
   },
   "es": {
     "ai_model": "Modelo IA",
@@ -295,6 +309,20 @@
     "setup_storage_title": "Dónde guardar las reuniones",
     "setup_storage_body": "Cada reunión genera una carpeta con el audio, la transcripción y el resumen.",
     "setup_done_title": "Listo",
-    "setup_done_body": "Pulsa el botón de reproducción para empezar a grabar una reunión. Puedes cambiar todo esto más adelante en Ajustes."
+    "setup_done_body": "Pulsa el botón de reproducción para empezar a grabar una reunión. Puedes cambiar todo esto más adelante en Ajustes.",
+    "tray_idle": "Sin grabar",
+    "tray_recording": "Grabando",
+    "tray_processing": "Procesando...",
+    "tray_start": "Iniciar reunión",
+    "tray_finalize": "Finalizar reunión",
+    "tray_cancel": "Cancelar reunión...",
+    "tray_mute": "Silenciar micrófono",
+    "tray_microphone": "Micrófono",
+    "tray_computer_audio": "Audio del ordenador",
+    "tray_open_folder": "Abrir carpeta de reuniones",
+    "tray_settings": "Ajustes...",
+    "tray_show": "Abrir Meeting Assistant",
+    "tray_quit": "Salir de Meeting Assistant",
+    "tray_hidden_notice": "Meeting Assistant sigue funcionando en la barra de menús."
   }
 }

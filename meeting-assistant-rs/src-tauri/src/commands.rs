@@ -45,6 +45,22 @@ pub const EV_COMPLETE: &str = "complete";
 /// in English regardless of language and landed in the main window's status
 /// line even when the download was started from another window.
 pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
+/// Recording started or stopped, whoever caused it.
+///
+/// The window used to track this purely inside its own click handlers, so a
+/// recording started from anywhere else left it showing idle with the timer at
+/// zero and Start still enabled. Any front-end that can change the state must
+/// announce it here, and every front-end reacts to it rather than to its own
+/// clicks.
+pub const EV_RECORDING_STATE: &str = "recording_state";
+/// Mute toggled, whoever caused it. Same reasoning as above.
+pub const EV_MUTE_STATE: &str = "mute_state";
+
+#[derive(Serialize, Clone)]
+pub struct RecordingStateDto {
+    pub recording: bool,
+    pub processing: bool,
+}
 
 #[derive(Serialize, Clone)]
 pub struct WhisperProgressDto {
@@ -124,7 +140,7 @@ pub fn get_config(state: State<AppState>) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn save_config(payload: String, state: State<AppState>) -> Result<(), String> {
+pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> Result<(), String> {
     // The base for `from_json`'s defaults must be the documents directory, the
     // same one `main.rs` passes when loading. Passing `app_data_dir()` here
     // meant a payload with a missing or empty `output_folder` silently resolved
@@ -144,6 +160,11 @@ pub fn save_config(payload: String, state: State<AppState>) -> Result<(), String
     // `config.clear()` then `update()` while worker threads read the same dict
     // (deferred fix #2); here the lock makes the swap atomic.
     *state.config.lock().expect("config poisoned") = parsed;
+
+    // The tray menu bakes in the language and the selected devices, and unlike
+    // the DOM it has no way to re-read them. Nothing else tells Rust that the
+    // language changed.
+    crate::tray::rebuild(&app);
     Ok(())
 }
 
@@ -523,6 +544,7 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     *state.current_folder.lock().expect("folder poisoned") = Some(folder);
     *state.session.lock().expect("session poisoned") = Some(session);
 
+    emit_recording_state(&app, true, false);
     Ok(())
 }
 
@@ -532,8 +554,25 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 /// you hit record is already in force on the very first sample rather than
 /// being silently ignored.
 #[tauri::command]
-pub fn toggle_mute(state: State<AppState>) -> bool {
-    state.toggle_muted()
+pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
+    let muted = state.toggle_muted();
+    let _ = app.emit(EV_MUTE_STATE, muted);
+    muted
+}
+
+/// Announce the recording state to every window and to the tray.
+///
+/// The tray menu is rebuilt rather than notified: its items are native and
+/// their enabled state and status label are baked in at build time.
+pub fn emit_recording_state(app: &AppHandle, recording: bool, processing: bool) {
+    let _ = app.emit(
+        EV_RECORDING_STATE,
+        RecordingStateDto {
+            recording,
+            processing,
+        },
+    );
+    crate::tray::rebuild(app);
 }
 
 #[tauri::command]
@@ -588,6 +627,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
     }
 
     *state.current_folder.lock().expect("folder poisoned") = None;
+    emit_recording_state(&app, false, false);
     Ok(())
 }
 
@@ -617,6 +657,7 @@ pub fn stop_recording(
     // Nothing may rename the folder before this returns.
     let summary = session.stop();
     *state.processing.lock().expect("processing poisoned") = true;
+    emit_recording_state(&app, false, true);
 
     for track in &summary.tracks {
         if let Err(e) = track {
@@ -678,6 +719,7 @@ pub fn stop_recording(
         if let Some(state) = state_handle.try_state::<AppState>() {
             *state.processing.lock().expect("processing poisoned") = false;
         }
+        emit_recording_state(&handle, false, false);
     });
 
     Ok(())

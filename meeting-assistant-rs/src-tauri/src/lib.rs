@@ -14,4 +14,5 @@ pub mod platform;
 pub mod session;
 pub mod state;
 pub mod summary;
+pub mod tray;
 pub mod whisper;

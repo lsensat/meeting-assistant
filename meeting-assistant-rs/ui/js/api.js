@@ -105,6 +105,13 @@ export const EVENTS = {
   complete: "complete",
   /** Structured {model, percent}; each window localizes it itself. */
   whisperProgress: "whisper_progress",
+  /** {recording, processing} — emitted by the commands, not by any UI. */
+  recordingState: "recording_state",
+  /** boolean */
+  muteState: "mute_state",
+  /** The tray asking this window to run a flow that needs user input. */
+  requestStop: "request_stop",
+  requestCancel: "request_cancel",
 };
 
 /**

@@ -365,7 +365,7 @@ html, body {
  * produces a horizontal scrollbar, which is exactly what happened when the
  * settings view first rendered in the 375px main window.
  */
-select, input[type="text"], textarea {
+select, input[type="text"], input[type="password"], textarea {
   width: 100%;
   height: 30px;
   border: var(--border);
@@ -387,10 +387,13 @@ textarea {
   line-height: 1.4;
 }
 
-input[type="text"] { cursor: text; }
+input[type="text"],
+input[type="password"] { cursor: text; }
 
 .with-button { display: flex; gap: 6px; align-items: center; }
-.with-button select, .with-button input[type="text"] { flex: 1; min-width: 0; }
+.with-button select,
+.with-button input[type="text"],
+.with-button input[type="password"] { flex: 1; min-width: 0; }
 .with-button .btn { width: 36px; height: 30px; padding: 0; }
 
 .switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -496,7 +499,7 @@ input[type="text"] { cursor: text; }
 }
 .wizard-actions { display: flex; gap: 8px; }
 .wizard-actions .btn { height: 32px; padding: 0 16px; }
-.wizard-actions-inline { display: flex; gap: 8px; margin-bottom: 10px; }
+.wizard-actions-inline { display: flex; gap: 8px; margin: 10px 0 14px; }
 .wizard-actions-inline .btn { height: 28px; padding: 0 12px; }
 
 .model-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
@@ -516,8 +519,11 @@ input[type="text"] { cursor: text; }
   background: var(--cream);
   color: var(--burgundy);
   border-radius: 4px;
-  padding: 1px 6px;
+  padding: 4px 8px;
   font-size: 10px;
+  line-height: 1;
+  /* Keeps the pill optically centred against the row's larger text. */
+  vertical-align: middle;
 }
 
 /* The one place the app stops being offline; it should not look incidental. */

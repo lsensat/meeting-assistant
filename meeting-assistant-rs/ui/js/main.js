@@ -256,6 +256,23 @@ function wireEvents() {
 
   api.on(api.EVENTS.status, setStatus);
 
+  // The single source of truth for whether a meeting is running. It arrives
+  // whoever started it — this window, or the tray. Driving the UI from the
+  // event instead of from the click is what lets a second front-end exist at
+  // all.
+  api.on(api.EVENTS.recordingState, ({ recording: active }) => {
+    setRecording(active);
+    if (active) setStatus(tr("recording"));
+  });
+
+  api.on(api.EVENTS.muteState, applyMuted);
+
+  // Finalize and Cancel from the tray. A native menu cannot prompt for a
+  // meeting title or confirm a deletion, so it reveals this window and asks it
+  // to run the flow that already does both.
+  api.on(api.EVENTS.requestStop, stopFlow);
+  api.on(api.EVENTS.requestCancel, cancelFlow);
+
   api.on(api.EVENTS.deviceMic, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name}`;
   });
@@ -297,6 +314,35 @@ function wireEvents() {
   });
 }
 
+/**
+ * Stop and process. Extracted so the tray can drive it: "Finalize Meeting"
+ * needs a meeting title, and a native menu cannot collect a string — so it
+ * shows this window and triggers this flow rather than passing an empty title
+ * and silently dropping the feature.
+ */
+async function stopFlow() {
+  setStatus(tr("finalizing_recording"));
+  try {
+    const title = await askMeetingTitle();
+    await api.stopRecording(title);
+  } catch (error) {
+    setStatus(String(error));
+  }
+}
+
+/** Discard and delete. Confirmed here for the same reason as stopFlow. */
+async function cancelFlow() {
+  if (!(await confirmAction(tr("cancel_confirm")))) return;
+  try {
+    await api.cancelRecording();
+    ui.timer.textContent = "00:00:00";
+    resetStages();
+    setStatus(tr("ready"));
+  } catch (error) {
+    setStatus(String(error));
+  }
+}
+
 // --------------------------------------------------------------- controls
 
 function wireControls() {
@@ -304,43 +350,24 @@ function wireControls() {
     resetStages();
     ui.timer.textContent = "00:00:00";
     try {
+      // No setRecording here: the recording_state event does it, so this
+      // window behaves identically whether the meeting was started from here
+      // or from the tray.
       await api.startRecording();
-      setRecording(true);
-      setStatus(tr("recording"));
     } catch (error) {
       setStatus(String(error));
     }
   });
 
-  ui.stop.addEventListener("click", async () => {
-    setRecording(false);
-    setStatus(tr("finalizing_recording"));
-    try {
-      // The meeting title is asked for at stop, matching the original flow.
-      const title = await askMeetingTitle();
-      await api.stopRecording(title);
-    } catch (error) {
-      setStatus(String(error));
-    }
-  });
+  ui.stop.addEventListener("click", stopFlow);
+  ui.cancel.addEventListener("click", cancelFlow);
 
-  ui.cancel.addEventListener("click", async () => {
-    // Irreversible: the recording is deleted, so confirm before doing it.
-    if (!(await confirmAction(tr("cancel_confirm")))) return;
-    setRecording(false);
-    try {
-      await api.cancelRecording();
-      ui.timer.textContent = "00:00:00";
-      resetStages();
-      setStatus(tr("ready"));
-    } catch (error) {
-      setStatus(String(error));
-    }
-  });
+  ui.mute.addEventListener("click", () => api.toggleMute());
 
-  ui.mute.addEventListener("click", async () => {
-    applyMuted(await api.toggleMute());
-  });
+
+
+
+
 
   ui.transcript.addEventListener("click", () => {
     if (isAvailable(ui.transcript)) api.openPath(results.transcript_file);
