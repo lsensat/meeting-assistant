@@ -104,8 +104,17 @@ pub fn is_installed(id: &str) -> bool {
     let path = model_path(id);
 
     match std::fs::metadata(&path) {
-        // Half the expected size is a generous floor; it only needs to reject
-        // truncated files, not validate the weights.
+        // Half the expected size is a deliberately generous floor.
+        //
+        // The real guarantee against partial downloads is in `download_model`,
+        // which writes to a temporary file and renames only on success — so a
+        // truncated download never reaches this path at all. This check is
+        // defence in depth for a file placed here by other means.
+        //
+        // The floor stays loose because `approx_mb` is a rounded advertised
+        // size, not the exact byte count. A tight bound would risk rejecting a
+        // perfectly good model and re-downloading up to 3.1 GB, which is a far
+        // worse failure than accepting a file that then fails at load.
         Ok(meta) => meta.len() > spec.approx_mb * 1024 * 1024 / 2,
         Err(_) => false,
     }

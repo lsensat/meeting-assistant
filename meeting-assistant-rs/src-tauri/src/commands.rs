@@ -106,9 +106,18 @@ pub fn get_config(state: State<AppState>) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 pub fn save_config(payload: String, state: State<AppState>) -> Result<(), String> {
-    let app_folder = platform::app_data_dir();
-    let parsed = Config::from_json(&payload, &app_folder);
+    // The base for `from_json`'s defaults must be the documents directory, the
+    // same one `main.rs` passes when loading. Passing `app_data_dir()` here
+    // meant a payload with a missing or empty `output_folder` silently resolved
+    // to `~/Library/Application Support/.../meeting-assistant/meetings` instead
+    // of `~/Documents/meeting-assistant/meetings` — a different default on save
+    // than on load.
+    let defaults_base = platform::documents_dir();
+    let parsed = Config::from_json(&payload, &defaults_base);
 
+    // The config file itself still lives under Application Support; only the
+    // *default* it falls back to comes from documents.
+    let app_folder = platform::app_data_dir();
     std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
     std::fs::write(&state.config_file, parsed.to_json()).map_err(|e| e.to_string())?;
 
