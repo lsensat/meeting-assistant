@@ -206,6 +206,12 @@ pub struct Config {
     pub api_base_url: String,
     /// Model id for the remote provider, e.g. `gpt-4o-mini`.
     pub api_model: String,
+    /// Whether the device panel on the main window is expanded.
+    ///
+    /// Collapsed by default: the two device lines rarely change and cost about
+    /// a fifth of a 275px window. The app reopens it by itself when a device
+    /// actually falls back, which is the one case the panel exists for.
+    pub devices_expanded: bool,
     /// Whether the first-run wizard has been completed.
     ///
     /// First run is really "no config file exists"; this flag additionally
@@ -253,6 +259,7 @@ impl Config {
             microphone_name: String::new(),
             system_audio_name: String::new(),
             custom_summary_prompt: DEFAULT_CUSTOM_PROMPT.to_string(),
+            devices_expanded: false,
             summary_provider: SummaryProvider::Ollama,
             api_base_url: String::new(),
             api_model: String::new(),
@@ -318,6 +325,8 @@ impl Config {
                 .custom_summary_prompt
                 .unwrap_or(defaults.custom_summary_prompt),
 
+            devices_expanded: raw.devices_expanded.unwrap_or(defaults.devices_expanded),
+
             summary_provider: raw
                 .summary_provider
                 .as_deref()
@@ -352,6 +361,7 @@ impl Config {
             microphone_name: Some(self.microphone_name.clone()),
             system_audio_name: Some(self.system_audio_name.clone()),
             custom_summary_prompt: Some(self.custom_summary_prompt.clone()),
+            devices_expanded: Some(self.devices_expanded),
             summary_provider: Some(self.summary_provider.as_str().to_string()),
             api_base_url: Some(self.api_base_url.clone()),
             api_model: Some(self.api_model.clone()),
@@ -387,6 +397,8 @@ struct RawConfig {
     system_audio_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     custom_summary_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    devices_expanded: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

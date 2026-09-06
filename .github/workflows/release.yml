@@ -24,9 +24,44 @@ on:
   # Runs the whole matrix without cutting a release. This is how the Windows
   # build should be iterated on — expect several rounds before it passes.
   workflow_dispatch:
+  # Weekly dependency audit. New advisories are published against code that has
+  # not changed, so a scan that only runs on push goes stale the moment you stop
+  # pushing. The build matrix is skipped on this trigger — see the `if` on the
+  # build job — so this costs one cheap Linux run, not two expensive ones.
+  schedule:
+    - cron: '0 6 * * 1'
+
 
 jobs:
+  # Reads Cargo.lock, which is platform-independent, so this runs once on the
+  # cheapest runner rather than inside the matrix. Windows bills at a higher
+  # multiplier than Linux and macOS higher still; there is nothing to learn from
+  # running the same scan three times.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Installed from source rather than via a third-party installer action:
+      # this is the job whose whole purpose is supply-chain assurance, so it
+      # should not itself add an unnecessary third-party dependency.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Exits non-zero on a VULNERABILITY. "unmaintained" and "unsound" notices
+      # come through as warnings and do not fail the run — as of the last audit
+      # there were 17 of those, none reachable: the unsound one is `glib`, which
+      # is Linux/GTK and absent from both the macOS and Windows dependency
+      # trees, and the unmaintained ones are `unic-*` under `tauri-build`, a
+      # build dependency that ships in no binary.
+      - name: Audit dependencies
+        working-directory: meeting-assistant-rs
+        run: cargo audit
+
   build:
+    # Skipped on the weekly schedule: that trigger exists for the audit alone.
+    if: github.event_name != 'schedule'
     permissions:
       # Needed to create the draft release and upload the installers.
       contents: write

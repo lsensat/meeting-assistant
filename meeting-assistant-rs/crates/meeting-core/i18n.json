@@ -7,7 +7,7 @@
     "checking_environment": "Checking environment...",
     "checking_folder": "Checking working folder...",
     "checking_ollama": "Checking Ollama...",
-    "computer_audio": "Computer audio",
+    "computer_audio": "Audio",
     "computer_audio_connecting": "Computer audio: connecting...",
     "computer_audio_loading": "Computer audio: loading...",
     "computer_audio_missing": "No computer-audio loopback device was found.",
@@ -60,8 +60,8 @@
     "processing_title": "Processing",
     "ready": "Ready",
     "ready_ollama_started": "Ready · Ollama started automatically",
-    "recording": "● Recording",
-    "recording_muted": "● Recording · microphone muted",
+    "recording": "Recording",
+    "recording_muted": "Recording · microphone muted",
     "review_required": "Review required",
     "save_meeting_title": "Save meeting",
     "save_meetings_in": "Save meetings in",
@@ -161,7 +161,9 @@
     "tray_show": "Open Meeting Assistant",
     "tray_quit": "Quit Meeting Assistant",
     "tray_hidden_notice": "Meeting Assistant is still running in the menu bar.",
-    "save_meeting": "Save meeting"
+    "save_meeting": "Save meeting",
+    "devices_summary": "Microphone and Audio",
+    "tooltip_summary": "Open summary"
   },
   "es": {
     "ai_model": "Modelo IA",
@@ -171,7 +173,7 @@
     "checking_environment": "Comprobando entorno...",
     "checking_folder": "Comprobando carpeta de trabajo...",
     "checking_ollama": "Comprobando Ollama...",
-    "computer_audio": "Audio del PC",
+    "computer_audio": "Audio",
     "computer_audio_connecting": "Audio PC: conectando...",
     "computer_audio_loading": "Audio PC: cargando...",
     "computer_audio_missing": "No se ha encontrado ningún dispositivo de audio del PC.",
@@ -224,8 +226,8 @@
     "processing_title": "Procesando",
     "ready": "Preparado",
     "ready_ollama_started": "Preparado · Ollama iniciado automáticamente",
-    "recording": "● Grabando",
-    "recording_muted": "● Grabando · micrófono silenciado",
+    "recording": "Grabando",
+    "recording_muted": "Grabando · micrófono silenciado",
     "review_required": "Revisión necesaria",
     "save_meeting_title": "Guardar reunión",
     "save_meetings_in": "Guardar reuniones en",
@@ -325,6 +327,8 @@
     "tray_show": "Abrir Meeting Assistant",
     "tray_quit": "Salir de Meeting Assistant",
     "tray_hidden_notice": "Meeting Assistant sigue funcionando en la barra de menús.",
-    "save_meeting": "Guardar reunión"
+    "save_meeting": "Guardar reunión",
+    "devices_summary": "Micrófono y audio",
+    "tooltip_summary": "Abrir resumen"
   }
 }

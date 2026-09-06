@@ -54,9 +54,16 @@ pub fn init(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let menu = build_menu(app)?;
 
     TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().cloned().expect("bundled icon"))
-        // Renders the glyph as a mask so macOS can invert it for light and dark
-        // menu bars. A full-colour icon there looks broken.
+        // A dedicated monochrome glyph, NOT the app icon.
+        //
+        // `icon_as_template` uses only the ALPHA channel and repaints the
+        // silhouette to suit a light or dark menu bar. The app icon's alpha is
+        // a filled rounded square, so passing it here painted a solid black
+        // block. This image is transparent except for the microphone itself.
+        .icon(
+            tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+                .expect("tray glyph is a valid PNG"),
+        )
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -258,7 +265,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 .expect("folder poisoned")
                 .clone()
                 .unwrap_or_else(|| app.state::<AppState>().config_snapshot().output_folder);
-            let _ = crate::platform::open_path(&folder);
+            let _ = crate::commands::open_path(app.clone(), folder.to_string_lossy().into_owned());
         }
         ID_SETTINGS => {
             let _ = crate::commands::open_settings(app.clone());

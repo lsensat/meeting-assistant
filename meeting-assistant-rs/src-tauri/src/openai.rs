@@ -33,6 +33,9 @@ pub enum OpenAiError {
     /// No base URL configured — the user selected the remote provider but
     /// never finished setting it up.
     NotConfigured,
+    /// The endpoint is plain HTTP and not on the loopback interface, so the
+    /// transcript would cross the network in cleartext.
+    InsecureEndpoint(String),
     /// No API key in the keychain for this endpoint.
     MissingKey,
     /// 401/403. Worth separating from a generic HTTP error because the fix is
@@ -47,6 +50,10 @@ pub enum OpenAiError {
 impl std::fmt::Display for OpenAiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InsecureEndpoint(url) => write!(
+                f,
+                "Refusing to send the transcript to {url} over plain HTTP. Use an https:// endpoint."
+            ),
             Self::NotConfigured => write!(
                 f,
                 "No API endpoint configured. Open Settings and enter a base URL and model."
@@ -104,6 +111,14 @@ pub fn chat(
         return Err(OpenAiError::MissingKey);
     }
 
+    // The transcript is the most sensitive thing this app holds, and http://
+    // would put it on the wire in the clear. Loopback is exempt: LM Studio and
+    // a local vLLM serve plain HTTP on 127.0.0.1, and that traffic never leaves
+    // the machine.
+    if !is_transport_safe(base_url) {
+        return Err(OpenAiError::InsecureEndpoint(base_url.to_string()));
+    }
+
     let body = json!({
         "model": model,
         "temperature": TEMPERATURE,
@@ -150,6 +165,23 @@ pub fn chat(
         .ok_or_else(|| OpenAiError::Malformed("response contained no choices".into()))
 }
 
+/// True when the endpoint is https, or plain http on the loopback interface.
+fn is_transport_safe(base_url: &str) -> bool {
+    let url = base_url.trim().to_ascii_lowercase();
+
+    if url.starts_with("https://") {
+        return true;
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest
+            .split(['/', ':'])
+            .next()
+            .unwrap_or_default();
+        return matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1");
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +205,26 @@ mod tests {
     fn an_empty_choices_array_is_an_error() {
         let parsed: ChatResponse = serde_json::from_str(r#"{"choices":[]}"#).expect("parse");
         assert!(parsed.choices.is_empty());
+    }
+
+    /// The transcript must never cross a network in cleartext. Loopback is the
+    /// one exception, because LM Studio and a local vLLM serve plain http there
+    /// and that traffic does not leave the machine.
+    #[test]
+    fn plain_http_is_refused_except_on_loopback() {
+        assert!(is_transport_safe("https://api.openai.com/v1"));
+        assert!(is_transport_safe("HTTPS://API.OPENAI.COM/v1"));
+        assert!(is_transport_safe("http://localhost:1234/v1"));
+        assert!(is_transport_safe("http://127.0.0.1:8000/v1"));
+
+        assert!(!is_transport_safe("http://api.openai.com/v1"));
+        assert!(!is_transport_safe("http://192.168.1.10:8000/v1"));
+        assert!(!is_transport_safe("http://evil.example.com/v1"));
+        // Not a scheme we understand: refuse rather than guess.
+        assert!(!is_transport_safe("api.openai.com/v1"));
+        assert!(!is_transport_safe("ftp://example.com"));
+        // A host that merely starts with "localhost" is not loopback.
+        assert!(!is_transport_safe("http://localhost.evil.com/v1"));
     }
 
     /// Misconfiguration must be caught before a request is built, so the

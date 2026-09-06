@@ -1,53 +1,115 @@
 /*
- * Meeting Assistant — visual system.
+ * Meeting Assistant — visual system: Aluminum Reel-to-Reel.
  *
- * Every colour and dimension here comes from `.claude/styling.md`, which
- * extracted them verbatim from the CustomTkinter app. Do not add a colour that
- * is not a token below; if something seems to need one, it almost certainly
- * needs an existing token used differently.
+ * Dark machine chrome, cream faceplate panels, amber VU-meter accents, and red
+ * reserved for record and failure. The character to hold onto is an old tape
+ * machine: the transport controls should read as hardware, not as rectangles.
  *
- * Light theme only, deliberately. The Python has a `COLOR_FRAME_DARK` constant
- * and an appearance mode of "system", but dark was never wired up. A dark
- * variant needs a real design pass, not an inversion.
+ * Every colour comes from a token below. Do not add a colour that is not one;
+ * if something seems to need one, it almost certainly needs an existing token
+ * used differently. `.claude/styling.md` documents the system.
+ *
+ * # Two rules that keep the palette meaningful
+ *
+ * 1. RED (`--red`, `--red-dark`) appears on the record button, the error chip,
+ *    and the "transcripts leave this machine" warning. Nowhere else. It is the
+ *    only colour that means "this is consequential", and spending it on a
+ *    settings gear would waste it.
+ * 2. AMBER means "active, or in progress" — a working stage, a live microphone,
+ *    a section heading. It is the VU meter, not decoration.
+ *
+ * # Why neutral controls sit on `--steel-dark` rather than `--steel`
+ *
+ * Cream on `--steel` measures 2.71:1, which fails WCAG for text (4.5) and even
+ * for icons (3.0). Cream on `--steel-dark` is 5.39:1. `--steel` earns its place
+ * as the hover lift and the hairline borders instead.
  */
 
+/*
+ * Space Mono, bundled rather than linked: the app is offline by design and must
+ * not reach a font CDN. Only Regular and Bold ship — nothing uses italic, which
+ * saves ~216 KB. `ui/fonts/OFL.txt` is the SIL Open Font License and must stay
+ * with the files.
+ */
+@font-face {
+  font-family: "Space Mono";
+  src: url("../fonts/SpaceMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Space Mono";
+  src: url("../fonts/SpaceMono-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
-  /* base palette */
-  --burgundy:   #6F1D1B;
-  --tan:        #BB9457;
-  --dark-brown: #432818;
-  --sienna:     #99582A;
-  --cream:      #FFE6A7;
-
-  /* surfaces */
-  --app-bg:           #F8F6F1;
-  --frame-light:      #F4EFE6;
-  --panel:            #F1EDE6;
-  --stage:            #ECE6DB;
-  --disabled:         #D8CDBD;
-  --disabled-control: #C9BBA8;
-
-  /* stage chips */
-  --stage-pending-bg: #ECE6DB;  --stage-pending-fg: #5D4B3D;
-  --stage-working-bg: #FFE6A7;  --stage-working-fg: #6F1D1B;
-  --stage-done-bg:    #E7DFC9;  --stage-done-fg:    #432818;
-  --stage-error-bg:   #F4D8D7;  --stage-error-fg:   #6F1D1B;
+  /* base — Aluminum Reel-to-Reel */
+  --body:        #2B2D2E;
+  --steel:       #8A8D8F;
+  --steel-dark:  #5A5D5F;
+  --faceplate:   #EFE7D4;
+  --faceplate-2: #E3D9C0;
+  --amber:       #E8C34A;
+  --amber-dark:  #B8912E;
+  --red:         #C4342B;
+  --red-dark:    #7A241D;
 
   /*
-   * Type. `-apple-system` leads the stack so macOS resolves to SF Pro / SF Mono
-   * while Windows still gets Segoe UI and Consolas. This is the documented
-   * macOS delta from the migration plan; the styling doc's Windows-first stack
-   * is preserved as the fallback rather than replaced.
+   * Panel metal. The faceplate cream was too warm for the machine chrome, so
+   * the panels are a neutral light grey; cream is now reserved for text on dark
+   * fills and for the "lit" done chip. Body text on alloy is 9.95:1.
    */
-  --font: -apple-system, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, "Consolas", monospace;
+  --alloy:       #D9DBDA;
+  --alloy-2:     #C7CAC9;
+
+  /*
+   * The ready lamp. A tenth colour, added because "done" is a semantic the
+   * nine-colour palette had no way to express: cream on the grey panels
+   * separates at only 1.13:1, so a completed stage read as no stage at all.
+   * Deep sage rather than a bright green, to sit with the machine chrome.
+   * Cream on it is 4.84:1; it separates from the panel at 4.29:1 and from the
+   * amber working state at 3.50:1.
+   */
+  --green:       #4F6B45;
+
+  /*
+   * Semantic aliases. Component rules below reach for these, not for the raw
+   * colours, so a palette change stays a change to this block.
+   */
+  --app-bg:       var(--body);
+  --panel:        var(--alloy);
+  --panel-recess: var(--alloy-2);
+  --ink:          var(--body);        /* text on cream */
+  --ink-invert:   var(--faceplate);   /* text on steel-dark, amber-dark, red */
+
+  --border: 1px solid var(--steel);
+
+  /*
+   * Space Mono throughout, bundled with the app. The system stack stays behind
+   * it as the fallback: on the platforms this ships to, reaching it would mean
+   * the bundled font failed to load, and the layout should still be usable.
+   */
+  --font: "Space Mono", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, "SF Mono", Menlo, "Consolas", monospace;
 
   /* geometry */
   --radius-card:  12px;
   --radius-panel:  9px;
   --radius-chip:   8px;
   --radius-button: 8px;
-  --border: 1px solid var(--tan);
+
+  /*
+   * The tape-machine bevel: a highlight along the top edge and a shadow along
+   * the bottom, so a control reads as a physical key catching light from above.
+   */
+  --bevel: inset 0 1px 0 rgb(255 255 255 / 0.18),
+           inset 0 -2px 0 rgb(0 0 0 / 0.22);
+  --bevel-pressed: inset 0 2px 4px rgb(0 0 0 / 0.35);
+  --lift: 0 1px 2px rgb(0 0 0 / 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -56,7 +118,7 @@ html, body {
   margin: 0;
   padding: 0;
   background: var(--app-bg);
-  color: var(--dark-brown);
+  color: var(--ink-invert);
   font-family: var(--font);
   font-size: 13px;
   /* Both windows are fixed size and the layout has no responsive fallback. */
@@ -71,7 +133,7 @@ html, body {
  * Five variants over one base. Hover moves background, text and icon together —
  * that is the defining detail of this theme and the reason the Python carried
  * 735 lines of custom widget code. The icon follows for free because it is SVG
- * with `fill: currentColor`.
+ * with `currentColor`.
  */
 .btn {
   display: inline-flex;
@@ -85,13 +147,16 @@ html, body {
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
   padding: 0 10px;
+  box-shadow: var(--bevel);
+}
+
+.btn:active:not(:disabled):not(.btn--unavailable) {
+  box-shadow: var(--bevel-pressed);
 }
 
 /*
  * Heroicons outline: stroked, not filled. `currentColor` on the stroke keeps
  * hover tinting free, exactly as it did when these were filled paths.
- * `vector-effect` stops the 1.5 stroke thinning out when the 24px viewBox is
- * scaled down to 15px.
  */
 .btn svg {
   width: 16px;
@@ -104,58 +169,160 @@ html, body {
   stroke-linejoin: round;
 }
 
-.btn--primary   { background: var(--sienna);     color: var(--cream); }
-.btn--secondary { background: var(--tan);        color: var(--dark-brown); }
-.btn--dark      { background: var(--dark-brown); color: var(--cream); }
-.btn--mic       { background: var(--cream);      color: var(--dark-brown); }
+.btn--primary   { background: var(--amber-dark); color: var(--ink); }
+.btn--secondary { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--dark      { background: var(--steel-dark); color: var(--ink-invert); }
 /*
- * Muted keeps the same cream background and dark icon — only the glyph gains
- * its diagonal slash. Greying it out would read as "disabled" rather than
- * "muted", which is the opposite of the state it represents.
+ * The microphone is the one control whose colour carries state: steel-dark when
+ * idle, amber while it is live. That is the VU-meter reading of amber.
  */
-.btn--mic.is-muted { background: var(--cream); color: var(--dark-brown); }
-.btn--result    { background: var(--tan);        color: var(--dark-brown); }
+.btn--mic       { background: var(--amber-dark); color: var(--ink); }
+/*
+ * Muted keeps the amber background and dark icon — only the glyph gains its
+ * diagonal slash. Greying it out would read as "disabled" rather than "muted",
+ * which is the opposite of the state it represents.
+ */
+.btn--mic.is-muted { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--result    { background: var(--steel-dark); color: var(--ink-invert); }
 
-.btn--primary:hover:not(:disabled)   { background: var(--burgundy); color: var(--cream); }
-.btn--secondary:hover:not(:disabled) { background: var(--sienna);   color: var(--cream); }
-.btn--dark:hover:not(:disabled)      { background: var(--burgundy); color: var(--cream); }
-.btn--mic:hover:not(:disabled)       { background: var(--tan);      color: var(--cream); }
-.btn--result:hover:not(:disabled)    { background: var(--sienna);   color: var(--cream); }
+.btn--primary:hover:not(:disabled)   { background: var(--amber);      color: var(--ink); }
+/*
+ * Neutral controls DARKEN on hover rather than lighten. Lightening to --steel
+ * would put the label at 4.14:1, under the 4.5 WCAG needs for text; going to
+ * --body keeps it at 11.24:1. It also suits the metaphor — the key presses into
+ * the chassis rather than lighting up.
+ */
+/*
+ * Every button lights up on hover and darkens on press — the bevel already
+ * encodes press as a recess, so lightening is the reading that matches the
+ * hardware. Cream rather than --steel because the Summary label is 12px text:
+ * --body on --steel is 4.14:1 and misses the 4.5 WCAG needs, while cream is
+ * 8.38:1 and clears text and icons alike.
+ *
+ * It also removes the need for a hover outline. Darkening to --body made these
+ * buttons vanish against the chrome they sit on, and the outline existed only
+ * to give them back an edge.
+ */
+.btn--secondary:hover:not(:disabled):not(.btn--unavailable) { background: var(--faceplate-2); color: var(--ink); }
+.btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--faceplate-2); color: var(--ink); }
+.btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber);      color: var(--ink); }
+.btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--faceplate-2); color: var(--ink); }
 
 /*
  * Result buttons have a third state. Until their stage reaches `done` they are
- * unavailable: flat disabled-control background, cream text and icon, no
- * pointer. The Python painted this by hand while keeping the widget "normal"
- * (`app.py:3044-3080`) purely to control the look.
+ * unavailable: flat steel, muted glyph, no pointer and no bevel — a key that is
+ * not there to be pressed. The Python painted this by hand while keeping the
+ * widget "normal" (`app.py:3044-3080`) purely to control the look.
+ */
+/*
+ * Glyph is --body on --steel = 4.14:1. That clears the 3.0 icons need but not
+ * the 4.5 for the Summary button's text label. WCAG 1.4.3 exempts inactive
+ * controls, and the alternative — a cream fill — would make an unavailable
+ * button louder than an available one. The real affordance here is the missing
+ * bevel and the default cursor, not the colour.
  */
 .btn--unavailable,
-.btn--unavailable:hover {
-  background: var(--disabled-control);
-  color: var(--cream);
-  cursor: default;
+.btn--unavailable:hover,
+.btn.btn--unavailable:hover {
+  background: var(--steel);
+  color: var(--body);
+  /* `not-allowed` rather than `default`: the pointer itself should say the
+     control cannot be used, since the visual difference is only the missing
+     bevel. */
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* ------------------------------------------------------------ main window */
 
+/*
+ * The faceplate: a cream panel floating on the dark chrome. Its border is the
+ * recording indicator — see the `[data-recorder-state]` rules at the end.
+ */
 .session-card {
-  background: var(--frame-light);
+  background: var(--panel);
+  border: var(--border);
   border-radius: var(--radius-card);
   margin: 10px 12px 8px;
-  padding: 8px 12px 10px;
+  /* 9px, not 12: a 25% tighter gutter, which is the space to the left of the
+     timer well. Also returns 6px of width to the transport row. */
+  padding: 8px 9px 10px;
+  color: var(--ink);
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+/*
+ * Recording indicator. Hidden unless a meeting is running, and the same red as
+ * the record button so the two read as one state.
+ */
+.rec-dot { display: none; }
+[data-recorder-state="recording"] .rec-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  flex: none;
+}
+
+/*
+ * The dim is gentle and slow — a VU lamp idling, not a strobe. Gated on
+ * `prefers-reduced-motion` so a viewer who has asked for stillness gets a
+ * solid red dot instead, which carries the state just as well.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  [data-recorder-state="recording"] .rec-dot {
+    animation: rec-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
 }
 
 .status-line {
   text-align: center;
   font-size: 13px;
   min-height: 17px;
-  margin-bottom: 2px;
+  color: var(--ink);
 }
 
+/*
+ * The digits sit in a recessed well, as they would behind a window in a real
+ * faceplate, rather than printed flat on it.
+ */
 .timer {
   font-family: var(--font-mono);
   font-size: 32px;
   font-weight: bold;
   line-height: 1.1;
+  color: var(--ink);
+  background: var(--panel-recess);
+  border-radius: var(--radius-panel);
+  /*
+   * 8px, not 12. The row is timer + 54 + 54 + 27 + gaps inside a 327px card;
+   * at 12px padding and a 12px gap that totalled 337px and pushed the cancel
+   * button out through the right edge of the faceplate.
+   */
+  padding: 2px 10px;
+  min-width: 0;
+  /*
+   * Flex-centred rather than `text-align: center`. That only handles the
+   * horizontal, and with a 32px face at 1.1 line-height the digits were sitting
+   * high in the well; centring the line box fixes both axes at once.
+   */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.18);
   /* Monospace is load-bearing: the digits must not jitter as the clock ticks. */
   font-variant-numeric: tabular-nums;
 }
@@ -168,7 +335,9 @@ html, body {
   gap: 10px;
 }
 
-.transport { display: flex; align-items: center; gap: 12px; }
+/* `flex: none` so the transport can never be squeezed or clipped again; the
+   timer beside it is what gives way if anything has to. */
+.transport { display: flex; align-items: center; gap: 8px; flex: none; }
 
 /*
  * Mixed fill/stroke icons (the mic pair). The global `.btn svg` rule forces
@@ -184,34 +353,37 @@ html, body {
 }
 /*
  * The gap the slash cuts through the mic. Painted in the button's background so
- * the bar reads as passing in front of the glyph rather than crossing it.
+ * the bar reads as passing in front of the glyph rather than crossing it —
+ * which is why the muted state keeps a known background colour.
  */
 .icon-mixed .cut {
   fill: none;
-  stroke: var(--cream);
+  /* Painted in the button's own background, so it tracks the muted fill. */
+  stroke: var(--steel-dark);
   stroke-width: 4.5;
   stroke-linecap: round;
 }
-.btn--mic:hover:not(:disabled) .icon-mixed .cut { stroke: var(--tan); }
+.btn--mic:hover:not(:disabled) .icon-mixed .cut { stroke: var(--steel); }
+.btn--mic:not(.is-muted) .icon-mixed .cut { stroke: var(--amber-dark); }
+.btn--mic:not(.is-muted):hover .icon-mixed .cut { stroke: var(--amber); }
 
 /*
  * Cancel: half of Stop's 54px, so the primary action stays visually dominant.
- * Burgundy is the palette's red — the styling doc forbids introducing a new
- * colour, and this is the one that already means "destructive" on Stop.
+ * Neutral at rest and red only on hover — destructive on approach, not at rest.
+ * Deliberately NOT dimmed: this stylesheet already uses dimming to mean
+ * "disabled", and a permanently faded control would read as unavailable.
  */
 #cancel-button {
   width: 27px;
   height: 27px;
-  background: var(--burgundy);
-  color: var(--cream);
+  /* Tighter than the 8px transport gap: cancel belongs to stop, not beside it
+     as a third equal control. */
+  margin-left: -4px;
+  background: var(--steel-dark);
+  color: var(--ink-invert);
 }
-#cancel-button:hover:not(:disabled) { background: var(--dark-brown); }
-#cancel-button svg { width: 16px; height: 16px; }
-#cancel-button:disabled {
-  background: var(--disabled-control);
-  color: var(--cream);
-  cursor: default;
-}
+#cancel-button:hover:not(:disabled) { background: var(--red-dark); }
+#cancel-button svg { width: 19px; height: 19px; stroke-width: 2; }
 
 /*
  * The circular transport buttons are a border-radius element containing a
@@ -229,6 +401,15 @@ html, body {
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
   padding: 0;
+  box-shadow: var(--bevel), var(--lift);
+}
+
+/* Pressed: the bevel inverts and the glyph sinks a pixel, like a real key. */
+.transport button:active:not(:disabled) {
+  box-shadow: var(--bevel-pressed);
+}
+.transport button:active:not(:disabled) svg {
+  transform: translateY(1px);
 }
 
 /*
@@ -253,22 +434,27 @@ html, body {
   stroke-linejoin: round;
 }
 
-#start-button { background: var(--sienna); color: var(--cream); }
-#start-button:hover:not(:disabled) { background: var(--burgundy); }
-#stop-button  { background: var(--burgundy); color: var(--cream); }
-#stop-button:hover:not(:disabled) { background: var(--dark-brown); }
+/* Record is the only button in the app that is red at rest. */
+#start-button { background: var(--red); color: var(--ink-invert); }
+#start-button:hover:not(:disabled) { background: var(--red-dark); }
+#stop-button  { background: var(--steel); color: var(--ink); }
+#stop-button:hover:not(:disabled) { background: var(--steel-dark); color: var(--ink-invert); }
 
 /*
  * Matched by ID because `#start-button` / `#stop-button` set the background,
  * and an ID beats `.transport button:disabled` on specificity — which is why
  * the disabled Stop button previously rendered at full strength and looked
- * clickable.
+ * clickable. The bevel is dropped too: a dead key is not lit.
  */
 #start-button:disabled,
-#stop-button:disabled {
-  background: var(--disabled-control);
-  color: var(--cream);
-  cursor: default;
+#stop-button:disabled,
+#cancel-button:disabled {
+  /* Sunk into the chassis and unlit. --steel on --steel-dark measured 1.99:1,
+     which was invisible; on --body the glyph reaches 4.14:1. */
+  background: var(--body);
+  color: var(--steel);
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* stage chips */
@@ -283,8 +469,8 @@ html, body {
   justify-content: center;
   gap: 4px;
   font-size: 11px;
-  background: var(--stage-pending-bg);
-  color: var(--stage-pending-fg);
+  background: var(--steel-dark);
+  color: var(--ink-invert);
 }
 
 .chip svg {
@@ -298,20 +484,102 @@ html, body {
 }
 .chip .marker { font-size: 10px; line-height: 1; }
 
-.chip[data-state="pending"] { background: var(--stage-pending-bg); color: var(--stage-pending-fg); }
-.chip[data-state="working"] { background: var(--stage-working-bg); color: var(--stage-working-fg); }
-.chip[data-state="done"]    { background: var(--stage-done-bg);    color: var(--stage-done-fg); }
-.chip[data-state="error"]   { background: var(--stage-error-bg);   color: var(--stage-error-fg); }
+/*
+ * The working dot dims, matching the recording indicator, but stays --body
+ * rather than turning red: the chip is already amber, which is what "in
+ * progress" means here, and red is reserved for record and failure. Making
+ * this red would spend the one colour that has to keep meaning "consequential".
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .chip[data-state="working"] .marker {
+    animation: rec-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+/*
+ * Four states, not the two a simple toggle would need. `working` takes the
+ * amber because that is what amber means here; `error` takes the red because a
+ * failed stage is exactly the "critical" the red is reserved for — the meeting
+ * produced no output.
+ */
+.chip[data-state="pending"] { background: var(--steel-dark); color: var(--ink-invert); }
+.chip[data-state="working"] { background: var(--amber);      color: var(--ink); }
+/* Done is the ready lamp. */
+.chip[data-state="done"]    { background: var(--green);      color: var(--ink-invert); }
+/* red-dark, not red: cream on --red is 4.40:1, just under the 4.5 for text. */
+.chip[data-state="error"]   { background: var(--red-dark);   color: var(--ink-invert); }
 
 .audio-panel {
+  /*
+   * Same --panel as the session card. These are both just panels sitting on the
+   * chrome; making one recessed was an arbitrary distinction that only read as
+   * inconsistency. --panel-recess is now reserved for things genuinely inset
+   * INTO a panel — the timer well, the wizard's model rows.
+   */
   background: var(--panel);
+  border: var(--border);
   border-radius: var(--radius-panel);
   margin: 8px 12px;
-  padding: 6px 9px;
+  /* Roomier, and matching the session card's generosity. */
+  padding: 9px 10px 11px;
+  transition: padding-bottom 120ms ease;
   font-size: 10px;
   line-height: 1.5;
-  max-width: 330px;
+  /*
+   * No max-width. It was 330px — a leftover from the original 375px layout —
+   * which made this panel narrower than the session card above it even though
+   * both have the same 12px margins.
+   */
+  color: var(--ink);
 }
+
+/*
+ * Disclosure for the device panel. A bare button — no fill, no bevel — because
+ * it reveals information rather than doing something; the transport and toolbar
+ * keys are what should look pressable.
+ */
+.devices-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* Fills whatever the label leaves, so the row reads as one ruled line. */
+.devices-toggle .rule {
+  flex: 1;
+  border-top: 1px solid var(--steel);
+}
+
+.devices-toggle .chevron {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 140ms ease;
+}
+.devices-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+
+/* Only present when open, so it adds no height while collapsed. */
+.devices-detail { margin-top: 6px; }
+
+/*
+ * Collapsed, the toggle row is the only content, and the panel's full bottom
+ * padding leaves it sitting high with a gap beneath. Driven by a class rather
+ * than `:has()` so it cannot silently do nothing on an older WebView2.
+ */
+.audio-panel.is-collapsed { padding-bottom: 7px; }
 
 /*
  * Result row: mute left, the three result controls centred, gear right. The
@@ -333,6 +601,14 @@ html, body {
 #summary-button   { width: 104px; height: 31px; }
 #settings-button  { width: 34px;  height: 31px; padding: 0; }
 
+/*
+ * The folder is the one always-available destination, so it carries the warm
+ * amber-dark rather than joining the neutral steel family. Settings stays
+ * neutral: it is not a critical action and must not take the red.
+ */
+#folder-button:not(.btn--unavailable) { background: var(--amber-dark); color: var(--ink); }
+#folder-button:not(.btn--unavailable):hover { background: var(--amber); color: var(--ink); }
+
 /* -------------------------------------------------------- settings window */
 
 /*
@@ -345,33 +621,50 @@ html, body {
   overflow-y: auto;
   overflow-x: hidden;
   height: 100vh;
+  background: var(--app-bg);
+  color: var(--ink-invert);
 }
 
 .section { margin-top: 14px; }
-.section h2 { font-size: 14px; font-weight: bold; margin: 0 0 8px; }
+/* Amber headings read as the labelled sections of a machine's front panel. */
+.section h2 {
+  font-size: 14px;
+  font-weight: bold;
+  margin: 0 0 8px;
+  color: var(--amber);
+}
 
 .field { margin-bottom: 10px; }
 .field label { display: block; font-size: 11px; margin-bottom: 3px; }
-.helper { font-size: 10px; margin-top: 3px; }
+/*
+ * --faceplate-2 rather than --steel: steel on the dark chrome is 4.14:1, under
+ * the 4.5 for text. faceplate-2 is 9.85:1 and still reads as secondary, being
+ * warmer and dimmer than the faceplate used for primary text.
+ */
+.helper { font-size: 10px; margin-top: 3px; color: var(--faceplate-2); }
 
 /*
- * 1px tan borders on every input. The Python fakes these with a nested-frame
- * trick (`BorderedContainer`) because CustomTkinter's own border rendering is
- * blurry at 1px.
- */
-/*
+ * Inputs are cream faceplate insets on the dark chrome, with a steel hairline.
+ * The Python fakes these borders with a nested-frame trick
+ * (`BorderedContainer`) because CustomTkinter's own border rendering is blurry
+ * at 1px.
+ *
  * Widths are relative, not the fixed 490px from the styling doc. That number
  * assumed a 590px window; hardcoding it means any window-size change silently
  * produces a horizontal scrollbar, which is exactly what happened when the
  * settings view first rendered in the 375px main window.
+ *
+ * `input[type="password"]` is in this selector deliberately: without it the API
+ * key field falls back to the browser default and renders at the wrong height
+ * and width, which it did until this was fixed.
  */
 select, input[type="text"], input[type="password"], textarea {
   width: 100%;
   height: 30px;
   border: var(--border);
   border-radius: var(--radius-button);
-  background: #fff;
-  color: var(--dark-brown);
+  background: var(--panel);
+  color: var(--ink);
   font-family: var(--font);
   font-size: 12px;
   padding: 0 8px;
@@ -397,7 +690,7 @@ input[type="password"] { cursor: text; }
 .with-button .btn { width: 36px; height: 30px; padding: 0; }
 
 .switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.switch-row input { cursor: pointer; }
+.switch-row input { cursor: pointer; accent-color: var(--amber); }
 
 #refresh-devices { width: 175px; height: 28px; }
 #save-settings   { width: 190px; height: 34px; font-size: 13px; }
@@ -413,10 +706,11 @@ input[type="password"] { cursor: text; }
 #tooltip {
   position: fixed;
   z-index: 100;
-  background: var(--dark-brown);
-  color: var(--cream);
-  font-size: 9px;
-  padding: 3px 7px;
+  background: var(--body);
+  color: var(--faceplate);
+  border: var(--border);
+  font-size: 13px;
+  padding: 4px 9px;
   border-radius: 4px;
   pointer-events: none;
   opacity: 0;
@@ -436,7 +730,7 @@ input[type="password"] { cursor: text; }
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(67, 40, 24, 0.35);
+  background: rgb(43 45 46 / 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -444,10 +738,13 @@ input[type="password"] { cursor: text; }
 }
 
 .modal {
-  background: var(--frame-light);
+  background: var(--panel);
+  border: var(--border);
   border-radius: var(--radius-card);
   padding: 14px 16px;
   width: 300px;
+  color: var(--ink);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
 }
 
 .modal label { display: block; font-size: 11px; margin-bottom: 5px; }
@@ -455,6 +752,7 @@ input[type="password"] { cursor: text; }
 .modal input[type="text"] {
   width: 100%;
   height: 30px;
+  background: var(--panel-recess);
 }
 
 .modal-actions {
@@ -470,7 +768,13 @@ input[type="password"] { cursor: text; }
 
 /* ------------------------------------------------------------- wizard */
 
-.wizard { display: flex; flex-direction: column; height: 100vh; }
+.wizard {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--app-bg);
+  color: var(--ink-invert);
+}
 
 .wizard-progress {
   display: flex;
@@ -482,12 +786,13 @@ input[type="password"] { cursor: text; }
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--stage);
+  background: var(--steel-dark);
 }
-.wizard-progress .dot.filled { background: var(--sienna); }
+/* Amber for steps reached: progress is "in flight", which is what amber means. */
+.wizard-progress .dot.filled { background: var(--amber); }
 
 .wizard-body { flex: 1; overflow-y: auto; padding: 6px 28px 12px; }
-.wizard-body h1 { font-size: 18px; margin: 6px 0 8px; }
+.wizard-body h1 { font-size: 18px; margin: 6px 0 8px; color: var(--amber); }
 .wizard-body p { font-size: 12px; line-height: 1.5; margin: 0 0 14px; }
 
 .wizard-footer {
@@ -495,7 +800,7 @@ input[type="password"] { cursor: text; }
   align-items: center;
   justify-content: space-between;
   padding: 10px 28px 16px;
-  border-top: 1px solid var(--stage);
+  border-top: var(--border);
 }
 .wizard-actions { display: flex; gap: 8px; }
 .wizard-actions .btn { height: 32px; padding: 0 16px; }
@@ -508,16 +813,17 @@ input[type="password"] { cursor: text; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  background: var(--panel);
+  background: var(--panel-recess);
   border-radius: var(--radius-panel);
   padding: 7px 10px;
   font-size: 12px;
+  color: var(--ink);
 }
 .model-row .btn { height: 26px; padding: 0 12px; font-size: 11px; }
 
 .badge {
-  background: var(--cream);
-  color: var(--burgundy);
+  background: var(--amber);
+  color: var(--ink);
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 10px;
@@ -526,12 +832,31 @@ input[type="password"] { cursor: text; }
   vertical-align: middle;
 }
 
-/* The one place the app stops being offline; it should not look incidental. */
+/*
+ * The one place the app stops being offline; it should not look incidental.
+ * This is the third and last place red is allowed, and it is the reason red is
+ * rationed everywhere else.
+ */
 .helper.warning {
-  background: var(--stage-error-bg);
-  color: var(--stage-error-fg);
+  background: var(--panel);
+  color: var(--red-dark);
+  border: 1px solid var(--red);
   border-radius: 6px;
   padding: 7px 9px;
   margin-bottom: 10px;
   line-height: 1.4;
+  font-size: 11px;
 }
+
+/* -------------------------------------------------------- recorder state */
+
+/*
+ * One attribute on <body>, set in main.js's `recording_state` handler and
+ * nowhere else, drives the accent. No JavaScript touches a colour.
+ *
+ * No pulse animation: a permanently animating element in a window that may sit
+ * open for an hour is a distraction, and `prefers-reduced-motion` would have to
+ * disable it anyway. The red border carries the state on its own.
+ */
+[data-recorder-state="recording"] .session-card { border-color: var(--red); }
+[data-recorder-state="idle"]      .session-card { border-color: var(--steel); }

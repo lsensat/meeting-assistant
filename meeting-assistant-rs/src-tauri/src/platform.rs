@@ -73,6 +73,17 @@ pub fn models_dir() -> PathBuf {
 /// Port of `find_ollama_executable` (`app.py:770`), which searched `PATH` and
 /// then the usual Windows install locations. The macOS equivalents are
 /// Homebrew (both architectures) and the app bundle's bundled binary.
+/// # `PATH` is trusted, deliberately
+///
+/// A hostile `ollama` earlier in `PATH` would be launched by [`start_ollama`].
+/// `PATH` is searched **first** on purpose: a user who has built or installed
+/// Ollama somewhere of their own choosing means it, and preferring the Homebrew
+/// or bundle paths would silently ignore that.
+///
+/// The trade-off is accepted because writing to a directory on `PATH` already
+/// implies code execution as this user, so it grants an attacker nothing they
+/// did not already have. Do not "harden" this by reordering without weighing
+/// that against breaking legitimate custom installs.
 pub fn find_ollama() -> Option<PathBuf> {
     if let Some(found) = which("ollama") {
         return Some(found);
@@ -135,45 +146,6 @@ pub fn start_ollama() -> std::io::Result<()> {
     };
 
     std::process::Command::new(exe).arg("serve").spawn()?;
-    Ok(())
-}
-
-/// Reveal a file or folder in the OS file manager.
-///
-/// Replaces `os.startfile` (`app.py:689`), which is Windows-only. In Phase M4
-/// this is expected to move to `tauri-plugin-opener`, which does the same thing
-/// behind one API; it lives here so the pipeline and CLI can use it before
-/// Tauri exists.
-pub fn open_path(path: &Path) -> std::io::Result<()> {
-    if !path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("{} does not exist", path.display()),
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut c = std::process::Command::new("open");
-        c.arg(path);
-        c
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]).arg(path);
-        c
-    };
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(path);
-        c
-    };
-
-    command.spawn()?;
     Ok(())
 }
 
