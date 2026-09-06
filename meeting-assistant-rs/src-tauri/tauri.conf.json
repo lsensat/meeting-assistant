@@ -14,13 +14,13 @@
         "title": "Meeting Assistant",
         "width": 375,
         "height": 275,
-        "resizable": false,
+        "resizable": true,
         "fullscreen": false,
         "maximizable": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
     }
   },
   "bundle": {

@@ -336,7 +336,17 @@ fn run(
                 gap_started_at = pending_lead_in.take();
             }
 
-            let is_fallback = failover.changed
+            // `failover.changed` is also true on the very FIRST acquisition:
+            // `current_name` starts empty, so `choose_*_failover` cannot find
+            // "the device we are already on" and reports a change. Taking that
+            // at face value marked every recording as a fallback and put
+            // "(automatic)" in the UI permanently, even when the configured
+            // device was used. Only trust it once we have actually been on a
+            // device.
+            //
+            // The second term still catches the real first-open case: a device
+            // was configured and we ended up on a different one.
+            let is_fallback = (!current_name.is_empty() && failover.changed)
                 || (!config.configured_name.is_empty() && chosen.name != config.configured_name);
             automatic_fallback |= is_fallback;
 

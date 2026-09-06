@@ -339,6 +339,43 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the main window to fit its content.
+///
+/// # Why this is a Rust command and not a JS `setSize`
+///
+/// `capabilities/default.json` does not grant `core:window:allow-set-size`, so a
+/// JS resize would be rejected by the ACL — and near-silently, the same failure
+/// class as the missing `withGlobalTauri` flag and the missing `setup` window
+/// label both were. Capabilities gate the JS API only; a Rust-side window
+/// operation needs no permission entry.
+///
+/// The caller measures `document.documentElement.scrollHeight` rather than
+/// passing a constant, so a device name wrapping to a third line still fits.
+/// Clamped here because a measurement bug in the frontend must not be able to
+/// produce a 1px or a 4000px window.
+#[tauri::command]
+pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
+    const MIN: f64 = 200.0;
+    const MAX: f64 = 420.0;
+    const WIDTH: f64 = 375.0;
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window is missing")?;
+
+    window
+        .set_size(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)))
+        .map_err(|e| e.to_string())?;
+
+    // Pinned so the window cannot be dragged to a size the fixed layout has no
+    // answer for. `resizable` must stay true in tauri.conf.json: with it false,
+    // programmatic resizing is unreliable on macOS.
+    let fixed = Some(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)));
+    let _ = window.set_min_size(fixed);
+    let _ = window.set_max_size(fixed);
+    Ok(())
+}
+
 /// Open, or focus, the settings window.
 ///
 /// # Why a second window and not a navigation
@@ -405,9 +442,32 @@ pub fn has_api_key() -> bool {
 
 // --- files -------------------------------------------------------------
 
+/// Reveal a file or folder in the OS file manager.
+///
+/// # Why this goes through the opener plugin rather than a shell command
+///
+/// This used to run `cmd /C start "" <path>` on Windows. `cmd.exe` re-parses
+/// its command line and honours `& ^ % ( ) !` as metacharacters, while Rust's
+/// `Command` quotes arguments to the MSVCRT convention that `cmd.exe` does not
+/// follow — the same class of hole as CVE-2024-24576.
+///
+/// That was reachable from the meeting title: `sanitize_name` strips
+/// `<>:"/\|?*` but not `&`, so a meeting called `standup & calc` produced a
+/// folder of that name, and pressing "Open folder" would have run `calc`.
+///
+/// `tauri-plugin-opener` uses the OS APIs directly, with no shell in the path.
 #[tauri::command]
-pub fn open_path(path: String) -> Result<(), String> {
-    platform::open_path(std::path::Path::new(&path)).map_err(|e| e.to_string())
+pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let path = std::path::Path::new(&path);
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // --- startup -----------------------------------------------------------
@@ -618,6 +678,26 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
         EV_LOG,
         format!("meeting cancelled; deleting {}", summary.folder.display()),
     );
+
+    // Bounded on purpose. `remove_dir_all` is recursive and irreversible, and
+    // the folder is built from a config value the frontend can set. It is
+    // app-constructed today, so this is defence in depth rather than a fix for
+    // a live hole — but an unbounded recursive delete is one bug away from
+    // being very bad indeed.
+    let output_folder = state.config_snapshot().output_folder;
+    if !summary.folder.starts_with(&output_folder) {
+        let _ = app.emit(
+            EV_LOG,
+            format!(
+                "refusing to delete {}: outside the output folder {}",
+                summary.folder.display(),
+                output_folder.display()
+            ),
+        );
+        *state.current_folder.lock().expect("folder poisoned") = None;
+        emit_recording_state(&app, false, false);
+        return Ok(());
+    }
 
     if let Err(e) = std::fs::remove_dir_all(&summary.folder) {
         let _ = app.emit(

@@ -26,6 +26,8 @@ const ui = {
   micOff: el("mic-off"),
   deviceMic: el("device-mic"),
   deviceSystem: el("device-system"),
+  devicesToggle: el("devices-toggle"),
+  devicesDetail: el("devices-detail"),
   stages: {
     audio: el("stage-audio"),
     whisper: el("stage-whisper"),
@@ -165,7 +167,15 @@ async function showResolvedDevices(config) {
       list.find((device) => device.name === configured) ??
       list.find((device) => device.is_default) ??
       list[0];
-    return { name: chosen.name, automatic: chosen.name !== configured };
+    // `configured !== ""` matters: with nothing configured — the default —
+    // comparing against "" made this always true, so every launch claimed both
+    // devices had fallen back. That is why "(automatic)" appeared permanently.
+    // It also matters here specifically, because the panel auto-expands on a
+    // fallback and would otherwise never stay collapsed.
+    return {
+      name: chosen.name,
+      automatic: configured !== "" && chosen.name !== configured,
+    };
   };
 
   const mic = resolve(devices.microphones, String(config.microphone_name ?? ""));
@@ -178,6 +188,76 @@ async function showResolvedDevices(config) {
   ui.deviceSystem.textContent = system
     ? `${tr("computer_audio")}: ${system.name}${system.automatic ? ` (${tr("automatic")})` : ""}`
     : `${tr("computer_audio")}: ${tr("computer_audio_missing")}`;
+
+  // Open on a genuine fallback: hiding the panel must not hide the one thing
+  // it exists to tell you, which is that the app is not using the device you
+  // chose. Never auto-collapses — that would fight the user.
+  if (mic?.automatic || system?.automatic) setDevicesExpanded(true);
+}
+
+/** Must match `tauri.conf.json`'s window height. */
+const CONFIG_WINDOW_HEIGHT = 275;
+
+/**
+ * Height of the window furniture — the title bar — in CSS pixels.
+ *
+ * `set_size` and the configured height both cover the whole window, while the
+ * layout lives in the smaller webview inside it. Ignoring the difference is why
+ * the toolbar kept getting clipped: every height asked for was a title bar too
+ * short. Derived once, before anything has resized the window, by comparing the
+ * height we asked for against the height the webview actually got.
+ *
+ * @type {number|null}
+ */
+let chromeHeight = null;
+
+/**
+ * The height the content needs, in CSS pixels.
+ *
+ * Nothing in this window is sized against the viewport, so the bottom of the
+ * last row depends only on the content above it — this returns the same answer
+ * whatever size the window currently is, and cannot feed back into itself.
+ */
+function contentHeight() {
+  const row = document.querySelector(".result-row");
+  // rect.bottom excludes the row's own 10px bottom margin.
+  return Math.ceil(row.getBoundingClientRect().bottom + 12);
+}
+
+function resizeToContent() {
+  if (chromeHeight === null) {
+    chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
+  }
+  api.setMainHeight(contentHeight() + chromeHeight);
+}
+
+/**
+ * Show or hide the device detail, and resize the window to match.
+ *
+ * The height is measured rather than hardcoded: a device name wrapping to a
+ * third line would break a fixed delta, and "MacBook Air Microphone
+ * (automatic)" is already close to the width.
+ *
+ * @param {boolean} expanded
+ * @param {boolean} [persist] write it to config; false during startup
+ */
+function setDevicesExpanded(expanded, persist = true) {
+  if (expanded) {
+    ui.devicesDetail.removeAttribute("hidden");
+  } else {
+    ui.devicesDetail.setAttribute("hidden", "");
+  }
+  ui.devicesToggle.setAttribute("aria-expanded", String(expanded));
+  ui.devicesToggle.closest(".audio-panel").classList.toggle("is-collapsed", !expanded);
+
+  // Next frame, so layout has settled with the detail shown or hidden.
+  requestAnimationFrame(resizeToContent);
+
+  if (persist) {
+    api.getConfig().then((config) =>
+      api.saveConfig({ ...config, devices_expanded: expanded }),
+    );
+  }
 }
 
 /**
@@ -219,8 +299,17 @@ function confirmAction(message) {
  */
 function applyMuted(muted) {
   ui.mute.classList.toggle("is-muted", muted);
-  ui.micOn.hidden = muted;
-  ui.micOff.hidden = !muted;
+
+  // setAttribute, not `.hidden`. `hidden` is an IDL attribute of HTMLElement,
+  // and <svg> is an SVGElement — which does not inherit from HTMLElement. So
+  // `svg.hidden = true` silently sets a plain JS property that reflects to
+  // nothing, and the [hidden] CSS rule never matches. The markup's initial
+  // `hidden` worked, which is why the slashed mic started hidden and then
+  // never appeared.
+  const show = (svg, visible) =>
+    visible ? svg.removeAttribute("hidden") : svg.setAttribute("hidden", "");
+  show(ui.micOn, !muted);
+  show(ui.micOff, muted);
   if (recording) setStatus(muted ? tr("recording_muted") : tr("recording"));
 }
 
@@ -261,6 +350,10 @@ function wireEvents() {
   // all.
   api.on(api.EVENTS.recordingState, ({ recording: active }) => {
     setRecording(active);
+    // The only place the recorder state reaches the DOM as an attribute. CSS
+    // keys off it for the faceplate's accent border, so no JavaScript anywhere
+    // has to know a colour.
+    document.body.dataset.recorderState = active ? "recording" : "idle";
     if (active) setStatus(tr("recording"));
   });
 
@@ -277,12 +370,15 @@ function wireEvents() {
   });
   api.on(api.EVENTS.micFallback, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name} (${tr("automatic")})`;
+    // Mid-recording is when this matters most — the device changed under you.
+    setDevicesExpanded(true);
   });
   api.on(api.EVENTS.deviceSystem, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name}`;
   });
   api.on(api.EVENTS.systemFallback, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name} (${tr("automatic")})`;
+    setDevicesExpanded(true);
   });
 
   api.on(api.EVENTS.stage, ({ stage, state }) => {
@@ -390,6 +486,11 @@ function wireControls() {
     }
   });
 
+  ui.devicesToggle.addEventListener("click", () => {
+    const open = ui.devicesToggle.getAttribute("aria-expanded") === "true";
+    setDevicesExpanded(!open);
+  });
+
   ui.settings.addEventListener("click", () => api.openSettings());
 }
 
@@ -407,6 +508,11 @@ async function main() {
   wireControls();
   resetStages();
   setRecording(false);
+
+  // Applied before the first device query so the window does not visibly jump
+  // from expanded to collapsed on launch. `persist: false` — restoring the
+  // saved state is not a user action and must not rewrite the config.
+  setDevicesExpanded(config.devices_expanded === true, false);
 
   showResolvedDevices(config);
   applyMuted(await api.isMuted());

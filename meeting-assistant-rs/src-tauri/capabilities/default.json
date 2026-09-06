@@ -1,8 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Everything the three windows need. Deliberately minimal: the app is offline by default, so no HTTP, shell or filesystem-wide permissions are granted. A window label missing from the list below has every invoke rejected by the ACL, and near-silently — add new windows here.",
-  "windows": ["main", "settings", "setup"],
+  "description": "Everything the three windows need, and nothing more. The app is offline by default, so no HTTP, shell or filesystem-wide permissions are granted. opener:allow-open-url is scoped to the one link the setup wizard offers; unscoped it would let any string in the frontend open any URL. A window label missing from the list below has every invoke rejected by the ACL, and near-silently \u2014 add new windows here.",
+  "windows": [
+    "main",
+    "settings",
+    "setup"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-close",
@@ -11,7 +15,13 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "dialog:allow-open",
-    "opener:allow-open-path",
-    "opener:allow-open-url"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://ollama.com/*"
+        }
+      ]
+    }
   ]
 }

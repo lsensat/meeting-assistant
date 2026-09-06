@@ -80,6 +80,14 @@ export const startupCheck = () => invoke("startup_check");
 export const openSettings = () => invoke("open_settings");
 export const closeSettings = () => invoke("close_settings");
 
+/**
+ * Resize the main window to `height`. Done in Rust: the capabilities file does
+ * not grant the JS window-resize permission, so a `setSize` from here would be
+ * rejected by the ACL.
+ * @param {number} height
+ */
+export const setMainHeight = (height) => invoke("set_main_height", { height });
+
 /** @returns {Promise<boolean>} whether the first-run wizard should be shown */
 export const needsSetup = () => invoke("needs_setup");
 export const openSetup = () => invoke("open_setup");

@@ -28,6 +28,11 @@ tauri-plugin-opener = "2"
 # plan; the corrected API usage is demonstrated in spikes/loopback-probe.
 cpal = "=0.18.2"
 
+# Digest verification for downloaded Whisper weights. RustCrypto: pure Rust,
+# no C, no build-time toolchain.
+sha2 = "0.10"
+sha1 = "0.10"
+
 hound = "3.5.1"
 
 # `recv_timeout` on the writer side and `try_send` on the realtime side. std's

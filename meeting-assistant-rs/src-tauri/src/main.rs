@@ -49,6 +49,7 @@ fn main() {
             commands::set_api_key,
             commands::has_api_key,
             commands::open_path,
+            commands::set_main_height,
             commands::open_settings,
             commands::close_settings,
             commands::startup_check,
