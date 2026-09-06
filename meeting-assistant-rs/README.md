@@ -48,6 +48,40 @@ cargo run --release --bin rec -- --seconds 60 --out /tmp/meeting
 cargo run --release --bin process -- --folder /tmp/meeting
 ```
 
+## Installing a release build
+
+Releases are built by `.github/workflows/release.yml` on a `v*` tag: a `.dmg`
+for macOS (Apple Silicon) and `.msi` / `.exe` for Windows. They land as a
+**draft** release that has to be published by hand, because the builds are
+unsigned and the notes below have to go with them.
+
+### The builds are unsigned, and both systems will object
+
+**macOS.** Anything downloaded from a browser is quarantined, and Gatekeeper
+refuses an unsigned bundle outright — usually with "Meeting Assistant is
+damaged and can't be opened", which is misleading: the download is fine, it is
+simply unsigned. Clear the quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Meeting Assistant.app"
+```
+
+This does not apply to a locally built app — those are never quarantined,
+which is why it does not show up during development.
+
+**Windows.** SmartScreen shows "Windows protected your PC" for an unrecognised
+publisher. **More info → Run anyway.**
+
+Signing would remove both (Apple Developer ID; a Windows OV certificate), and
+on macOS it would also stop the permission prompts recurring after every
+update — see the note on ad-hoc signing below.
+
+### Apple Silicon only
+
+`macos-latest` runners are ARM, so the macOS build is `aarch64` and will not
+run on an Intel Mac. The architecture is in the `.dmg` filename. A universal
+build is deferred.
+
 ## macOS: permissions
 
 The app needs **two separate permissions**, and they are different TCC

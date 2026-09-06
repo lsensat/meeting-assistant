@@ -1,0 +1,122 @@
+# Build Meeting Assistant for macOS and Windows.
+#
+# This exists for one reason above all others: the Rust port has never been
+# compiled on Windows. Tauri cannot cross-compile to Windows from macOS — the
+# MSVC toolchain that whisper-rs needs and the WebView2 linking are both
+# Windows-only — so a `windows-latest` runner is the only way to find out
+# whether the Windows half of this codebase works.
+#
+# A green run here means the code COMPILES, LINKS and BUNDLES on Windows.
+# It does NOT mean Windows works: every runtime question is still open, and the
+# WASAPI loopback capture path has never once executed. See the Windows
+# verification steps in the migration plan before trusting a recording.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # Runs the whole matrix without cutting a release. This is how the Windows
+  # build should be iterated on — expect several rounds before it passes.
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      # Needed to create the draft release and upload the installers.
+      contents: write
+
+    strategy:
+      # Do not cancel macOS when Windows fails. Early on, Windows failing is
+      # the expected outcome, and the macOS artifact is still wanted.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            # macos-latest is Apple Silicon. Intel Macs are not covered; a
+            # universal build is deferred (see deferred fix M3). Tauri puts the
+            # architecture in the .dmg filename, so the artifact is at least
+            # not mistakable for a universal one.
+            bundles: app,dmg
+          - platform: windows-latest
+            target: ''
+            bundles: msi,nsis
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No Node setup and no `npm install` on purpose. The frontend is plain ES
+      # modules with no bundler, and tauri.conf.json has no beforeBuildCommand.
+      # Every tauri-action example online installs Node; this project must not.
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # whisper.cpp is a large C++ build. Without this every run pays it again.
+      # Verify it is actually effective: if whisper.cpp builds outside target/,
+      # this caches nothing and runs stay slow.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: meeting-assistant-rs
+          key: ${{ matrix.platform }}
+
+      # whisper-rs-sys runs bindgen, which needs libclang. Windows runners ship
+      # LLVM but do not export this, and the failure message points at bindgen
+      # rather than at the missing variable.
+      - name: Locate libclang for whisper-rs
+        if: matrix.platform == 'windows-latest'
+        run: echo "LIBCLANG_PATH=$((gcm clang).Source -replace 'clang.exe','')" >> $env:GITHUB_ENV
+
+      # The whisper.cpp source tree nests deeply enough to hit Windows' 260
+      # character path limit during the CMake build.
+      - name: Allow long paths
+        if: matrix.platform == 'windows-latest'
+        run: git config --system core.longpaths true
+
+      # Cheap, and it catches a Windows-only compile break in meeting-core
+      # before the much slower bundling step runs.
+      - name: Test
+        working-directory: meeting-assistant-rs
+        run: cargo test
+
+      - name: Build and bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The directory CONTAINING src-tauri, not src-tauri itself.
+          projectPath: meeting-assistant-rs
+          # Empty on workflow_dispatch, so no release is created when simply
+          # exercising the build.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: Meeting Assistant ${{ github.ref_name }}
+          # Never publish automatically. These builds are unsigned: macOS
+          # Gatekeeper refuses a downloaded ad-hoc bundle outright, and Windows
+          # shows a SmartScreen warning. The release notes must explain both
+          # before anyone is pointed at the download.
+          releaseDraft: true
+          prerelease: false
+          # Per-platform rather than one global targets list, so a bundler
+          # failing on one host cannot fail the build for an unrelated reason.
+          args: >-
+            ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+            --bundles ${{ matrix.bundles }}
+
+      # workflow_dispatch creates no release, so keep the installers reachable.
+      - name: Upload installers
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: meeting-assistant-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            meeting-assistant-rs/target/release/bundle/dmg/*.dmg
+            meeting-assistant-rs/target/**/release/bundle/dmg/*.dmg
+            meeting-assistant-rs/target/release/bundle/msi/*.msi
+            meeting-assistant-rs/target/release/bundle/nsis/*.exe
