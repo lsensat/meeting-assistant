@@ -7,12 +7,13 @@
 //! `queue.Queue` plus `root.after(100, poll_messages)` becomes `app.emit()`;
 //! the flow is still strictly one-way, worker → UI.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use meeting_core::config::{Config, Language, SummaryProvider};
+use meeting_core::config::{Config, SummaryProvider};
 use meeting_core::{i18n, policy, text};
 
 use crate::audio::devices::{self, SourceKind};
@@ -38,6 +39,18 @@ pub const EV_STAGE: &str = "stage";
 pub const EV_LOG: &str = "log";
 pub const EV_ERROR: &str = "error";
 pub const EV_COMPLETE: &str = "complete";
+/// Model-download progress. Structured rather than a formatted string, so each
+/// window localizes it with its own catalogue — the old version emitted a
+/// pre-formatted English sentence on the global status channel, which appeared
+/// in English regardless of language and landed in the main window's status
+/// line even when the download was started from another window.
+pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
+
+#[derive(Serialize, Clone)]
+pub struct WhisperProgressDto {
+    pub model: String,
+    pub percent: u8,
+}
 
 #[derive(Serialize, Clone)]
 pub struct DeviceDto {
@@ -207,28 +220,102 @@ pub fn list_whisper_models() -> Vec<WhisperModelDto> {
         .collect()
 }
 
-/// Download a model, streaming percentage through `status`.
+/// Download a Whisper model, reporting progress on [`EV_WHISPER_PROGRESS`].
+///
+/// Guarded against re-entry: the setup wizard and the settings window can both
+/// reach this, and two concurrent downloads of the same model would race on the
+/// same temporary file.
 #[tauri::command]
-pub async fn download_whisper_model(app: AppHandle, model: String) -> Result<(), String> {
+pub async fn download_whisper_model(
+    app: AppHandle,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state
+        .downloading
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("a model download is already running".into());
+    }
+
     // Blocking IO must not run on the async runtime's thread, or the whole UI
     // stops responding for the length of a multi-gigabyte download.
-    tauri::async_runtime::spawn_blocking(move || {
-        let language = Language::En;
-        whisper::download_model(&model, |percent| {
+    let downloading = Arc::clone(&state.downloading);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let outcome = whisper::download_model(&model, |percent| {
             let _ = app.emit(
-                EV_STATUS,
-                i18n::tr_args(
-                    language,
-                    "downloading_whisper",
-                    &[("model", &format!("{model} ({percent}%)"))],
-                ),
+                EV_WHISPER_PROGRESS,
+                WhisperProgressDto {
+                    model: model.clone(),
+                    percent,
+                },
             );
         })
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+
+        // Released here rather than on the caller's side so an early return or
+        // a panic in the download cannot leave the flag stuck at true, which
+        // would block every later download until restart.
+        downloading.store(false, Ordering::SeqCst);
+        outcome
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    result
+}
+
+/// Whether the first-run wizard should be shown.
+///
+/// First run is the absence of the config *file*; the `setup_completed` flag
+/// additionally reopens a wizard that was abandoned half-way.
+/// Start the local Ollama app or daemon, if one can be found.
+///
+/// Used by the setup wizard so the user does not have to leave the app to get
+/// the local engine running.
+#[tauri::command]
+pub fn start_ollama() -> Result<(), String> {
+    platform::start_ollama().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn needs_setup(state: State<AppState>) -> bool {
+    !state.config_file.exists() || !state.config_snapshot().setup_completed
+}
+
+/// Open, or focus, the first-run wizard.
+///
+/// Its own window: the main view is 375x275 and Settings is 590x610, and a
+/// 5-step wizard fits neither. See `open_settings` for why reusing or resizing
+/// an existing window was rejected.
+#[tauri::command]
+pub fn open_setup(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("setup") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
+        .title("Welcome to Meeting Assistant")
+        .inner_size(620.0, 560.0)
+        .resizable(false)
+        .maximizable(false)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_setup(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("setup") {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Open, or focus, the settings window.

@@ -10,6 +10,7 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const { open } = window.__TAURI__.dialog;
+const opener = window.__TAURI__.opener;
 
 /** @returns {Promise<Record<string, unknown>>} */
 export const getConfig = () => invoke("get_config");
@@ -72,6 +73,17 @@ export const startupCheck = () => invoke("startup_check");
 export const openSettings = () => invoke("open_settings");
 export const closeSettings = () => invoke("close_settings");
 
+/** @returns {Promise<boolean>} whether the first-run wizard should be shown */
+export const needsSetup = () => invoke("needs_setup");
+export const openSetup = () => invoke("open_setup");
+export const closeSetup = () => invoke("close_setup");
+
+/** Start the local Ollama app/daemon if it can be found. */
+export const startOllama = () => invoke("start_ollama");
+
+/** Open an external URL in the default browser. */
+export const openUrl = (url) => opener.openUrl(url);
+
 /** Native folder picker, replacing the Python's `filedialog`. */
 export const browseFolder = () => open({ directory: true, multiple: false });
 
@@ -91,6 +103,8 @@ export const EVENTS = {
   log: "log",
   error: "error",
   complete: "complete",
+  /** Structured {model, percent}; each window localizes it itself. */
+  whisperProgress: "whisper_progress",
 };
 
 /**

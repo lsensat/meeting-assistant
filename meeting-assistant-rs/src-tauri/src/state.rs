@@ -32,6 +32,10 @@ pub struct AppState {
     /// `mic_muted = False` on every stop (`app.py:3962`), which silently threw
     /// the user's choice away.
     pub muted: Arc<AtomicBool>,
+    /// Set while a Whisper model download is running. Both the setup wizard and
+    /// the settings window can start one, and two downloads of the same model
+    /// would race on the same temporary file.
+    pub downloading: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -43,6 +47,7 @@ impl AppState {
             config_file,
             current_folder: Mutex::new(None),
             muted: Arc::new(AtomicBool::new(false)),
+            downloading: Arc::new(AtomicBool::new(false)),
         }
     }
 

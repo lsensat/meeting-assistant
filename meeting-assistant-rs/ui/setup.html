@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Welcome to Meeting Assistant</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <!--
+    First-run wizard. Its own window because the main view is 375x275 and
+    Settings is 590x610; see the comment on `open_settings` in commands.rs for
+    why reusing or resizing an existing window was tried and rejected.
+
+    Nothing here downloads anything until the user asks. Skipping the model
+    step is fully supported: recording never blocks on a download, and the
+    pipeline fetches a missing model when transcription starts.
+  -->
+  <div class="wizard">
+    <div class="wizard-progress" id="wizard-progress"></div>
+
+    <div class="wizard-body">
+      <!-- 1 ................................................. welcome -->
+      <section class="step" data-step="0">
+        <h1 data-i18n="setup_welcome_title">Welcome to Meeting Assistant</h1>
+        <p data-i18n="setup_welcome_body"></p>
+      </section>
+
+      <!-- 2 ........................................... transcription -->
+      <section class="step" data-step="1" hidden>
+        <h1 data-i18n="setup_transcription_title">Transcription model</h1>
+        <p data-i18n="setup_transcription_body"></p>
+        <div class="model-list" id="model-list"></div>
+        <div class="helper" id="model-status"></div>
+      </section>
+
+      <!-- 3 ................................................. summary -->
+      <section class="step" data-step="2" hidden>
+        <h1 data-i18n="setup_summary_title">Summary engine</h1>
+        <p data-i18n="setup_summary_body"></p>
+
+        <div class="field">
+          <select id="setup-provider"></select>
+        </div>
+
+        <div id="setup-ollama">
+          <div class="helper" id="setup-ollama-status"></div>
+          <div class="wizard-actions-inline">
+            <button class="btn btn--secondary" id="setup-start-ollama" data-i18n="setup_open_ollama"></button>
+            <button class="btn btn--secondary" id="setup-get-ollama" data-i18n="setup_get_ollama"></button>
+          </div>
+          <div class="field">
+            <label for="setup-ollama-model" data-i18n="ollama_model_title"></label>
+            <select id="setup-ollama-model"></select>
+          </div>
+        </div>
+
+        <div id="setup-api" hidden>
+          <!-- Stated at the point of choosing, not buried in a README. -->
+          <div class="helper warning" data-i18n="api_privacy_warning"></div>
+          <div class="field">
+            <label for="setup-api-base" data-i18n="api_base_url"></label>
+            <input type="text" id="setup-api-base" placeholder="https://api.openai.com/v1" />
+          </div>
+          <div class="field">
+            <label for="setup-api-model" data-i18n="api_model"></label>
+            <input type="text" id="setup-api-model" placeholder="gpt-4o-mini" />
+          </div>
+          <div class="field">
+            <label for="setup-api-key" data-i18n="api_key"></label>
+            <input type="password" id="setup-api-key" autocomplete="off" />
+          </div>
+          <div class="helper" id="setup-api-status"></div>
+        </div>
+      </section>
+
+      <!-- 4 ................................................. storage -->
+      <section class="step" data-step="3" hidden>
+        <h1 data-i18n="setup_storage_title">Where to save meetings</h1>
+        <p data-i18n="setup_storage_body"></p>
+
+        <div class="field">
+          <label for="setup-language" data-i18n="application_language"></label>
+          <select id="setup-language"></select>
+        </div>
+
+        <div class="field">
+          <label for="setup-folder" data-i18n="save_meetings_in"></label>
+          <div class="with-button">
+            <input type="text" id="setup-folder" readonly />
+            <button class="btn btn--secondary" id="setup-browse" aria-label="Browse">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5 .................................................... done -->
+      <section class="step" data-step="4" hidden>
+        <h1 data-i18n="setup_done_title">Ready</h1>
+        <p data-i18n="setup_done_body"></p>
+      </section>
+    </div>
+
+    <div class="wizard-footer">
+      <span class="helper" id="step-counter"></span>
+      <div class="wizard-actions">
+        <button class="btn btn--secondary" id="wizard-back" data-i18n="setup_back"></button>
+        <button class="btn btn--primary" id="wizard-next" data-i18n="setup_next"></button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/setup.js"></script>
+</body>
+</html>

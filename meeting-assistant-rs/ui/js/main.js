@@ -382,6 +382,12 @@ async function main() {
   showResolvedDevices(config);
   applyMuted(await api.isMuted());
 
+  // First run opens the wizard over the main window. `needs_setup` keys off the
+  // absence of the config FILE, so an existing user upgrading never sees it.
+  if (await api.needsSetup()) {
+    api.openSetup();
+  }
+
   // Watch for device changes while idle.
   //
   // During a recording the recorder polls at 1 s and re-opens the stream
