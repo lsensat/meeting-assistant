@@ -138,7 +138,6 @@ function askMeetingTitle() {
     };
 
     el("title-confirm").onclick = () => finish(input.value.trim());
-    el("title-skip").onclick = () => finish("");
     document.addEventListener("keydown", onKey);
 
     modal.hidden = false;
@@ -321,10 +320,13 @@ function wireEvents() {
  * and silently dropping the feature.
  */
 async function stopFlow() {
-  setStatus(tr("finalizing_recording"));
   try {
+    // Capture stops first, and the timer stops with it via recording_state.
+    // Asking for the title first would keep recording while the dialog was
+    // open, appending the user typing a name to the end of the meeting.
+    await api.stopRecording();
     const title = await askMeetingTitle();
-    await api.stopRecording(title);
+    await api.finalizeMeeting(title);
   } catch (error) {
     setStatus(String(error));
   }

@@ -38,9 +38,16 @@ export const downloadWhisperModel = (model) =>
 
 export const startRecording = () => invoke("start_recording");
 
-/** @param {string} meetingTitle */
-export const stopRecording = (meetingTitle) =>
-  invoke("stop_recording", { meetingTitle });
+/**
+ * Stop capturing immediately. Does NOT process the meeting — call
+ * `finalizeMeeting` for that. Split so the title prompt cannot keep the
+ * recording running while it is open.
+ */
+export const stopRecording = () => invoke("stop_recording");
+
+/** Process the meeting that stopRecording just finished. @param {string} meetingTitle */
+export const finalizeMeeting = (meetingTitle) =>
+  invoke("finalize_meeting", { meetingTitle });
 
 /** Discard the meeting: stops recording and DELETES the folder. */
 export const cancelRecording = () => invoke("cancel_recording");

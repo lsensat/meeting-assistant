@@ -129,9 +129,13 @@
     <div class="modal">
       <label for="meeting-title" data-i18n="meeting_name_optional">Meeting name (optional)</label>
       <input type="text" id="meeting-title" autocomplete="off" />
+      <!--
+        One button, not two. The name is optional, so leaving the field blank
+        and pressing this IS the skip path — a separate "Skip" button did
+        literally the same thing whenever the field was empty.
+      -->
       <div class="modal-actions">
-        <button class="btn btn--secondary" id="title-skip" data-i18n="save_meeting_title">Skip</button>
-        <button class="btn btn--primary" id="title-confirm" data-i18n="done">Done</button>
+        <button class="btn btn--primary" id="title-confirm" data-i18n="save_meeting">Save meeting</button>
       </div>
     </div>
   </div>

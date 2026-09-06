@@ -636,11 +636,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
 /// Returns as soon as the audio is closed; the rest is reported through
 /// `stage`, `status`, `complete` and `error`.
 #[tauri::command]
-pub fn stop_recording(
-    app: AppHandle,
-    meeting_title: String,
-    state: State<AppState>,
-) -> Result<(), String> {
+pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let session = state
         .session
         .lock()
@@ -648,22 +644,47 @@ pub fn stop_recording(
         .take()
         .ok_or("not recording")?;
 
-    let config = state.config_snapshot();
-    let language = config.language;
-
+    let language = state.config_snapshot().language;
     let _ = app.emit(EV_STATUS, i18n::tr(language, "finalizing_recording"));
 
     // Blocks until both writer threads have flushed and closed their WAVs.
     // Nothing may rename the folder before this returns.
     let summary = session.stop();
-    *state.processing.lock().expect("processing poisoned") = true;
-    emit_recording_state(&app, false, true);
 
     for track in &summary.tracks {
         if let Err(e) = track {
             let _ = app.emit(EV_LOG, format!("track failed: {e}"));
         }
     }
+
+    *state.processing.lock().expect("processing poisoned") = true;
+    *state.pending.lock().expect("pending poisoned") = Some(summary);
+    emit_recording_state(&app, false, true);
+    Ok(())
+}
+
+/// Process the meeting that [`stop_recording`] just finished capturing.
+///
+/// Separate from stopping on purpose. The two used to be one command taking the
+/// title, which meant capture continued for as long as the title dialog was
+/// open — recording the user typing a name onto the end of the meeting, with
+/// the timer still counting up. The Python has the same split: `stop_event.set()`
+/// fires before `simpledialog.askstring` (`app.py:3958` vs `3968`).
+#[tauri::command]
+pub fn finalize_meeting(
+    app: AppHandle,
+    meeting_title: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let summary = state
+        .pending
+        .lock()
+        .expect("pending poisoned")
+        .take()
+        .ok_or("no meeting is waiting to be processed")?;
+
+    let config = state.config_snapshot();
+    let language = config.language;
 
     let pipeline_config = PipelineConfig {
         folder: summary.folder,

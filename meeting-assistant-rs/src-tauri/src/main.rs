@@ -6,6 +6,7 @@
 use meeting_assistant::commands;
 use meeting_assistant::platform;
 use meeting_assistant::state::AppState;
+use tauri::{Emitter, Manager};
 use meeting_core::config::Config;
 
 fn main() {
@@ -36,6 +37,7 @@ fn main() {
             commands::download_whisper_model,
             commands::start_recording,
             commands::stop_recording,
+            commands::finalize_meeting,
             commands::cancel_recording,
             commands::toggle_mute,
             commands::is_muted,
@@ -51,6 +53,47 @@ fn main() {
             commands::close_settings,
             commands::startup_check,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start Meeting Assistant");
+        .setup(|app| {
+            meeting_assistant::tray::init(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close hides rather than quits, so a meeting survives closing the
+            // window and the app keeps running in the menu bar.
+            //
+            // Only the MAIN window: `close_settings` and `close_setup` call
+            // `window.close()`, and intercepting those would make Settings and
+            // the wizard impossible to dismiss.
+            if window.label() != "main" {
+                return;
+            }
+
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+
+                // Said once per launch, so the app does not appear to have
+                // vanished the first time the window is closed.
+                let state = window.state::<meeting_assistant::state::AppState>();
+                if !state
+                    .hide_notice_shown
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let language = state.config_snapshot().language;
+                    let _ = window.app_handle().emit(
+                        meeting_assistant::commands::EV_STATUS,
+                        meeting_core::i18n::tr(language, "tray_hidden_notice"),
+                    );
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to start Meeting Assistant")
+        .run(|app, event| {
+            // With every window hidden there is nothing to click in the Dock's
+            // window list, so a Reopen must restore the window explicitly.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                meeting_assistant::tray::show_window(app);
+            }
+        });
 }

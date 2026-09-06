@@ -160,7 +160,8 @@
     "tray_settings": "Settings...",
     "tray_show": "Open Meeting Assistant",
     "tray_quit": "Quit Meeting Assistant",
-    "tray_hidden_notice": "Meeting Assistant is still running in the menu bar."
+    "tray_hidden_notice": "Meeting Assistant is still running in the menu bar.",
+    "save_meeting": "Save meeting"
   },
   "es": {
     "ai_model": "Modelo IA",
@@ -323,6 +324,7 @@
     "tray_settings": "Ajustes...",
     "tray_show": "Abrir Meeting Assistant",
     "tray_quit": "Salir de Meeting Assistant",
-    "tray_hidden_notice": "Meeting Assistant sigue funcionando en la barra de menús."
+    "tray_hidden_notice": "Meeting Assistant sigue funcionando en la barra de menús.",
+    "save_meeting": "Guardar reunión"
   }
 }
