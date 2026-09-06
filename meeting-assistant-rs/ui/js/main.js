@@ -47,6 +47,13 @@ function setStatus(text) {
   // The element carries a data-i18n default; once a live status replaces it,
   // a language switch must not clobber the message.
   ui.status.removeAttribute("data-i18n");
+
+  // A long message wraps to a second line and makes the content taller. Nothing
+  // re-measured after that, so the toolbar was clipped off the bottom — the
+  // "still running in the menu bar" notice made it obvious, but any long error
+  // does it too. `resizeToContent` is a no-op when the height has not changed,
+  // so calling it on every status update is cheap.
+  resizeToContent();
 }
 
 function formatElapsed(seconds) {
@@ -224,11 +231,19 @@ function contentHeight() {
   return Math.ceil(row.getBoundingClientRect().bottom + 12);
 }
 
+/** Last height asked for, so an unchanged measurement costs nothing. */
+let appliedHeight = null;
+
 function resizeToContent() {
   if (chromeHeight === null) {
     chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
   }
-  api.setMainHeight(contentHeight() + chromeHeight);
+
+  const wanted = contentHeight() + chromeHeight;
+  if (wanted === appliedHeight) return;
+
+  appliedHeight = wanted;
+  api.setMainHeight(wanted);
 }
 
 /**

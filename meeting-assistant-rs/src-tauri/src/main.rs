@@ -6,7 +6,6 @@
 use meeting_assistant::commands;
 use meeting_assistant::platform;
 use meeting_assistant::state::AppState;
-use tauri::{Emitter, Manager};
 use meeting_core::config::Config;
 
 fn main() {
@@ -69,23 +68,13 @@ fn main() {
                 return;
             }
 
+            // No "still running in the menu bar" notice. It was emitted as the
+            // window hid, so it landed in a status line nobody could see and
+            // was only ever read later, out of context, on reopening. The tray
+            // icon is the affordance that says the app is still there.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
-
-                // Said once per launch, so the app does not appear to have
-                // vanished the first time the window is closed.
-                let state = window.state::<meeting_assistant::state::AppState>();
-                if !state
-                    .hide_notice_shown
-                    .swap(true, std::sync::atomic::Ordering::SeqCst)
-                {
-                    let language = state.config_snapshot().language;
-                    let _ = window.app_handle().emit(
-                        meeting_assistant::commands::EV_STATUS,
-                        meeting_core::i18n::tr(language, "tray_hidden_notice"),
-                    );
-                }
             }
         })
         .build(tauri::generate_context!())
