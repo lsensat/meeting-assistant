@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/meeting-core", "src-tauri"]
+
+# Spikes are throwaway probes with their own dependencies. Excluding them keeps
+# `cargo test` at the workspace root fast and dependency-free.
+exclude = ["spikes/loopback-probe", "spikes/tap-probe"]
+
+# `src-tauri` joined the workspace in Phase M2 rather than Phase 4: the audio
+# layer lives there and needs to build. It deliberately does NOT depend on tauri
+# or whisper-rs yet — only cpal, hound and crossbeam — so `cargo test` at the
+# root stays fast and the pure-logic suite still runs on any machine.
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"

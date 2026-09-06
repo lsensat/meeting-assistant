@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Merged with the keys the Tauri CLI generates. -->
+
+    <!-- Microphone. Without this the mic capture is denied with no prompt. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Meeting Assistant records your microphone so the meeting can be transcribed on this Mac.</string>
+
+    <!-- System audio. This is a SEPARATE TCC category (kTCCServiceAudioCapture)
+         from the microphone, and the Core Audio process tap silently returns
+         nothing without it. There is no API to query or pre-request the grant. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Meeting Assistant records the audio your Mac plays so the other participants can be transcribed.</string>
+
+    <!-- Core Audio process taps require macOS 14.4. -->
+    <key>LSMinimumSystemVersion</key>
+    <string>14.4</string>
+</dict>
+</plist>

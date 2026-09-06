@@ -1,0 +1,16 @@
+[package]
+name = "tap-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Versions pinned to exactly what cpal 0.18.2 resolves to, read out of
+# ../loopback-probe/Cargo.lock. Mixing objc2 major versions across crates
+# produces type errors that look like missing trait impls, so do not bump these
+# independently of cpal.
+[dependencies]
+objc2 = "0.6.4"
+objc2-core-audio = { version = "0.3.2", features = ["objc2"] }
+objc2-core-audio-types = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"

@@ -1,0 +1,75 @@
+[package]
+name = "meeting-assistant"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Meeting Assistant: dual-source recording, transcription and summary."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+meeting-core = { path = "../crates/meeting-core" }
+
+# The shell. WKWebView on macOS, WebView2 on Windows. Both are modern engines,
+# so the frontend is plain ES modules with no bundler and no build step.
+# `tray-icon` alone is not enough to load an icon from a file: constructing a
+# `tauri::image::Image` from the bundled PNG needs `image-png` as well.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Native folder picker and "reveal in Finder/Explorer", replacing the Python's
+# `filedialog` and `os.startfile` (`app.py:689`).
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+# Pinned exactly. cpal 0.18 was a large API break (streams no longer auto-start,
+# StreamConfig by value, unified Error type, `description()` replacing `name()`)
+# and almost every example online targets <= 0.16. See risk R4 in the Windows
+# plan; the corrected API usage is demonstrated in spikes/loopback-probe.
+cpal = "=0.18.2"
+
+hound = "3.5.1"
+
+# `recv_timeout` on the writer side and `try_send` on the realtime side. std's
+# mpsc has no bounded `try_send` with this shape.
+crossbeam-channel = "0.5"
+
+# Ollama speaks plain HTTP on loopback and only two endpoints are used, so a
+# wrapper crate would only add a layer that can lag behind the server. Blocking
+# because the pipeline owns a worker thread already — this keeps tokio out.
+# TLS is required, despite Ollama itself being plain HTTP on 127.0.0.1: the
+# Whisper weights are fetched from huggingface.co over HTTPS, which is the only
+# outbound request this app ever makes.
+#
+# rustls rather than native-tls: one less system library to link against, and
+# it behaves identically on both target platforms.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+] }
+# API keys go in the OS keychain (macOS Keychain, Windows Credential Manager),
+# never in config.json next to the recordings.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# whisper.cpp. GGUF weights, not CTranslate2 — the Python's faster-whisper
+# models are a different format and are not reusable.
+#
+# No feature flags on purpose: Metal is wired into the manifest for
+# `aarch64-apple-darwin` and is enabled automatically, so adding `--features
+# metal` is redundant and `--no-default-features` does NOT disable it. CoreML is
+# a separate opt-in that also requires converting the model, and is deferred.
+whisper-rs = "0.16"
+
+# The Tauri app. `rec` and `process` are the Phase M2/M3 CLI drivers; they stay
+# because they exercise the audio and pipeline layers without the UI in the way.
+[[bin]]
+name = "meeting-assistant"
+path = "src/main.rs"
+
+[[bin]]
+name = "rec"
+path = "src/bin/rec.rs"

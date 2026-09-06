@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meeting Assistant</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <!--
+    Every user-visible string carries `data-i18n`. `applyLanguage()` walks
+    `[data-i18n]` and re-sets textContent, which replaces the 154 lines of
+    `refresh_ui_language()` (`app.py:4110`) that hand-set ~40 widget texts one
+    by one. This is the single biggest reason the port needs no UI framework.
+  -->
+  <main>
+    <section class="session-card">
+      <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
+
+      <!--
+        Timer and transport share one row: timer left, buttons right. Stacking
+        them vertically pushes the result row past the fixed 275px window
+        height, and it is not what the original does.
+      -->
+      <div class="session-row">
+        <div class="timer" id="timer">00:00:00</div>
+        <div class="transport">
+          <button id="start-button" data-tooltip="tooltip_start" aria-label="Start">
+            <!-- Heroicons "play", solid: rounded nose and a true optical centre. -->
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.348a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
+          </button>
+          <button id="stop-button" data-tooltip="tooltip_stop" aria-label="Stop" disabled>
+            <!-- Heroicons "stop", solid: rounded corners rather than a bare rect. -->
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7.5a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9Z"/></svg>
+          </button>
+          <!--
+            Discard the meeting: stops recording and deletes the folder without
+            transcribing. Half the diameter of Stop so it cannot be mistaken for
+            the primary action, and disabled until a meeting is actually running.
+          -->
+          <button id="cancel-button" data-tooltip="tooltip_cancel" aria-label="Cancel" disabled>
+            <svg class="icon-outline" viewBox="0 0 24 24" aria-hidden="true"><path d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <div class="stages">
+      <div class="chip" id="stage-audio" data-state="pending">
+        <span class="marker">○</span><span data-i18n="stage_audio">Audio</span>
+      </div>
+      <div class="chip" id="stage-whisper" data-state="pending">
+        <span class="marker">○</span><span data-i18n="stage_whisper">Transcript</span>
+      </div>
+      <div class="chip" id="stage-summary" data-state="pending">
+        <span class="marker">○</span><span data-i18n="stage_summary">Summary</span>
+      </div>
+    </div>
+
+    <div class="audio-panel">
+      <div id="device-mic">—</div>
+      <div id="device-system">—</div>
+    </div>
+
+    <div class="result-row">
+      <!--
+        Mute is available at rest, not only mid-meeting: muting before you start
+        is a reasonable thing to want, and the flag is applied to the first
+        sample. Both glyphs ship in the markup and one is hidden, so toggling
+        never has to build SVG at runtime.
+      -->
+      <button class="btn btn--mic" id="mute-button" data-tooltip="tooltip_mute" aria-label="Mute">
+        <!--
+          Solid mic, traced from the supplied PNG: filled capsule body, with the
+          pickup arc, stem and base drawn as round-capped strokes. Mixed fill and
+          stroke, so the paths carry their own classes rather than inheriting the
+          outline defaults the other icons use.
+        -->
+        <svg id="mic-on" class="icon-mixed" viewBox="0 0 24 24" aria-hidden="true">
+          <path class="solid" d="M12 1.5a3.75 3.75 0 0 0-3.75 3.75v6a3.75 3.75 0 0 0 7.5 0v-6A3.75 3.75 0 0 0 12 1.5Z"/>
+          <path class="line" d="M5.25 11.25a6.75 6.75 0 0 0 13.5 0"/>
+          <path class="line" d="M12 18v3.75"/>
+          <path class="line" d="M7.5 21.75h9"/>
+        </svg>
+        <!--
+          The muted variant is the same glyph with the diagonal bar from the
+          second PNG. The PNG cuts a gap through the mic where the bar crosses;
+          that is reproduced with an under-stroke painted in the button's own
+          background colour, which is why the muted state deliberately keeps
+          that background rather than greying out.
+        -->
+        <svg id="mic-off" class="icon-mixed" viewBox="0 0 24 24" aria-hidden="true" hidden>
+          <path class="solid" d="M12 1.5a3.75 3.75 0 0 0-3.75 3.75v6a3.75 3.75 0 0 0 7.5 0v-6A3.75 3.75 0 0 0 12 1.5Z"/>
+          <path class="line" d="M5.25 11.25a6.75 6.75 0 0 0 13.5 0"/>
+          <path class="line" d="M12 18v3.75"/>
+          <path class="line" d="M7.5 21.75h9"/>
+          <path class="cut" d="M19.5 3 3.75 18.75"/>
+          <path class="line" d="M19.5 3 3.75 18.75"/>
+        </svg>
+      </button>
+
+      <div class="center">
+        <button class="btn btn--result btn--unavailable" id="transcript-button" data-tooltip="tooltip_transcript" aria-label="Transcript">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+        </button>
+        <button class="btn btn--result btn--unavailable" id="summary-button" data-i18n-title="summary_type">
+          <span data-i18n="stage_summary">Summary</span>
+        </button>
+        <button class="btn btn--result" id="folder-button" data-tooltip="tooltip_folder" aria-label="Folder">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+        </button>
+      </div>
+
+      <button class="btn btn--dark" id="settings-button" data-tooltip="tooltip_settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 0 0 15 0m-15 0a7.5 7.5 0 1 1 15 0m-15 0H3m16.5 0H21m-1.5 0H12m-8.457 3.077 1.41-.513m14.095-5.13 1.41-.513M5.106 17.785l1.15-.964m11.49-9.642 1.149-.964M7.501 19.795l.75-1.3m7.5-12.99.75-1.3m-6.063 16.658.26-1.477m2.605-14.772.26-1.477m0 17.726-.26-1.477M10.698 4.614l-.26-1.477M16.5 19.794l-.75-1.299M7.5 4.205 12 12m6.894 5.785-1.149-.964M6.256 7.178l-1.15-.964m15.352 8.864-1.41-.513M4.954 9.435l-1.41-.514M12.002 12l-3.75 6.495"/></svg>
+      </button>
+    </div>
+  </main>
+
+  <!--
+    Meeting-title prompt, replacing the Python's `simpledialog`.
+
+    Deliberately not `window.prompt()`: WKWebView only shows a JS text-input
+    panel if the host app implements the corresponding delegate, and Tauri does
+    not. `prompt()` therefore returns null with no dialog and no error on macOS,
+    which would mean every meeting title was silently discarded.
+  -->
+  <div class="modal-backdrop" id="title-modal" hidden>
+    <div class="modal">
+      <label for="meeting-title" data-i18n="meeting_name_optional">Meeting name (optional)</label>
+      <input type="text" id="meeting-title" autocomplete="off" />
+      <!--
+        One button, not two. The name is optional, so leaving the field blank
+        and pressing this IS the skip path — a separate "Skip" button did
+        literally the same thing whenever the field was empty.
+      -->
+      <div class="modal-actions">
+        <button class="btn btn--primary" id="title-confirm" data-i18n="save_meeting">Save meeting</button>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Confirmation for destructive actions. Same reason as the title prompt above:
+    `window.confirm()` needs a WKWebView host delegate that Tauri does not
+    implement, so it would return false with no dialog — silently turning
+    "cancel the meeting" into a no-op.
+  -->
+  <div class="modal-backdrop" id="confirm-modal" hidden>
+    <div class="modal">
+      <p id="confirm-message"></p>
+      <div class="modal-actions">
+        <button class="btn btn--secondary" id="confirm-no" data-i18n="confirm_no">Keep recording</button>
+        <button class="btn btn--primary" id="confirm-yes" data-i18n="confirm_yes">Discard</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tooltip"></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,6 +1,35 @@
+# --- Rust / Tauri -------------------------------------------------------
+# 6+ GB of build output. The root ignore file previously had no `target/`
+# entry, which made `git add .` try to commit the whole tree.
+target/
+
+# Tauri writes capability and permission schemas here at build time.
+meeting-assistant-rs/src-tauri/gen/
+
+# Intermediate icon sizes. `icon.png` and `icon.icns` are checked in; these are
+# only the scratch files `sips`/`iconutil` need to produce them.
+meeting-assistant-rs/src-tauri/icons/icon_*.png
+meeting-assistant-rs/src-tauri/icons/icon.iconset/
+
+# Spike output: the throwaway .app harness and the probe transcripts. The
+# findings live in RESULTS-macos.md, which IS checked in.
+meeting-assistant-rs/spikes/loopback-probe/LoopbackProbe.app/
+meeting-assistant-rs/spikes/loopback-probe/probe-output.txt
+meeting-assistant-rs/spikes/loopback-probe/protocol-output.txt
+
+# --- Python (reference implementation) ----------------------------------
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-*.log
+
+# --- Local state, never shared ------------------------------------------
+# `config.json` holds machine-specific device names and output paths.
 config.json
+*.log
+
+# --- macOS --------------------------------------------------------------
+.DS_Store
+
+# --- Editor / agent -----------------------------------------------------
+.claude/

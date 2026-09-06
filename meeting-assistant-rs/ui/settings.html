@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meeting Assistant — Settings</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div class="settings-body">
+    <!-- Five sections, matching the original: Language, Processing, Audio,
+         Files and privacy, Custom prompt. -->
+
+    <section class="section">
+      <h2 data-i18n="language">Language</h2>
+      <div class="field">
+        <label for="app-language" data-i18n="application_language">Application language</label>
+        <select id="app-language"></select>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="processing">Processing</h2>
+
+      <div class="field">
+        <label for="whisper-model" data-i18n="whisper_model">Whisper model</label>
+        <select id="whisper-model"></select>
+        <div class="helper" id="whisper-note"></div>
+      </div>
+
+      <div class="field">
+        <label for="transcription-language" data-i18n="transcription_language">Transcription language</label>
+        <select id="transcription-language"></select>
+      </div>
+
+      <div class="field">
+        <label for="summary-provider" data-i18n="summary_provider">Summary engine</label>
+        <select id="summary-provider"></select>
+        <!--
+          Shown only for the remote provider. The app is otherwise fully
+          offline, so the moment that stops being true has to be stated where
+          the choice is made, not buried in a README.
+        -->
+        <div class="helper" id="api-privacy" hidden data-i18n="api_privacy_warning"></div>
+      </div>
+
+      <div class="field" id="ollama-field">
+        <label for="ollama-model" data-i18n="ollama_model_title">Ollama model</label>
+        <div class="with-button">
+          <select id="ollama-model"></select>
+          <button class="btn btn--secondary" id="refresh-models" data-tooltip="tooltip_refresh_models" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+          </button>
+        </div>
+        <div class="helper" id="ollama-status"></div>
+      </div>
+
+      <div id="api-fields" hidden>
+        <div class="field">
+          <label for="api-base-url" data-i18n="api_base_url">API base URL</label>
+          <input type="text" id="api-base-url" placeholder="https://api.openai.com/v1" />
+        </div>
+        <div class="field">
+          <label for="api-model" data-i18n="api_model">API model</label>
+          <input type="text" id="api-model" placeholder="gpt-4o-mini" />
+        </div>
+        <div class="field">
+          <label for="api-key" data-i18n="api_key">API key</label>
+          <!--
+            Never populated from the backend: the key lives in the OS keychain
+            and `has_api_key` only reports whether one exists. Leaving this
+            blank keeps the stored key.
+          -->
+          <input type="password" id="api-key" autocomplete="off" />
+          <div class="helper" id="api-key-status"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="summary-type" data-i18n="summary_type">Summary type</label>
+        <select id="summary-type"></select>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="audio">Audio</h2>
+
+      <div class="field">
+        <label for="microphone" data-i18n="microphone_title">Microphone</label>
+        <select id="microphone"></select>
+      </div>
+
+      <div class="field">
+        <label for="system-audio" data-i18n="meeting_audio_title">Computer audio</label>
+        <select id="system-audio"></select>
+      </div>
+
+      <button class="btn btn--secondary" id="refresh-devices" data-i18n="update_devices">Update devices</button>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="files_privacy">Files and privacy</h2>
+
+      <div class="field">
+        <label for="output-folder" data-i18n="save_meetings_in">Save meetings in</label>
+        <div class="with-button">
+          <input type="text" id="output-folder" readonly />
+          <button class="btn btn--secondary" id="browse-folder" data-tooltip="tooltip_change_folder" aria-label="Browse">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <label class="switch-row">
+        <input type="checkbox" id="keep-audio" />
+        <span data-i18n="keep_audio">Keep audio files</span>
+      </label>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="custom_prompt_title">Custom prompt</h2>
+      <textarea id="custom-prompt"></textarea>
+      <div class="helper" id="custom-prompt-note"></div>
+    </section>
+
+    <div class="save-row">
+      <button class="btn btn--primary" id="save-settings" data-i18n="save_settings">Save settings</button>
+    </div>
+  </div>
+
+  <div id="tooltip"></div>
+  <script type="module" src="js/settings.js"></script>
+</body>
+</html>
