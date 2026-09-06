@@ -89,11 +89,16 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("failed to start Meeting Assistant")
-        .run(|app, event| {
-            // With every window hidden there is nothing to click in the Dock's
-            // window list, so a Reopen must restore the window explicitly.
-            if let tauri::RunEvent::Reopen { .. } = event {
-                meeting_assistant::tray::show_window(app);
+        .run(|_app, _event| {
+            // `RunEvent::Reopen` is the Dock-icon click and exists only on
+            // macOS — the variant is not present in the enum on Windows, so
+            // this must be cfg-gated rather than merely never fired.
+            //
+            // With every window hidden there is nothing in the Dock's window
+            // list to click, so the reopen has to restore the window itself.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                meeting_assistant::tray::show_window(_app);
             }
         });
 }
