@@ -36,9 +36,6 @@ pub struct AppState {
     /// the settings window can start one, and two downloads of the same model
     /// would race on the same temporary file.
     pub downloading: Arc<AtomicBool>,
-    /// Whether the "still running in the menu bar" notice has been shown.
-    /// Said once per launch, not on every close.
-    pub hide_notice_shown: AtomicBool,
     /// The finished recording, held between stopping capture and processing it.
     ///
     /// Capture stops the instant the user asks it to; the meeting title is
@@ -57,7 +54,6 @@ impl AppState {
             current_folder: Mutex::new(None),
             muted: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
-            hide_notice_shown: AtomicBool::new(false),
             pending: Mutex::new(None),
         }
     }
