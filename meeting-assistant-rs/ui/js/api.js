@@ -50,6 +50,16 @@ export const toggleMute = () => invoke("toggle_mute");
 /** @returns {Promise<boolean>} */
 export const isMuted = () => invoke("is_muted");
 
+/**
+ * Store the summary API key in the OS keychain. Empty string clears it.
+ * Never goes through saveConfig — the key must not reach config.json.
+ * @param {string} key
+ */
+export const setApiKey = (key) => invoke("set_api_key", { key });
+
+/** @returns {Promise<boolean>} whether a key is stored (never the key itself) */
+export const hasApiKey = () => invoke("has_api_key");
+
 /** @returns {Promise<number>} */
 export const elapsedSeconds = () => invoke("elapsed_seconds");
 

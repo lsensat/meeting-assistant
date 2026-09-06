@@ -40,6 +40,8 @@ fn main() {
             commands::toggle_mute,
             commands::is_muted,
             commands::elapsed_seconds,
+            commands::set_api_key,
+            commands::has_api_key,
             commands::open_path,
             commands::open_settings,
             commands::close_settings,

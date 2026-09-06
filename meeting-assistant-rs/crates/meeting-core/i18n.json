@@ -113,7 +113,17 @@
     "tooltip_cancel": "Discard this meeting",
     "cancel_confirm": "Discard this meeting? The recording will be deleted.",
     "confirm_yes": "Discard",
-    "confirm_no": "Keep recording"
+    "confirm_no": "Keep recording",
+    "summary_provider": "Summary engine",
+    "summary_provider.ollama": "Ollama (on this computer)",
+    "summary_provider.openai_compatible": "API (sends transcripts online)",
+    "api_base_url": "API base URL",
+    "api_model": "API model",
+    "api_key": "API key",
+    "api_key_saved": "A key is saved. Leave blank to keep it.",
+    "api_key_missing": "No key saved yet.",
+    "api_privacy_warning": "Transcripts are sent to this provider. Audio always stays on this computer.",
+    "api_incomplete": "Enter a base URL, a model and a key."
   },
   "es": {
     "ai_model": "Modelo IA",
@@ -229,6 +239,16 @@
     "tooltip_cancel": "Descartar esta reunión",
     "cancel_confirm": "¿Descartar esta reunión? Se eliminará la grabación.",
     "confirm_yes": "Descartar",
-    "confirm_no": "Seguir grabando"
+    "confirm_no": "Seguir grabando",
+    "summary_provider": "Motor de resumen",
+    "summary_provider.ollama": "Ollama (en este ordenador)",
+    "summary_provider.openai_compatible": "API (envía las transcripciones por internet)",
+    "api_base_url": "URL base de la API",
+    "api_model": "Modelo de la API",
+    "api_key": "Clave de la API",
+    "api_key_saved": "Hay una clave guardada. Déjalo vacío para mantenerla.",
+    "api_key_missing": "Todavía no hay ninguna clave guardada.",
+    "api_privacy_warning": "Las transcripciones se envían a este proveedor. El audio nunca sale de este ordenador.",
+    "api_incomplete": "Introduce una URL base, un modelo y una clave."
   }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use meeting_core::config::{Config, Language};
+use meeting_core::config::{Config, Language, SummaryProvider};
 use meeting_core::{i18n, policy, text};
 
 use crate::audio::devices::{self, SourceKind};
@@ -84,6 +84,12 @@ pub struct CompleteDto {
 
 #[derive(Serialize, Clone)]
 pub struct StartupResultDto {
+    /// Which provider is configured, so the frontend knows whether the Ollama
+    /// fields below mean anything.
+    pub summary_provider: String,
+    /// True when the configured summary path looks usable: Ollama running with
+    /// a model, or a remote endpoint with a base URL, model and stored key.
+    pub summary_ready: bool,
     pub ollama: OllamaStatusDto,
     pub whisper_installed: Vec<String>,
     pub folder_ok: bool,
@@ -272,6 +278,23 @@ pub fn close_settings(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Store (or clear, when empty) the summary API key in the OS keychain.
+///
+/// Deliberately a separate command from `save_config`: the key must never
+/// travel through the config payload, or it ends up written to `config.json`
+/// alongside the meeting recordings.
+#[tauri::command]
+pub fn set_api_key(key: String) -> Result<(), String> {
+    crate::summary::store_api_key(&key).map_err(|e| e.to_string())
+}
+
+/// Whether a key is stored. Never returns the key itself — the settings UI
+/// shows "saved", not the value.
+#[tauri::command]
+pub fn has_api_key() -> bool {
+    crate::summary::has_api_key()
+}
+
 // --- files -------------------------------------------------------------
 
 #[tauri::command]
@@ -301,19 +324,36 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         emit_status("checking_folder");
         let folder_ok = std::fs::create_dir_all(&config.output_folder).is_ok();
 
-        emit_status("checking_ollama");
-        let mut ollama_status = list_ollama_models();
+        // Probe Ollama only when it is the configured provider. Launching a
+        // local server for someone who chose a remote endpoint is both
+        // surprising and slow, and its "not running" state would be reported
+        // as a startup error they cannot act on.
+        let uses_ollama = config.summary_provider == SummaryProvider::Ollama;
+        let mut ollama_status = if uses_ollama {
+            emit_status("checking_ollama");
+            let status = list_ollama_models();
 
-        // The Python auto-started Ollama when it was installed but not running,
-        // then told the user to reopen the app if it had to (`app.py:200`).
-        if !ollama_status.running
-            && platform::find_ollama().is_some()
-            && platform::start_ollama().is_ok()
-        {
-            // Give it a moment to bind the port before deciding.
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            ollama_status = list_ollama_models();
-        }
+            // The Python auto-started Ollama when it was installed but not
+            // running, then told the user to reopen the app if it had to
+            // (`app.py:200`).
+            if !status.running
+                && platform::find_ollama().is_some()
+                && platform::start_ollama().is_ok()
+            {
+                // Give it a moment to bind the port before deciding.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                list_ollama_models()
+            } else {
+                status
+            }
+        } else {
+            OllamaStatusDto {
+                running: false,
+                models: Vec::new(),
+                error: None,
+            }
+        };
+        let _ = &mut ollama_status;
 
         emit_status("searching_models");
         let whisper_installed = whisper::installed_models();
@@ -328,6 +368,14 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         let _ = app.emit(
             EV_STARTUP_RESULT,
             StartupResultDto {
+                summary_provider: config.summary_provider.as_str().to_string(),
+                summary_ready: if uses_ollama {
+                    ollama_status.running && !ollama_status.models.is_empty()
+                } else {
+                    !config.api_base_url.is_empty()
+                        && !config.api_model.is_empty()
+                        && crate::summary::has_api_key()
+                },
                 ollama: ollama_status,
                 whisper_installed,
                 folder_ok,
@@ -495,7 +543,7 @@ pub fn stop_recording(
         output_folder: config.output_folder.clone(),
         whisper_model: config.whisper_model.clone(),
         transcription_language: config.transcription_language.whisper_code().map(str::to_string),
-        ollama_model: config.ollama_model.clone(),
+        provider: crate::summary::ProviderConfig::from_config(&config),
         language,
         summary_type: config.summary_type,
         custom_summary_prompt: config.custom_summary_prompt.clone(),

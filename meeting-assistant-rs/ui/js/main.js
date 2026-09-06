@@ -231,10 +231,18 @@ function wireEvents() {
   api.on(api.EVENTS.startupStatus, setStatus);
 
   api.on(api.EVENTS.startupResult, (result) => {
-    if (!result.ollama.running) {
+    // Ollama's state is only worth reporting when Ollama is the configured
+    // engine. A user on a remote endpoint would otherwise see
+    // "Ollama is not responding" on every launch, about a component they
+    // deliberately are not using.
+    const usesOllama = result.summary_provider === "ollama";
+
+    if (usesOllama && !result.ollama.running) {
       setStatus(tr("ollama_not_responding"));
-    } else if (result.ollama.models.length === 0) {
+    } else if (usesOllama && result.ollama.models.length === 0) {
       setStatus(tr("ollama_no_models"));
+    } else if (!usesOllama && !result.summary_ready) {
+      setStatus(tr("api_incomplete"));
     } else if (!result.has_microphone) {
       setStatus(tr("startup_no_mic"));
     } else if (!result.has_system_audio) {

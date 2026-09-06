@@ -145,6 +145,43 @@ impl SummaryType {
     }
 }
 
+/// Where the summary is generated.
+///
+/// # The offline guarantee
+///
+/// The app is fully offline by default and that is a feature, not an accident:
+/// meeting transcripts carry names, decisions and business detail. `Remote`
+/// sends the transcript text to a third party, so it must always be an
+/// explicit choice — never a default, and never a fallback when `Ollama`
+/// fails. Audio never leaves the machine either way; only the already-local
+/// transcript can be sent, and only in this mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryProvider {
+    /// Local Ollama over loopback. The default.
+    Ollama,
+    /// Any OpenAI-compatible `/chat/completions` endpoint: OpenAI, Groq,
+    /// OpenRouter, LM Studio, a self-hosted vLLM. One client covers them all.
+    OpenAiCompatible,
+}
+
+impl SummaryProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SummaryProvider::Ollama => "ollama",
+            SummaryProvider::OpenAiCompatible => "openai_compatible",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ollama" => Some(SummaryProvider::Ollama),
+            "openai_compatible" => Some(SummaryProvider::OpenAiCompatible),
+            _ => None,
+        }
+    }
+}
+
 /// The English default custom prompt, from `DEFAULT_CONFIG` at `app.py:401`.
 pub const DEFAULT_CUSTOM_PROMPT: &str = "Summarize the meeting clearly. Include only information present in the transcript and do not invent owners, dates, decisions or actions.";
 
@@ -163,7 +200,28 @@ pub struct Config {
     pub microphone_name: String,
     pub system_audio_name: String,
     pub custom_summary_prompt: String,
+    pub summary_provider: SummaryProvider,
+    /// Base URL for [`SummaryProvider::OpenAiCompatible`], without a trailing
+    /// slash, e.g. `https://api.openai.com/v1`.
+    pub api_base_url: String,
+    /// Model id for the remote provider, e.g. `gpt-4o-mini`.
+    pub api_model: String,
+    /// Whether the first-run wizard has been completed.
+    ///
+    /// First run is really "no config file exists"; this flag additionally
+    /// reopens a wizard that was abandoned half-way. Note the migration case in
+    /// [`Config::from_json`]: a file written before this key existed must count
+    /// as completed, or every existing user gets the wizard on upgrade.
+    pub setup_completed: bool,
 }
+
+/// The API key is deliberately NOT a field on [`Config`].
+///
+/// It lives in the OS keychain (macOS Keychain, Windows Credential Manager).
+/// A key in a plaintext JSON file sitting next to meeting recordings is the
+/// kind of thing that ends up in a backup, a screen share or a support bundle.
+pub const KEYCHAIN_SERVICE: &str = "com.meetingassistant.app";
+pub const KEYCHAIN_ACCOUNT: &str = "summary-api-key";
 
 impl Config {
     /// Defaults, matching `DEFAULT_CONFIG` at `app.py:391` except for the
@@ -195,6 +253,10 @@ impl Config {
             microphone_name: String::new(),
             system_audio_name: String::new(),
             custom_summary_prompt: DEFAULT_CUSTOM_PROMPT.to_string(),
+            summary_provider: SummaryProvider::Ollama,
+            api_base_url: String::new(),
+            api_model: String::new(),
+            setup_completed: false,
         }
     }
 
@@ -255,6 +317,25 @@ impl Config {
             custom_summary_prompt: raw
                 .custom_summary_prompt
                 .unwrap_or(defaults.custom_summary_prompt),
+
+            summary_provider: raw
+                .summary_provider
+                .as_deref()
+                .and_then(SummaryProvider::parse)
+                .unwrap_or(defaults.summary_provider),
+
+            api_base_url: raw
+                .api_base_url
+                .map(|s| s.trim_end_matches('/').to_string())
+                .unwrap_or(defaults.api_base_url),
+
+            api_model: raw.api_model.unwrap_or(defaults.api_model),
+
+            // A config file that predates this key belongs to a user who has
+            // been running the app for a while; defaulting to `false` would
+            // show them the first-run wizard on upgrade. The absence of the
+            // FILE is what means "first run", not the absence of this key.
+            setup_completed: raw.setup_completed.unwrap_or(true),
         }
     }
 
@@ -271,6 +352,10 @@ impl Config {
             microphone_name: Some(self.microphone_name.clone()),
             system_audio_name: Some(self.system_audio_name.clone()),
             custom_summary_prompt: Some(self.custom_summary_prompt.clone()),
+            summary_provider: Some(self.summary_provider.as_str().to_string()),
+            api_base_url: Some(self.api_base_url.clone()),
+            api_model: Some(self.api_model.clone()),
+            setup_completed: Some(self.setup_completed),
         };
 
         // serde_json writes non-ASCII as UTF-8 literals, matching ensure_ascii=False.
@@ -302,6 +387,14 @@ struct RawConfig {
     system_audio_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     custom_summary_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup_completed: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -470,10 +563,78 @@ mod tests {
         assert_eq!(c, Config::defaults(&app_folder()));
     }
 
+    /// Every field matches the defaults except `setup_completed` — see the
+    /// test below for why that one is deliberately asymmetric.
     #[test]
     fn empty_object_yields_pure_defaults() {
         let c = Config::from_json("{}", &app_folder());
-        assert_eq!(c, Config::defaults(&app_folder()));
+        assert_eq!(
+            c,
+            Config {
+                setup_completed: true,
+                ..Config::defaults(&app_folder())
+            }
+        );
+    }
+
+    /// The first-run signal is the absence of the config *file*, not the
+    /// absence of this key. A file written by any earlier build has no
+    /// `setup_completed`, and defaulting it to `false` would show the first-run
+    /// wizard to every existing user on upgrade.
+    #[test]
+    fn a_config_file_without_setup_completed_counts_as_completed() {
+        let c = Config::from_json(r#"{"language": "es"}"#, &app_folder());
+        assert!(c.setup_completed, "an existing file means setup was done");
+
+        // No file at all is the genuine first run.
+        assert!(!Config::defaults(&app_folder()).setup_completed);
+
+        // And an explicit false is honoured, so a wizard abandoned half-way
+        // reopens.
+        let abandoned = Config::from_json(r#"{"setup_completed": false}"#, &app_folder());
+        assert!(!abandoned.setup_completed);
+    }
+
+    /// The remote provider is opt-in. A config that does not mention it must
+    /// never resolve to sending transcripts off the machine.
+    #[test]
+    fn summary_provider_defaults_to_local_ollama() {
+        assert_eq!(
+            Config::from_json("{}", &app_folder()).summary_provider,
+            SummaryProvider::Ollama
+        );
+        assert_eq!(
+            Config::from_json(r#"{"summary_provider": "nonsense"}"#, &app_folder()).summary_provider,
+            SummaryProvider::Ollama
+        );
+        assert_eq!(
+            Config::from_json(r#"{"summary_provider": "openai_compatible"}"#, &app_folder())
+                .summary_provider,
+            SummaryProvider::OpenAiCompatible
+        );
+    }
+
+    /// A trailing slash would produce `.../v1//chat/completions`, which some
+    /// gateways reject.
+    #[test]
+    fn api_base_url_loses_its_trailing_slash() {
+        let c = Config::from_json(r#"{"api_base_url": "https://api.openai.com/v1/"}"#, &app_folder());
+        assert_eq!(c.api_base_url, "https://api.openai.com/v1");
+    }
+
+    /// The key must never reach the config file, in either direction.
+    #[test]
+    fn the_api_key_is_never_serialized() {
+        let c = Config::from_json(
+            r#"{"api_model": "gpt-4o-mini", "api_key": "sk-secret-value"}"#,
+            &app_folder(),
+        );
+        assert_eq!(c.api_model, "gpt-4o-mini");
+        assert!(
+            !c.to_json().contains("sk-secret-value"),
+            "an api_key in the input must not survive a round trip"
+        );
+        assert!(!c.to_json().contains("api_key"));
     }
 
     #[test]

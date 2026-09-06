@@ -8,8 +8,10 @@
 pub mod audio;
 pub mod commands;
 pub mod ollama;
+pub mod openai;
 pub mod pipeline;
 pub mod platform;
 pub mod session;
 pub mod state;
+pub mod summary;
 pub mod whisper;

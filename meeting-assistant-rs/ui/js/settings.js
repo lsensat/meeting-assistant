@@ -88,6 +88,34 @@ async function populateWhisper() {
     : tr("whisper_first_use");
 }
 
+/** Show the fields for the chosen engine, and the privacy note with them. */
+function applyProviderVisibility() {
+  const remote = el("summary-provider").value === "openai_compatible";
+  el("ollama-field").hidden = remote;
+  el("api-fields").hidden = !remote;
+  el("api-privacy").hidden = !remote;
+}
+
+async function populateProvider() {
+  fill(
+    el("summary-provider"),
+    [
+      { value: "ollama", label: tr("summary_provider.ollama") },
+      { value: "openai_compatible", label: tr("summary_provider.openai_compatible") },
+    ],
+    String(config.summary_provider ?? "ollama"),
+  );
+
+  el("api-base-url").value = String(config.api_base_url ?? "");
+  el("api-model").value = String(config.api_model ?? "");
+  el("api-key").value = "";
+  el("api-key-status").textContent = (await api.hasApiKey())
+    ? tr("api_key_saved")
+    : tr("api_key_missing");
+
+  applyProviderVisibility();
+}
+
 async function populateOllama() {
   const status = await api.listOllamaModels();
   const note = el("ollama-status");
@@ -146,6 +174,7 @@ function populateFiles() {
 async function populateAll() {
   await populateLanguages();
   await populateWhisper();
+  await populateProvider();
   await populateOllama();
   await populateDevices();
   populateFiles();
@@ -159,6 +188,9 @@ function collect() {
     whisper_model: el("whisper-model").value,
     ollama_model: el("ollama-model").value,
     summary_type: el("summary-type").value,
+    summary_provider: el("summary-provider").value,
+    api_base_url: el("api-base-url").value.trim(),
+    api_model: el("api-model").value.trim(),
     microphone_name: el("microphone").value,
     system_audio_name: el("system-audio").value,
     output_folder: el("output-folder").value,
@@ -182,6 +214,8 @@ function wire() {
     config = collect();
     await populateWhisper();
   });
+
+  el("summary-provider").addEventListener("change", applyProviderVisibility);
 
   el("refresh-models").addEventListener("click", async () => {
     config = collect();
@@ -207,6 +241,19 @@ function wire() {
     if (next.summary_type === "custom" && !next.custom_summary_prompt.trim()) {
       el("custom-prompt-note").textContent = tr("custom_prompt_required");
       return;
+    }
+
+    // The key is stored separately, in the keychain, and only when the user
+    // typed one — an empty box means "keep what is already saved".
+    const typedKey = el("api-key").value;
+    if (typedKey) await api.setApiKey(typedKey);
+
+    if (next.summary_provider === "openai_compatible") {
+      const haveKey = typedKey || (await api.hasApiKey());
+      if (!next.api_base_url || !next.api_model || !haveKey) {
+        el("api-key-status").textContent = tr("api_incomplete");
+        return;
+      }
     }
 
     await api.saveConfig(next);

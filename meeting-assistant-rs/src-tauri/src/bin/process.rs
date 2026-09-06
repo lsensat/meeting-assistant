@@ -11,9 +11,10 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use meeting_assistant::summary::ProviderConfig;
 use meeting_assistant::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
 use meeting_assistant::{ollama, platform, whisper};
-use meeting_core::config::{Language, SummaryType};
+use meeting_core::config::{SummaryProvider, Language, SummaryType};
 use meeting_core::i18n;
 
 fn main() {
@@ -65,7 +66,14 @@ fn main() {
         meeting_title: flag(&args, "--title").unwrap_or_default(),
         whisper_model,
         transcription_language: flag(&args, "--transcription-language"),
-        ollama_model,
+        // The CLI drives the local path only. Exercising a remote endpoint
+        // from here would mean handling keychain prompts in a terminal.
+        provider: ProviderConfig {
+            provider: SummaryProvider::Ollama,
+            ollama_model,
+            api_base_url: String::new(),
+            api_model: String::new(),
+        },
         language,
         summary_type: SummaryType::MeetingMinutes,
         custom_summary_prompt: String::new(),
@@ -76,7 +84,7 @@ fn main() {
 
     println!("folder  : {}", config.folder.display());
     println!("whisper : {}", config.whisper_model);
-    println!("ollama  : {}", config.ollama_model);
+    println!("ollama  : {}", config.provider.ollama_model);
     println!("language: {}\n", language.as_str());
 
     let started = Instant::now();

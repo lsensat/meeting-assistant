@@ -12,7 +12,7 @@ use meeting_core::progress::transcription_percent;
 use meeting_core::text;
 use meeting_core::prompts;
 
-use crate::ollama;
+use crate::summary::{self, ProviderConfig, SummaryError};
 use crate::session::{MIC_FILENAME, SYSTEM_FILENAME};
 use crate::whisper::{self, Transcriber};
 
@@ -44,7 +44,7 @@ pub enum PipelineError {
     /// The recording contained no speech at all.
     NoVoice,
     Whisper(whisper::WhisperError),
-    Ollama(ollama::OllamaError),
+    Summary(SummaryError),
     Io(std::io::Error),
 }
 
@@ -53,7 +53,7 @@ impl std::fmt::Display for PipelineError {
         match self {
             Self::NoVoice => write!(f, "No speech was detected in the recording."),
             Self::Whisper(e) => write!(f, "{e}"),
-            Self::Ollama(e) => write!(f, "{e}"),
+            Self::Summary(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -66,9 +66,9 @@ impl From<whisper::WhisperError> for PipelineError {
         Self::Whisper(e)
     }
 }
-impl From<ollama::OllamaError> for PipelineError {
-    fn from(e: ollama::OllamaError) -> Self {
-        Self::Ollama(e)
+impl From<SummaryError> for PipelineError {
+    fn from(e: SummaryError) -> Self {
+        Self::Summary(e)
     }
 }
 impl From<std::io::Error> for PipelineError {
@@ -94,7 +94,7 @@ pub struct PipelineConfig {
     pub whisper_model: String,
     /// `None` means auto-detect.
     pub transcription_language: Option<String>,
-    pub ollama_model: String,
+    pub provider: ProviderConfig,
     pub language: Language,
     pub summary_type: SummaryType,
     pub custom_summary_prompt: String,
@@ -253,11 +253,11 @@ fn summarize(
         on_progress(Progress::Status(format!(
             "Summarizing block {}/{total} with {}...",
             index + 1,
-            config.ollama_model
+            config.provider.ollama_model
         )));
 
         let user = prompts::extraction_message(config.language, chunk);
-        partials.push(ollama::chat(&config.ollama_model, system, &user)?);
+        partials.push(summary::chat(&config.provider, system, &user)?);
     }
 
     on_progress(Progress::Status("Generating the final summary...".into()));
@@ -270,7 +270,7 @@ fn summarize(
         &combined,
     );
 
-    Ok(ollama::chat(&config.ollama_model, system, &user)?)
+    Ok(summary::chat(&config.provider, system, &user)?)
 }
 
 /// Append the user's meeting title to the folder name, if they gave one.
