@@ -213,6 +213,20 @@ html, body {
 .btn--mic.is-muted { background: var(--steel-dark); color: var(--ink-invert); }
 .btn--result    { background: var(--amber-dark); color: var(--ink); }
 
+/*
+ * The quiet half of a pair.
+ *
+ * The one place amber is wrong. Every other button is a thing to do; these sit
+ * beside a button that commits — Back next to Next, Keep next to Discard — and
+ * two identical buttons make the reader stop and read rather than reach. Steel
+ * says "the other one" without saying "disabled".
+ *
+ * Applies only where there IS a pair. A lone secondary button, like Browse or
+ * Download now, has nothing to be quieter than and stays amber with the rest.
+ * Cream on steel-dark is 5.39:1.
+ */
+.btn--quiet     { background: var(--steel-dark); color: var(--ink-invert); }
+
 .btn--primary:hover:not(:disabled)   { background: var(--amber);      color: var(--ink); }
 /*
  * Neutral controls DARKEN on hover rather than lighten. Lightening to --steel
@@ -235,6 +249,9 @@ html, body {
 .btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--amber); color: var(--ink); }
 .btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber); color: var(--ink); }
 .btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--amber); color: var(--ink); }
+/* Cream rather than amber, so hovering the quiet one never looks like the
+ * committing one. */
+.btn--quiet:hover:not(:disabled):not(.btn--unavailable)     { background: var(--faceplate-2); color: var(--ink); }
 
 /*
  * Result buttons have a third state. Until their stage reaches `done` they are
