@@ -76,16 +76,21 @@
    */
   --green:       #4F6B45;
   /*
-   * A brighter green, for the readiness lamps only.
+   * A bright green, for the readiness lamps and the queue's progress bar.
    *
-   * `--green` cannot be brightened in place: it is also the "done" chip's
-   * background, where cream text sits at 4.84:1 and would drop to 3.50:1 —
-   * below the 4.5:1 text needs. As a small dot rather than a text background,
-   * the lamp has no such constraint, and #4F6B45 reads as olive-grey at 8px:
-   * users could not tell it was green at all. This still clears 3:1 on both the
-   * light card (3.10:1) and the dark chrome (3.21:1), which `--green` does not.
+   * Separate from `--green` because that one is a text background elsewhere and
+   * cannot be brightened without failing contrast for the text on it. A lamp is
+   * an 8px dot with no text on it, so it has no such constraint.
+   *
+   * Chosen by rendering the candidates as actual lamps rather than by reading
+   * ratios, because at 8px the deciding factor is hue, not luminance. Two
+   * earlier attempts were both reported as unclear: #4F6B45 and then #2E8B3D
+   * measured well against the light card but read as dark olive. Brighter still
+   * — #2BE05F — washes out against it. The `--steel-dark` ring is what keeps the
+   * lamp perceivable as an object, which frees the fill to be chosen for how
+   * unmistakably green it looks.
    */
-  --green-lamp:  #2E8B3D;
+  --green-lamp:  #22C55E;
 
   /*
    * Semantic aliases. Component rules below reach for these, not for the raw
