@@ -78,9 +78,12 @@ async function populateWhisper() {
     el("whisper-model"),
     models.map((model) => ({
       value: model.id,
+      // Both catalog strings already contain `{model}`; calling `tr` without
+      // the argument left the placeholder on screen as a literal —
+      // "small — {model} installed". The id must be passed, not prefixed.
       label: model.installed
-        ? `${model.id} — ${tr("whisper_installed")}`
-        : `${model.id} — ${tr("whisper_download")} (~${model.approx_mb} MB)`,
+        ? tr("whisper_installed", { model: model.id })
+        : `${tr("whisper_download", { model: model.id })} (~${model.approx_mb} MB)`,
     })),
     String(config.whisper_model ?? "small"),
   );

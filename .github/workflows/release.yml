@@ -40,7 +40,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
       # Installed from source rather than via a third-party installer action:
@@ -86,7 +86,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No Node setup and no `npm install` on purpose. The frontend is plain ES
       # modules with no bundler, and tauri.conf.json has no beforeBuildCommand.
@@ -151,7 +151,7 @@ jobs:
       # workflow_dispatch creates no release, so keep the installers reachable.
       - name: Upload installers
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: meeting-assistant-${{ matrix.platform }}
           if-no-files-found: error
