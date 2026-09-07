@@ -20,9 +20,12 @@ pub const BASE_URL: &str = "http://127.0.0.1:11434";
 /// Low but not zero: the summary should be stable without being degenerate.
 const TEMPERATURE: f64 = 0.2;
 
-/// The startup probe is allowed to be slow — Ollama may be cold-starting — but
-/// not unbounded. The Python used 15 s (`app.py:894-911`).
-const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Ollama is on loopback: if it does not answer in three seconds it is not
+/// running. The Python allowed 15 s (`app.py:894-911`), but that was a startup
+/// probe in a thread nobody waited on — here Settings and the setup wizard both
+/// block on this before they can render their model list, so the timeout is
+/// how long a machine without Ollama waits to see its own settings.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Summarization is the long pole: a 7B model on a chunk of transcript can
 /// legitimately take minutes on CPU. This is a guard against a wedged server,

@@ -196,7 +196,23 @@ fn snapshot_dto(kind: SourceKind) -> Vec<DeviceDto> {
         .collect()
 }
 
-#[tauri::command]
+/// # Why every command in this file that does I/O is `command(async)`
+///
+/// A bare `#[tauri::command]` on a synchronous function runs **on the main
+/// thread** — `tauri-macros`' `ExecutionContext` defaults to `Blocking`. Any
+/// wait inside one therefore freezes every window in the app, not just the
+/// caller. The `(async)` attribute moves the same synchronous body to the
+/// blocking threadpool without changing its signature.
+///
+/// This was not a precaution. With these bare, the Windows build opened the
+/// settings and setup windows as blank white rectangles marked "not
+/// responding", and the main window sat on "Checking environment…" forever:
+/// `list_ollama_models` was holding the main thread for its full HTTP timeout
+/// on a machine with no Ollama installed. It looked like three separate bugs.
+///
+/// Device enumeration is here too — it goes through COM on Windows and is not
+/// reliably fast.
+#[tauri::command(async)]
 pub fn list_devices() -> DeviceListDto {
     DeviceListDto {
         microphones: snapshot_dto(SourceKind::Microphone),
@@ -206,14 +222,20 @@ pub fn list_devices() -> DeviceListDto {
 
 /// Same as [`list_devices`]; a separate command because the UI treats an
 /// explicit refresh differently from the initial load.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn refresh_devices() -> DeviceListDto {
     list_devices()
 }
 
 // --- models ------------------------------------------------------------
 
-#[tauri::command]
+/// Probe Ollama for its installed models.
+///
+/// `(async)` because this makes a blocking HTTP request. Held on the main
+/// thread it froze the whole UI for the length of the timeout on any machine
+/// where Ollama is not running — which is every machine that has not installed
+/// it yet, i.e. exactly the ones opening Settings in order to configure it.
+#[tauri::command(async)]
 pub fn list_ollama_models() -> OllamaStatusDto {
     match ollama::list_models() {
         Ok(models) => OllamaStatusDto {
@@ -229,7 +251,7 @@ pub fn list_ollama_models() -> OllamaStatusDto {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_whisper_models() -> Vec<WhisperModelDto> {
     whisper::MODELS
         .iter()
@@ -296,7 +318,7 @@ pub async fn download_whisper_model(
 ///
 /// Used by the setup wizard so the user does not have to leave the app to get
 /// the local engine running.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_ollama() -> Result<(), String> {
     platform::start_ollama().map_err(|e| e.to_string())
 }
@@ -354,7 +376,15 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
 /// Clamped here because a measurement bug in the frontend must not be able to
 /// produce a 1px or a 4000px window.
 #[tauri::command]
-pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
+/// Resize the main window, returning the height actually applied.
+///
+/// The return value is not decoration. The frontend derives the height of the
+/// window furniture by comparing what it asked for against the `innerHeight`
+/// that resulted, and that subtraction is only meaningful if it knows the
+/// request was honoured. Left to infer it from its own un-clamped request, a
+/// height beyond MAX would be read as an enormous title bar and the next
+/// request would be larger still.
+pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
     const MIN: f64 = 200.0;
     const MAX: f64 = 420.0;
     const WIDTH: f64 = 375.0;
@@ -373,7 +403,7 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
     let fixed = Some(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
-    Ok(())
+    Ok(height.clamp(MIN, MAX))
 }
 
 /// Open, or focus, the settings window.
@@ -428,14 +458,14 @@ pub fn close_settings(app: AppHandle) -> Result<(), String> {
 /// Deliberately a separate command from `save_config`: the key must never
 /// travel through the config payload, or it ends up written to `config.json`
 /// alongside the meeting recordings.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_api_key(key: String) -> Result<(), String> {
     crate::summary::store_api_key(&key).map_err(|e| e.to_string())
 }
 
 /// Whether a key is stored. Never returns the key itself — the settings UI
 /// shows "saved", not the value.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn has_api_key() -> bool {
     crate::summary::has_api_key()
 }
@@ -456,7 +486,7 @@ pub fn has_api_key() -> bool {
 /// folder of that name, and pressing "Open folder" would have run `calc`.
 ///
 /// `tauri-plugin-opener` uses the OS APIs directly, with no shell in the path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 

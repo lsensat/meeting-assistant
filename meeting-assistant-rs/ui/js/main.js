@@ -211,12 +211,18 @@ const CONFIG_WINDOW_HEIGHT = 275;
  * `set_size` and the configured height both cover the whole window, while the
  * layout lives in the smaller webview inside it. Ignoring the difference is why
  * the toolbar kept getting clipped: every height asked for was a title bar too
- * short. Derived once, before anything has resized the window, by comparing the
- * height we asked for against the height the webview actually got.
+ * short.
  *
- * @type {number|null}
+ * This is **re-measured on every resize**, not derived once at startup. The
+ * one-shot version assumed the window stood at exactly `CONFIG_WINDOW_HEIGHT`
+ * at the moment of the first measurement. On Windows it does not: DPI scaling
+ * and a title bar of a different height meant the first launch opened visibly
+ * too tall, with empty space under the toolbar, while the second launch
+ * happened to land correctly. Comparing the height last *asked for* against the
+ * `innerHeight` that actually resulted needs no such assumption and converges
+ * after one round-trip on any platform, title bar, or scale factor.
  */
-let chromeHeight = null;
+let chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
 
 /**
  * The height the content needs, in CSS pixels.
@@ -234,16 +240,30 @@ function contentHeight() {
 /** Last height asked for, so an unchanged measurement costs nothing. */
 let appliedHeight = null;
 
+/** Last height Rust reported it applied — the request after clamping. */
+let grantedHeight = null;
+
 function resizeToContent() {
-  if (chromeHeight === null) {
-    chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
-  }
+  // The height Rust actually applied, versus the `innerHeight` that resulted,
+  // is the real chrome. Comparing against `appliedHeight` instead would read a
+  // clamped request as an enormous title bar and grow without bound. Still put
+  // through a sanity bound: a measurement taken mid-resize can be transiently
+  // absurd, and a bad value here is what puts the toolbar off-screen.
+  const observed = (grantedHeight ?? CONFIG_WINDOW_HEIGHT) - window.innerHeight;
+  if (observed >= 0 && observed <= 200) chromeHeight = observed;
 
   const wanted = contentHeight() + chromeHeight;
   if (wanted === appliedHeight) return;
 
   appliedHeight = wanted;
-  api.setMainHeight(wanted);
+  api.setMainHeight(wanted).then((granted) => {
+    grantedHeight = granted;
+    // Converge without waiting for the next status change. Once the window has
+    // settled, this re-reads the chrome and either corrects the height or — the
+    // normal case — measures the same number and returns at the guard above, so
+    // it cannot loop.
+    requestAnimationFrame(resizeToContent);
+  });
 }
 
 /**

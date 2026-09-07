@@ -53,18 +53,35 @@ const PREFIX_SYS: &str = "sys:";
 pub fn init(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let menu = build_menu(app)?;
 
+    // The two platforms want opposite images here, so this is not one icon
+    // with a flag — it is two icons.
+    //
+    // macOS: a dedicated monochrome glyph, NOT the app icon. `icon_as_template`
+    // uses only the ALPHA channel and repaints the silhouette to suit a light or
+    // dark menu bar. The app icon's alpha is a filled rounded square, so passing
+    // it here painted a solid black block. `tray.png` is transparent except for
+    // the microphone itself.
+    //
+    // Windows: there is no template concept — `icon_as_template` is ignored and
+    // the image is drawn as it is. `tray.png` is pure black, so on the default
+    // dark taskbar it rendered as nothing at all: the icon was reported missing
+    // from the Windows notification area. The colour app icon is what shows up.
+    #[cfg(target_os = "macos")]
+    let (icon, as_template) = (
+        tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+            .expect("tray glyph is a valid PNG"),
+        true,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (icon, as_template) = (
+        tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+            .expect("app icon is a valid PNG"),
+        false,
+    );
+
     TrayIconBuilder::with_id("main")
-        // A dedicated monochrome glyph, NOT the app icon.
-        //
-        // `icon_as_template` uses only the ALPHA channel and repaints the
-        // silhouette to suit a light or dark menu bar. The app icon's alpha is
-        // a filled rounded square, so passing it here painted a solid black
-        // block. This image is transparent except for the microphone itself.
-        .icon(
-            tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
-                .expect("tray glyph is a valid PNG"),
-        )
-        .icon_as_template(true)
+        .icon(icon)
+        .icon_as_template(as_template)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event)
