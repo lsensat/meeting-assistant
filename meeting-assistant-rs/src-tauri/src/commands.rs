@@ -19,7 +19,7 @@ use meeting_core::{i18n, policy, text};
 use crate::audio::devices::{self, SourceKind};
 use crate::audio::recorder::Event as RecorderEvent;
 use crate::queue;
-use crate::pipeline::{self, PipelineConfig, Progress, Stage};
+use crate::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
 use crate::session::RecordingSession;
 use crate::state::AppState;
 use crate::{ollama, platform, whisper};
@@ -1042,6 +1042,9 @@ fn run_job(
 
     let control = queue.control();
 
+    // True only while the transcription stage is running; see the ticker below.
+    let transcribing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // `full()` blocks its thread for the whole file, so the only way to observe
     // a transcription in progress is from another thread reading the control.
     // The ticker ends when the job does, via the same abort flag.
@@ -1055,11 +1058,15 @@ fn run_job(
         let control = control.clone();
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&done);
+        let transcribing = Arc::clone(&transcribing);
 
         std::thread::spawn(move || {
             while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                if total > 0.0 {
+                // Only while transcribing. The control keeps its last position
+                // after the final track, so an ungated ticker went on writing a
+                // stale transcription percentage over the summary stage's.
+                if total > 0.0 && transcribing.load(std::sync::atomic::Ordering::Relaxed) {
                     let fraction = (control.seconds_done() / total).clamp(0.0, 1.0);
                     let span = (PERCENT_WHISPER_END - PERCENT_WHISPER_START) as f64;
                     queue.set_percent(PERCENT_WHISPER_START + (fraction * span) as u8);
@@ -1072,17 +1079,40 @@ fn run_job(
 
     let emitter = app.clone();
     let queue_for_stage = Arc::clone(queue);
+    let stage_id = meeting.id.clone();
+    let stage_app = app.clone();
+    let stage_transcribing = Arc::clone(&transcribing);
+
     let result = pipeline::run(pipeline_config, &control, move |progress| match progress {
         Progress::Stage(stage, stage_state) => {
+            // Only on entry. `Done` for one stage arrives immediately before
+            // `Working` for the next, and acting on both would briefly show the
+            // finished stage as if it were the current one.
+            if stage_state != StageState::Working {
+                return;
+            }
+
+            queue_for_stage.set_stage(
+                &stage_id,
+                match stage {
+                    Stage::Audio => queue::Stage::Audio,
+                    Stage::Whisper => queue::Stage::Whisper,
+                    Stage::Summary => queue::Stage::Summary,
+                },
+            );
             queue_for_stage.set_percent(match stage {
                 Stage::Audio => PERCENT_AUDIO,
                 Stage::Whisper => PERCENT_WHISPER_START,
                 Stage::Summary => PERCENT_WHISPER_END,
             });
-            // No longer emitted to the frontend: the stage chips it drove are
-            // gone, and one global stage event cannot describe several jobs.
-            // The stage still matters here, for the card's progress.
-            let _ = stage_state;
+            stage_transcribing.store(
+                stage == Stage::Whisper,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+
+            // The card is how a stage reaches the user now, so it has to be
+            // redrawn here — there is no longer a stage event doing it.
+            emit_queue_changed(&stage_app);
         }
         Progress::Status(status) => {
             let _ = emitter.emit(EV_STATUS, status);

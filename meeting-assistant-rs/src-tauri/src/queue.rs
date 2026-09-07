@@ -528,6 +528,18 @@ impl Queue {
         self.control.lock().expect("control poisoned").clone()
     }
 
+    /// Move a running job to a new stage, so its card can say what is happening.
+    ///
+    /// Display only: the persisted state is written when the job ends. Without
+    /// this the card kept the stage it was enqueued with and read "Waiting" for
+    /// the entire run, while the status line said the summary was being written.
+    pub fn set_stage(&self, id: &str, stage: Stage) {
+        let mut inner = self.lock();
+        if let Some(job) = inner.jobs.iter_mut().find(|j| j.state.id == id) {
+            job.state.stage = stage;
+        }
+    }
+
     pub fn set_percent(&self, percent: u8) {
         self.lock().percent = percent;
     }
@@ -628,6 +640,23 @@ mod queue_tests {
         let ids: Vec<String> = queue.view().into_iter().map(|v| v.id).collect();
         assert_eq!(ids, ["b"]);
         assert_eq!(queue.take("gone"), None);
+    }
+
+    #[test]
+    fn a_running_job_reports_the_stage_it_reached() {
+        // The card read "Waiting" for a whole meeting while the status line
+        // said the summary was being generated: the worker updated the
+        // percentage as it went but never the stage, so the view kept the one
+        // the job was enqueued with.
+        let queue = Queue::new();
+        queue.enqueue(job("a", Stage::Queued));
+        assert_eq!(queue.view()[0].stage, Stage::Queued);
+
+        queue.set_stage("a", Stage::Whisper);
+        assert_eq!(queue.view()[0].stage, Stage::Whisper);
+
+        queue.set_stage("a", Stage::Summary);
+        assert_eq!(queue.view()[0].stage, Stage::Summary);
     }
 
     #[test]
