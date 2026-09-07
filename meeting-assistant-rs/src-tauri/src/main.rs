@@ -22,6 +22,20 @@ fn main() {
         .unwrap_or_else(|_| Config::defaults(&documents));
 
     tauri::Builder::default()
+        // Must be registered FIRST: it decides whether this process lives at
+        // all, and doing that before anything else is initialised avoids a
+        // second instance briefly touching state the first one owns.
+        //
+        // The closure runs in the ALREADY RUNNING instance while the new one
+        // exits, so doing nothing here would make a relaunch appear to fail.
+        // That matters more than usual because closing the window only hides it
+        // (see `on_window_event` below) — relaunching from the Dock or Start
+        // menu is the natural way to get a tray-only app back, and it must
+        // behave as "reopen". `show_window` is what the macOS Dock click
+        // already does via `RunEvent::Reopen`.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            meeting_assistant::tray::show_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new(config_file, config))
@@ -33,6 +47,7 @@ fn main() {
             commands::refresh_devices,
             commands::list_ollama_models,
             commands::list_whisper_models,
+            commands::delete_whisper_model,
             commands::download_whisper_model,
             commands::start_recording,
             commands::stop_recording,
@@ -44,6 +59,7 @@ fn main() {
             commands::start_ollama,
             commands::needs_setup,
             commands::open_setup,
+            commands::window_urls,
             commands::close_setup,
             commands::set_api_key,
             commands::has_api_key,
@@ -52,9 +68,32 @@ fn main() {
             commands::open_settings,
             commands::close_settings,
             commands::startup_check,
+            commands::list_jobs,
+            commands::is_processing_paused,
+            commands::set_processing_paused,
+            commands::discard_job,
+            commands::retry_job,
         ])
         .setup(|app| {
             meeting_assistant::tray::init(app.handle())?;
+
+            // Pick up anything left unfinished, before the worker starts looking.
+            //
+            // Meetings survive a quit because their audio and their state file
+            // are both on disk from the moment recording stops. Without this the
+            // work would simply be forgotten — and worse, silently: the folder
+            // would sit there looking like a finished meeting with no summary.
+            let state = tauri::Manager::state::<AppState>(app);
+            let config = state.config_snapshot();
+            state
+                .queue
+                .absorb(meeting_assistant::queue::scan(&config.output_folder));
+
+            // Restored, not reset. The switch means "not now, do it tonight",
+            // and a horizon that long has to survive closing the app.
+            state.queue.set_paused(config.processing_paused);
+
+            commands::spawn_worker(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

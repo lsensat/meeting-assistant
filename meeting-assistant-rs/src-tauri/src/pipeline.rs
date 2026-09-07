@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use meeting_core::config::{Language, SummaryType};
 use meeting_core::progress::transcription_percent;
-use meeting_core::text;
+use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
 
 use crate::summary::{self, ProviderConfig, SummaryError};
@@ -102,6 +102,53 @@ pub struct PipelineConfig {
     /// Speaker labels, already localized by the caller.
     pub speaker_me: String,
     pub speaker_meeting: String,
+    /// Where a previous, paused attempt got to. `Default` for a new meeting.
+    pub resume: ResumePoint,
+}
+
+/// Segments from a paused run, so resuming appends instead of starting over.
+///
+/// `.partial` like the model download, and for the same reason: a file that is
+/// not yet the real thing must not be mistaken for it. `transcript.txt` is
+/// written only when the transcription is complete.
+const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
+/// Per-chunk summary extractions from a paused run.
+const PARTIAL_SUMMARY: &str = "summary.partial.json";
+
+fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_partial<T: serde::Serialize>(path: &Path, value: &T) {
+    if let Ok(text) = serde_json::to_string(value) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Where to pick a paused meeting up from.
+///
+/// All three default to zero, which is "start at the beginning" — so a fresh
+/// meeting and a resumed one go down exactly the same code path.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ResumePoint {
+    pub mic_offset_seconds: f64,
+    pub system_offset_seconds: f64,
+    pub summary_chunk: usize,
+}
+
+/// How a run ended.
+///
+/// Pausing is not an error and must not be reported as one: it is the user
+/// getting what they asked for. Making it a variant of the success type rather
+/// than a `PipelineError` is what keeps that distinction from being lost at
+/// every `?` between here and the UI.
+pub enum RunOutcome {
+    Finished(PipelineOutput),
+    /// Stopped on request, with everything done so far already on disk.
+    Paused(ResumePoint),
 }
 
 #[derive(Debug)]
@@ -117,8 +164,9 @@ pub struct PipelineOutput {
 /// `on_progress` is called from this thread; the caller forwards it to the UI.
 pub fn run(
     config: PipelineConfig,
+    control: &whisper::TranscriptionControl,
     mut on_progress: impl FnMut(Progress),
-) -> Result<PipelineOutput, PipelineError> {
+) -> Result<RunOutcome, PipelineError> {
     on_progress(Progress::Stage(Stage::Audio, StageState::Working));
 
     // Rename the folder only now.
@@ -171,25 +219,64 @@ pub fn run(
     // lead-in silence covers its own open latency. So `common_start` — which
     // the Python had to compute from two separate stamps (`app.py:2280`) — is
     // zero here by construction, and both offsets are zero.
-    let mut segments = transcriber.transcribe(&mic_file, &config.speaker_me, 0.0, |end| {
-        let percent = transcription_percent(end, mic_duration, 0.0, total_duration);
-        on_progress(Progress::Status(format!(
-            "Transcribing {}... {percent}%",
-            config.speaker_me
-        )));
-    })?;
+    let partial_segments_file = folder.join(PARTIAL_SEGMENTS);
+    let partial_summary_file = folder.join(PARTIAL_SUMMARY);
 
-    let system_segments =
-        transcriber.transcribe(&system_file, &config.speaker_meeting, 0.0, |end| {
-            let percent =
-                transcription_percent(end, system_duration, mic_duration, total_duration);
-            on_progress(Progress::Status(format!(
-                "Transcribing {}... {percent}%",
-                config.speaker_meeting
-            )));
-        })?;
+    // Anything a previous, paused attempt already transcribed. Empty for a new
+    // meeting, which is why resuming needs no special case below.
+    let mut segments: Vec<Segment> = read_partial(&partial_segments_file);
+    let mut resume = config.resume;
 
-    segments.extend(system_segments);
+    // Reported once per track rather than continuously: `full()` blocks this
+    // thread for the whole file, so nobody here can observe its progress. Live
+    // percentages come from `control.seconds_done()`, which the queue worker
+    // polls from another thread — see `TranscriptionControl`.
+    on_progress(Progress::Status(format!(
+        "Transcribing {}... {}%",
+        config.speaker_me,
+        transcription_percent(resume.mic_offset_seconds, mic_duration, 0.0, total_duration)
+    )));
+
+    let mic = transcriber.transcribe(
+        &mic_file,
+        &config.speaker_me,
+        resume.mic_offset_seconds,
+        control,
+    )?;
+    segments.extend(mic.segments);
+    resume.mic_offset_seconds = mic.last_end_seconds;
+
+    if mic.aborted {
+        // Written before returning, so the work survives a quit as well as a
+        // pause. Nothing distinguishes the two by the time the app restarts.
+        write_partial(&partial_segments_file, &segments);
+        return Ok(RunOutcome::Paused(resume));
+    }
+
+    on_progress(Progress::Status(format!(
+        "Transcribing {}... {}%",
+        config.speaker_meeting,
+        transcription_percent(
+            resume.system_offset_seconds,
+            system_duration,
+            mic_duration,
+            total_duration
+        )
+    )));
+
+    let system = transcriber.transcribe(
+        &system_file,
+        &config.speaker_meeting,
+        resume.system_offset_seconds,
+        control,
+    )?;
+    segments.extend(system.segments);
+    resume.system_offset_seconds = system.last_end_seconds;
+
+    if system.aborted {
+        write_partial(&partial_segments_file, &segments);
+        return Ok(RunOutcome::Paused(resume));
+    }
 
     // Interleaves the two speakers by timestamp and formats
     // `[HH:MM:SS] SPEAKER: text`. The exact format and ordering are part of the
@@ -214,10 +301,27 @@ pub fn run(
     // --- summary ---------------------------------------------------------
     on_progress(Progress::Stage(Stage::Summary, StageState::Working));
 
-    let summary = summarize(&transcript, &config, &mut on_progress)?;
+    let summary = match summarize(
+        &transcript,
+        &config,
+        resume.summary_chunk,
+        &partial_summary_file,
+        control,
+        &mut on_progress,
+    )? {
+        Some(summary) => summary,
+        None => {
+            resume.summary_chunk = read_partial::<String>(&partial_summary_file).len();
+            return Ok(RunOutcome::Paused(resume));
+        }
+    };
     std::fs::write(&summary_file, &summary)?;
 
     on_progress(Progress::Stage(Stage::Summary, StageState::Done));
+
+    // Both artifacts exist, so the working files have nothing left to protect.
+    let _ = std::fs::remove_file(&partial_segments_file);
+    let _ = std::fs::remove_file(&partial_summary_file);
 
     // --- cleanup ---------------------------------------------------------
     //
@@ -229,27 +333,45 @@ pub fn run(
         }
     }
 
-    Ok(PipelineOutput {
+    Ok(RunOutcome::Finished(PipelineOutput {
         folder,
         transcript_file,
         summary_file,
         segment_count: segments.len(),
-    })
+    }))
 }
 
 /// Chunk, extract per chunk, then synthesize. Port of `summarize_with_ollama`.
+/// `Ok(None)` means paused, not failed — see [`RunOutcome`].
+///
+/// The chunk loop is the natural place to stop: each iteration is one request,
+/// so pausing costs at most one chunk of repeated work and never interrupts a
+/// request mid-flight. Extractions completed so far are written to disk after
+/// every chunk, so a pause here — or a quit, or a crash — resumes from the next
+/// one rather than re-summarising the whole meeting.
 fn summarize(
     transcript: &str,
     config: &PipelineConfig,
+    start_chunk: usize,
+    partial_file: &Path,
+    control: &whisper::TranscriptionControl,
     on_progress: &mut impl FnMut(Progress),
-) -> Result<String, PipelineError> {
+) -> Result<Option<String>, PipelineError> {
     let chunks = text::split_transcript(transcript, text::DEFAULT_CHUNK_CHARS);
     let system = prompts::system_prompt(config.language);
 
-    let mut partials = Vec::with_capacity(chunks.len());
+    let mut partials: Vec<String> = read_partial(partial_file);
+    // Trust the file over the recorded index if they ever disagree: the file is
+    // what the next stage actually consumes.
+    partials.truncate(start_chunk.min(chunks.len()));
     let total = chunks.len();
 
-    for (index, chunk) in chunks.iter().enumerate() {
+    for (index, chunk) in chunks.iter().enumerate().skip(partials.len()) {
+        if control.is_aborted() {
+            write_partial(partial_file, &partials);
+            return Ok(None);
+        }
+
         on_progress(Progress::Status(format!(
             "Summarizing block {}/{total} with {}...",
             index + 1,
@@ -258,6 +380,12 @@ fn summarize(
 
         let user = prompts::extraction_message(config.language, chunk);
         partials.push(summary::chat(&config.provider, system, &user)?);
+        write_partial(partial_file, &partials);
+    }
+
+    if control.is_aborted() {
+        write_partial(partial_file, &partials);
+        return Ok(None);
     }
 
     on_progress(Progress::Status("Generating the final summary...".into()));
@@ -270,7 +398,7 @@ fn summarize(
         &combined,
     );
 
-    Ok(summary::chat(&config.provider, system, &user)?)
+    Ok(Some(summary::chat(&config.provider, system, &user)?))
 }
 
 /// Append the user's meeting title to the folder name, if they gave one.
@@ -310,6 +438,15 @@ fn rename_folder(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    // Already named. A meeting that was paused and resumed comes back through
+    // here with the folder the FIRST pass renamed, and appending the title again
+    // gave `2026-09-07_14-03-22_Standup_Standup` — once more on every
+    // pause. Idempotent here rather than gated by the caller, because this is
+    // the function that knows what the folder is called.
+    if !title.is_empty() && !moving && base.ends_with(&format!("_{title}")) {
+        return Ok(folder.to_path_buf());
+    }
+
     let mut target = if title.is_empty() {
         parent.join(&base)
     } else {
@@ -344,7 +481,10 @@ fn rename_folder(
     }
 }
 
-fn wav_duration(path: &Path) -> Option<f64> {
+/// Exposed so the queue worker can size a progress bar without opening the
+/// pipeline: it needs the total audio length to turn `TranscriptionControl`'s
+/// live position into a percentage.
+pub fn wav_duration(path: &Path) -> Option<f64> {
     let reader = hound::WavReader::open(path).ok()?;
     let spec = reader.spec();
     if spec.sample_rate == 0 {
@@ -368,6 +508,25 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
+    }
+
+    #[test]
+    fn a_resumed_meeting_is_not_renamed_twice() {
+        // Found by `queue_lifecycle`: every pause and resume appended the title
+        // again, so a meeting paused three times became `..._Standup_Standup_Standup`
+        // and the state file could no longer be found where it was left.
+        let dir = temp_dir("resumed-rename");
+        let folder = dir.join("2026-09-07_14-03-22");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+
+        let first = rename_folder(&folder, "Standup", Path::new("")).expect("first pass");
+        assert_eq!(first.file_name().unwrap(), "2026-09-07_14-03-22_Standup");
+
+        let second = rename_folder(&first, "Standup", Path::new("")).expect("resumed pass");
+        assert_eq!(
+            second, first,
+            "resuming must leave the folder where the first pass put it"
+        );
     }
 
     #[test]

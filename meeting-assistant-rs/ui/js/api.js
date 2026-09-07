@@ -12,6 +12,21 @@ const { listen } = window.__TAURI__.event;
 const { open } = window.__TAURI__.dialog;
 const opener = window.__TAURI__.opener;
 
+/** @returns {Promise<{id:string,title:string,stage:string,percent:number,error:string|null,running:boolean}[]>} */
+export const listJobs = () => invoke("list_jobs");
+/** @returns {Promise<boolean>} */
+export const isProcessingPaused = () => invoke("is_processing_paused");
+/** @param {boolean} paused */
+export const setProcessingPaused = (paused) => invoke("set_processing_paused", { paused });
+/** @param {string} id */
+export const discardJob = (id) => invoke("discard_job", { id });
+/** @param {string} id */
+export const retryJob = (id) => invoke("retry_job", { id });
+
+/** Diagnostic: what each window's webview actually has loaded.
+ * @returns {Promise<[string, string][]>} */
+export const windowUrls = () => invoke("window_urls");
+
 /** @returns {Promise<Record<string, unknown>>} */
 export const getConfig = () => invoke("get_config");
 
@@ -31,6 +46,9 @@ export const listOllamaModels = () => invoke("list_ollama_models");
 
 /** @returns {Promise<{id: string, approx_mb: number, installed: boolean}[]>} */
 export const listWhisperModels = () => invoke("list_whisper_models");
+
+/** @param {string} id */
+export const deleteWhisperModel = (id) => invoke("delete_whisper_model", { id });
 
 /** @param {string} model */
 export const downloadWhisperModel = (model) =>
@@ -114,7 +132,6 @@ export const EVENTS = {
   micFallback: "mic_fallback",
   deviceSystem: "device_system",
   systemFallback: "system_fallback",
-  stage: "stage",
   log: "log",
   error: "error",
   complete: "complete",
@@ -122,6 +139,13 @@ export const EVENTS = {
   whisperProgress: "whisper_progress",
   /** {recording, processing} — emitted by the commands, not by any UI. */
   recordingState: "recording_state",
+  /**
+   * The queue moved. No payload: the frontend re-reads `listJobs()`.
+   *
+   * A snapshot rather than a per-job event stream, so what is drawn cannot
+   * drift out of step with what the worker is actually doing.
+   */
+  queueChanged: "queue_changed",
   /** boolean */
   muteState: "mute_state",
   /** The tray asking this window to run a flow that needs user input. */

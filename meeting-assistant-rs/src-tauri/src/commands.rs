@@ -18,6 +18,7 @@ use meeting_core::{i18n, policy, text};
 
 use crate::audio::devices::{self, SourceKind};
 use crate::audio::recorder::Event as RecorderEvent;
+use crate::queue;
 use crate::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
 use crate::session::RecordingSession;
 use crate::state::AppState;
@@ -35,7 +36,6 @@ pub const EV_DEVICE_MIC: &str = "device_mic";
 pub const EV_MIC_FALLBACK: &str = "mic_fallback";
 pub const EV_DEVICE_SYSTEM: &str = "device_system";
 pub const EV_SYSTEM_FALLBACK: &str = "system_fallback";
-pub const EV_STAGE: &str = "stage";
 pub const EV_LOG: &str = "log";
 pub const EV_ERROR: &str = "error";
 pub const EV_COMPLETE: &str = "complete";
@@ -52,6 +52,10 @@ pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
 /// zero and Start still enabled. Any front-end that can change the state must
 /// announce it here, and every front-end reacts to it rather than to its own
 /// clicks.
+/// The queue changed: a job was added, finished, failed or was removed, or the
+/// pause switch moved. Carries no payload — the frontend asks for a snapshot.
+pub const EV_QUEUE_CHANGED: &str = "queue_changed";
+
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
 pub const EV_MUTE_STATE: &str = "mute_state";
@@ -71,7 +75,12 @@ pub struct WhisperProgressDto {
 #[derive(Serialize, Clone)]
 pub struct DeviceDto {
     pub id: String,
+    /// The raw OS name. This is the **identity**: it is what `Config` stores and
+    /// what the recorder resolves against. Never show it where `label` fits.
     pub name: String,
+    /// The same device, named for a person. Display only — see
+    /// `meeting_core::devices`.
+    pub label: String,
     pub sample_rate: u32,
     pub channels: u16,
     pub is_default: bool,
@@ -88,6 +97,9 @@ pub struct WhisperModelDto {
     pub id: String,
     pub approx_mb: u64,
     pub installed: bool,
+    /// Real bytes on disk, 0 when not installed. `approx_mb` is what a model
+    /// *will* cost before you fetch it; this is what deleting it would free.
+    pub size_bytes: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -96,12 +108,6 @@ pub struct OllamaStatusDto {
     pub running: bool,
     pub models: Vec<String>,
     pub error: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-pub struct StageDto {
-    pub stage: &'static str,
-    pub state: &'static str,
 }
 
 #[derive(Serialize, Clone)]
@@ -120,6 +126,12 @@ pub struct StartupResultDto {
     /// a model, or a remote endpoint with a base URL, model and stored key.
     pub summary_ready: bool,
     pub ollama: OllamaStatusDto,
+    /// Whether an `ollama` executable was found on this machine at all.
+    /// `ollama.running` says whether it answered; this says whether there is
+    /// anything to start. The difference decides whether the main window offers
+    /// "Start Ollama" or "Get Ollama" — offering to start something absent is a
+    /// dead end.
+    pub ollama_installed: bool,
     pub whisper_installed: Vec<String>,
     pub folder_ok: bool,
     pub has_microphone: bool,
@@ -183,20 +195,44 @@ fn snapshot_dto(kind: SourceKind) -> Vec<DeviceDto> {
     };
     let default_id = snapshot.default_id().map(|s| s.to_string());
 
+    // Computed over the whole list, because shortening two devices on one
+    // adapter can collide and `display_labels` resolves that by keeping the
+    // full name for the entries that clash.
+    let names: Vec<String> = snapshot.devices.iter().map(|d| d.name.clone()).collect();
+    let labels = meeting_core::devices::display_labels(&names);
+
     snapshot
         .devices
         .into_iter()
-        .map(|d| DeviceDto {
+        .zip(labels)
+        .map(|(d, label)| DeviceDto {
             is_default: Some(&d.id) == default_id.as_ref(),
             id: d.id,
             name: d.name,
+            label,
             sample_rate: d.sample_rate,
             channels: d.channels,
         })
         .collect()
 }
 
-#[tauri::command]
+/// # Why every command in this file that does I/O is `command(async)`
+///
+/// A bare `#[tauri::command]` on a synchronous function runs **on the main
+/// thread** — `tauri-macros`' `ExecutionContext` defaults to `Blocking`. Any
+/// wait inside one therefore freezes every window in the app, not just the
+/// caller. The `(async)` attribute moves the same synchronous body to the
+/// blocking threadpool without changing its signature.
+///
+/// This was not a precaution. With these bare, the Windows build opened the
+/// settings and setup windows as blank white rectangles marked "not
+/// responding", and the main window sat on "Checking environment…" forever:
+/// `list_ollama_models` was holding the main thread for its full HTTP timeout
+/// on a machine with no Ollama installed. It looked like three separate bugs.
+///
+/// Device enumeration is here too — it goes through COM on Windows and is not
+/// reliably fast.
+#[tauri::command(async)]
 pub fn list_devices() -> DeviceListDto {
     DeviceListDto {
         microphones: snapshot_dto(SourceKind::Microphone),
@@ -206,14 +242,20 @@ pub fn list_devices() -> DeviceListDto {
 
 /// Same as [`list_devices`]; a separate command because the UI treats an
 /// explicit refresh differently from the initial load.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn refresh_devices() -> DeviceListDto {
     list_devices()
 }
 
 // --- models ------------------------------------------------------------
 
-#[tauri::command]
+/// Probe Ollama for its installed models.
+///
+/// `(async)` because this makes a blocking HTTP request. Held on the main
+/// thread it froze the whole UI for the length of the timeout on any machine
+/// where Ollama is not running — which is every machine that has not installed
+/// it yet, i.e. exactly the ones opening Settings in order to configure it.
+#[tauri::command(async)]
 pub fn list_ollama_models() -> OllamaStatusDto {
     match ollama::list_models() {
         Ok(models) => OllamaStatusDto {
@@ -229,7 +271,40 @@ pub fn list_ollama_models() -> OllamaStatusDto {
     }
 }
 
-#[tauri::command]
+/// Delete an installed Whisper model.
+///
+/// Three guards, none of which the UI is trusted to enforce on its own — the
+/// settings window disables the control in each of these cases, but a command
+/// that destroys gigabytes must not depend on that:
+///
+/// 1. **Not during a meeting or its processing.** whisper.cpp memory-maps the
+///    model file; removing it mid-transcription risks a crash rather than a
+///    clean error.
+/// 2. **Not during a download**, which may be writing this very model.
+/// 3. **Not the selected model.** Deleting what the next meeting is about to
+///    load turns a space-saving action into a silent 3 GB re-download. Choosing
+///    a different model first is one click and makes the intent explicit.
+#[tauri::command(async)]
+pub fn delete_whisper_model(id: String, state: State<AppState>) -> Result<(), String> {
+    // `is_processing` covers QUEUED meetings, not just the running one: a
+    // meeting waiting its turn still needs this model to exist when the worker
+    // reaches it, and by then the user is nowhere near this dialog.
+    if state.is_recording() || state.is_processing() {
+        return Err("A meeting is in progress.".into());
+    }
+
+    if state.downloading.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("A model download is in progress.".into());
+    }
+
+    if state.config_snapshot().whisper_model == id {
+        return Err("The selected model cannot be deleted. Choose another model first.".into());
+    }
+
+    whisper::delete_model(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 pub fn list_whisper_models() -> Vec<WhisperModelDto> {
     whisper::MODELS
         .iter()
@@ -237,6 +312,7 @@ pub fn list_whisper_models() -> Vec<WhisperModelDto> {
             id: spec.id.to_string(),
             approx_mb: spec.approx_mb,
             installed: whisper::is_installed(spec.id),
+            size_bytes: whisper::installed_size(spec.id),
         })
         .collect()
 }
@@ -296,7 +372,7 @@ pub async fn download_whisper_model(
 ///
 /// Used by the setup wizard so the user does not have to leave the app to get
 /// the local engine running.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_ollama() -> Result<(), String> {
     platform::start_ollama().map_err(|e| e.to_string())
 }
@@ -311,7 +387,38 @@ pub fn needs_setup(state: State<AppState>) -> bool {
 /// Its own window: the main view is 375x275 and Settings is 590x610, and a
 /// 5-step wizard fits neither. See `open_settings` for why reusing or resizing
 /// an existing window was rejected.
-#[tauri::command]
+/// Open the inspector for a window when `MA_DEBUG=1`.
+///
+/// The Windows build is only ever run as a release artifact from CI, so a
+/// webview that fails to load has no console anyone can reach. This is the
+/// hatch. It is a no-op unless the variable is set, so it costs nothing in
+/// normal use.
+fn debug_inspect(window: &tauri::WebviewWindow) {
+    if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+        window.open_devtools();
+    }
+}
+
+/// # `(async)` is load-bearing, not a style choice
+///
+/// `WebviewWindowBuilder::new` carries this warning in Tauri's own source
+/// (`tauri-2.11.5/src/webview/webview_window.rs:58`):
+///
+/// > On Windows, this function deadlocks when used in a synchronous command
+/// > and event handlers.
+///
+/// A bare `#[tauri::command]` on a synchronous function *is* a synchronous
+/// command — it runs on the main thread. So opening the wizard on first run
+/// deadlocked the app's own main thread, and every symptom that followed was
+/// downstream of it: the wizard and Settings painted white because WebView2
+/// never finished initialising and so never navigated; `app.emit` dispatches to
+/// the main thread, so `startup_check`'s status events were never delivered and
+/// the status line kept its static placeholder; and `set_main_height` never ran,
+/// so expanding the device panel clipped the toolbar instead of growing the
+/// window. Three rounds of fixes to three "separate bugs" achieved nothing.
+///
+/// Do not remove the `(async)`.
+#[tauri::command(async)]
 pub fn open_setup(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("setup") {
         existing.show().map_err(|e| e.to_string())?;
@@ -319,16 +426,73 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
-        .title("Welcome to Meeting Assistant")
-        .inner_size(620.0, 560.0)
-        .resizable(false)
-        .maximizable(false)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let window =
+        tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
+            .title("Welcome to Meeting Assistant")
+            .inner_size(620.0, 560.0)
+            .resizable(false)
+            .maximizable(false)
+            .center()
+            .build()
+            .map_err(|e| e.to_string())?;
 
+    debug_inspect(&window);
     Ok(())
+}
+
+/// What each window's webview currently has loaded.
+///
+/// Diagnostic. The Windows wizard opened as a plain white rectangle, and from a
+/// screenshot that is indistinguishable between three very different faults: the
+/// document not loading at all, the stylesheet being refused, or the module
+/// graph throwing. `html, body` carries a dark background, so white means no CSS
+/// applied — but only the URL says whether the webview ever navigated.
+///
+/// There is no console on a release Windows build, so the app has to be able to
+/// answer this itself.
+///
+/// `(async)` because the first version of this was a synchronous command, and a
+/// synchronous command runs on the main thread — the very thing it was written
+/// to diagnose. It reported nothing at all, because it hung on the same
+/// deadlock. **A diagnostic that depends on the thing being diagnosed cannot
+/// report.**
+/// Wait for a freshly launched Ollama to become answerable.
+///
+/// Replaces a flat `sleep(3)`. Ollama binds its port almost immediately but
+/// cannot serve `/api/tags` until it has finished discovering GPUs. On the
+/// machine that reported this, the log shows the port bound at `12:07:28.108`
+/// and the first request served at `12:07:31` — the three-second probe landed
+/// exactly on the boundary, and losing that race made the app declare Ollama
+/// dead for the rest of the session with no way back except a restart.
+///
+/// Polling also makes the common case faster rather than slower: a warm Ollama
+/// answers on the first attempt instead of always costing three seconds.
+fn wait_for_ollama() -> OllamaStatusDto {
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+    let deadline = std::time::Instant::now() + BUDGET;
+    loop {
+        let status = list_ollama_models();
+        if status.running || std::time::Instant::now() >= deadline {
+            return status;
+        }
+        std::thread::sleep(INTERVAL);
+    }
+}
+
+#[tauri::command(async)]
+pub fn window_urls(app: AppHandle) -> Vec<(String, String)> {
+    app.webview_windows()
+        .iter()
+        .map(|(label, window)| {
+            let url = window
+                .url()
+                .map(|u| u.to_string())
+                .unwrap_or_else(|e| format!("<error: {e}>"));
+            (label.clone(), url)
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -354,9 +518,20 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
 /// Clamped here because a measurement bug in the frontend must not be able to
 /// produce a 1px or a 4000px window.
 #[tauri::command]
-pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
+/// Resize the main window, returning the height actually applied.
+///
+/// The return value is not decoration. The frontend derives the height of the
+/// window furniture by comparing what it asked for against the `innerHeight`
+/// that resulted, and that subtraction is only meaningful if it knows the
+/// request was honoured. Left to infer it from its own un-clamped request, a
+/// height beyond MAX would be read as an enormous title bar and the next
+/// request would be larger still.
+pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
     const MIN: f64 = 200.0;
-    const MAX: f64 = 420.0;
+    // Raised from 420 for the processing queue, which adds a panel of up to
+    // three cards. The queue list scrolls past that, so this is a ceiling on
+    // the window rather than on how many meetings can be waiting.
+    const MAX: f64 = 640.0;
     const WIDTH: f64 = 375.0;
 
     let window = app
@@ -373,7 +548,7 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
     let fixed = Some(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
-    Ok(())
+    Ok(height.clamp(MIN, MAX))
 }
 
 /// Open, or focus, the settings window.
@@ -391,7 +566,8 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<(), String> {
 ///
 /// A separate window makes closing it mean "close settings", which is what the
 /// close button on a settings window should do.
-#[tauri::command]
+/// `(async)` for the same reason as `open_setup` — see the note there.
+#[tauri::command(async)]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("settings") {
         existing.show().map_err(|e| e.to_string())?;
@@ -399,7 +575,7 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    tauri::WebviewWindowBuilder::new(
+    let window = tauri::WebviewWindowBuilder::new(
         &app,
         "settings",
         tauri::WebviewUrl::App("settings.html".into()),
@@ -411,6 +587,7 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .build()
     .map_err(|e| e.to_string())?;
 
+    debug_inspect(&window);
     Ok(())
 }
 
@@ -428,14 +605,14 @@ pub fn close_settings(app: AppHandle) -> Result<(), String> {
 /// Deliberately a separate command from `save_config`: the key must never
 /// travel through the config payload, or it ends up written to `config.json`
 /// alongside the meeting recordings.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_api_key(key: String) -> Result<(), String> {
     crate::summary::store_api_key(&key).map_err(|e| e.to_string())
 }
 
 /// Whether a key is stored. Never returns the key itself — the settings UI
 /// shows "saved", not the value.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn has_api_key() -> bool {
     crate::summary::has_api_key()
 }
@@ -456,7 +633,7 @@ pub fn has_api_key() -> bool {
 /// folder of that name, and pressing "Open folder" would have run `calc`.
 ///
 /// `tauri-plugin-opener` uses the OS APIs directly, with no shell in the path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 
@@ -497,20 +674,20 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // surprising and slow, and its "not running" state would be reported
         // as a startup error they cannot act on.
         let uses_ollama = config.summary_provider == SummaryProvider::Ollama;
+        // Short-circuited: a user on a remote endpoint should not pay for a
+        // filesystem search for a binary they have no use for.
+        let ollama_installed = uses_ollama && platform::find_ollama().is_some();
+
         let mut ollama_status = if uses_ollama {
             emit_status("checking_ollama");
             let status = list_ollama_models();
 
             // The Python auto-started Ollama when it was installed but not
             // running, then told the user to reopen the app if it had to
-            // (`app.py:200`).
-            if !status.running
-                && platform::find_ollama().is_some()
-                && platform::start_ollama().is_ok()
-            {
-                // Give it a moment to bind the port before deciding.
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                list_ollama_models()
+            // (`app.py:200`). Reopening is no longer the remedy: this waits for
+            // it properly, and the main window offers a retry if it still fails.
+            if !status.running && ollama_installed && platform::start_ollama().is_ok() {
+                wait_for_ollama()
             } else {
                 status
             }
@@ -545,6 +722,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
                         && crate::summary::has_api_key()
                 },
                 ollama: ollama_status,
+                ollama_installed,
                 whisper_installed,
                 folder_ok,
                 has_microphone: !mics.is_empty(),
@@ -563,10 +741,6 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     if state.is_recording() {
         return Err("already recording".into());
     }
-    if state.is_processing() {
-        return Err("still processing the previous meeting".into());
-    }
-
     let config = state.config_snapshot();
 
     // One folder per meeting, named for when it started. The user's optional
@@ -737,9 +911,8 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
         }
     }
 
-    *state.processing.lock().expect("processing poisoned") = true;
     *state.pending.lock().expect("pending poisoned") = Some(summary);
-    emit_recording_state(&app, false, true);
+    emit_recording_state(&app, false, state.is_processing());
     Ok(())
 }
 
@@ -763,12 +936,93 @@ pub fn finalize_meeting(
         .take()
         .ok_or("no meeting is waiting to be processed")?;
 
+    // Snapshotted HERE, at enqueue, and stored with the meeting — not read
+    // when the worker reaches it. Changing the summary type or the provider
+    // between meetings must not reach back and rewrite what a meeting already
+    // waiting in the queue will produce.
     let config = state.config_snapshot();
+
+    let id = summary
+        .folder
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "meeting".to_string());
+
+    let meeting = queue::MeetingState::new(
+        id,
+        text::sanitize_name(&meeting_title),
+        serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+    );
+
+    // Written before the job is visible to the worker, so a crash in between
+    // leaves a meeting the startup scan will find rather than one it will not.
+    queue::save(&summary.folder, &meeting).map_err(|e| e.to_string())?;
+
+    state.queue.enqueue(queue::Job {
+        folder: summary.folder,
+        state: meeting,
+    });
+
+    emit_queue_changed(&app);
+    emit_recording_state(&app, false, state.is_processing());
+    Ok(())
+}
+
+/// Percentages the stages occupy on the queue card's progress bar.
+///
+/// Transcription is the long pole by a wide margin, so it gets most of the bar.
+/// The numbers are honest about that rather than dividing the bar into three
+/// equal thirds, which would sit at 33% for minutes and then leap to 100%.
+const PERCENT_AUDIO: u8 = 3;
+const PERCENT_WHISPER_START: u8 = 5;
+const PERCENT_WHISPER_END: u8 = 80;
+
+/// The single background worker.
+///
+/// One, not several: each Whisper job loads its own copy of the model — 3.1 GB
+/// for large-v3 — and Ollama serialises requests internally anyway, so running
+/// two would double the memory to no purpose.
+pub fn spawn_worker(app: AppHandle) {
+    std::thread::spawn(move || {
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let queue = Arc::clone(&state.queue);
+
+        while let Some(job) = queue.next() {
+            let id = job.state.id.clone();
+            let (updated, folder) = run_job(&app, &queue, job);
+
+            // Persisted before the queue is told, so a crash in between leaves
+            // the truth on disk rather than only in memory.
+            let _ = queue::save(&folder, &updated);
+            queue.finish(&id, updated);
+            emit_queue_changed(&app);
+            emit_recording_state(&app, state.is_recording(), state.is_processing());
+        }
+    });
+}
+
+/// Run one meeting to completion, to a pause, or to a failure.
+///
+/// Returns the state to persist and the folder it belongs in — the folder is
+/// returned because `pipeline::run` renames it partway through, so the path the
+/// job started with is not the one the state file must be written to.
+fn run_job(
+    app: &AppHandle,
+    queue: &Arc<queue::Queue>,
+    job: queue::Job,
+) -> (queue::MeetingState, std::path::PathBuf) {
+    let mut meeting = job.state;
+    let config = Config::from_json(
+        &serde_json::to_string(&meeting.config).unwrap_or_default(),
+        &platform::documents_dir(),
+    );
     let language = config.language;
 
     let pipeline_config = PipelineConfig {
-        folder: summary.folder,
-        meeting_title: text::sanitize_name(&meeting_title),
+        folder: job.folder.clone(),
+        meeting_title: meeting.title.clone(),
         output_folder: config.output_folder.clone(),
         whisper_model: config.whisper_model.clone(),
         transcription_language: config.transcription_language.whisper_code().map(str::to_string),
@@ -779,69 +1033,219 @@ pub fn finalize_meeting(
         keep_audio: config.keep_audio,
         speaker_me: i18n::tr(language, "speaker_me").to_string(),
         speaker_meeting: i18n::tr(language, "speaker_meeting").to_string(),
+        resume: pipeline::ResumePoint {
+            mic_offset_seconds: meeting.mic_offset_seconds,
+            system_offset_seconds: meeting.system_offset_seconds,
+            summary_chunk: meeting.summary_chunk,
+        },
     };
 
-    let handle = app.clone();
-    let state_handle: Arc<AppHandle> = Arc::new(app);
+    let control = queue.control();
 
-    std::thread::spawn(move || {
-        let emitter = handle.clone();
-        let result = pipeline::run(pipeline_config, move |progress| match progress {
-            Progress::Stage(stage, stage_state) => {
-                let _ = emitter.emit(
-                    EV_STAGE,
-                    StageDto {
-                        stage: stage_name(stage),
-                        state: state_name(stage_state),
-                    },
-                );
-            }
-            Progress::Status(status) => {
-                let _ = emitter.emit(EV_STATUS, status);
+    // True only while the transcription stage is running; see the ticker below.
+    let transcribing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // `full()` blocks its thread for the whole file, so the only way to observe
+    // a transcription in progress is from another thread reading the control.
+    // The ticker ends when the job does, via the same abort flag.
+    let ticker = {
+        let total = pipeline::wav_duration(&job.folder.join(crate::session::MIC_FILENAME))
+            .unwrap_or(0.0)
+            + pipeline::wav_duration(&job.folder.join(crate::session::SYSTEM_FILENAME))
+                .unwrap_or(0.0);
+        let queue = Arc::clone(queue);
+        let app = app.clone();
+        let control = control.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        let transcribing = Arc::clone(&transcribing);
+
+        std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Only while transcribing. The control keeps its last position
+                // after the final track, so an ungated ticker went on writing a
+                // stale transcription percentage over the summary stage's.
+                if total > 0.0 && transcribing.load(std::sync::atomic::Ordering::Relaxed) {
+                    let fraction = (control.seconds_done() / total).clamp(0.0, 1.0);
+                    let span = (PERCENT_WHISPER_END - PERCENT_WHISPER_START) as f64;
+                    queue.set_percent(PERCENT_WHISPER_START + (fraction * span) as u8);
+                    emit_queue_changed(&app);
+                }
             }
         });
+        done
+    };
 
-        match result {
-            Ok(output) => {
-                let _ = handle.emit(
-                    EV_COMPLETE,
-                    CompleteDto {
-                        folder: output.folder.to_string_lossy().into_owned(),
-                        transcript_file: output.transcript_file.to_string_lossy().into_owned(),
-                        summary_file: output.summary_file.to_string_lossy().into_owned(),
-                    },
-                );
-            }
-            Err(e) => {
-                let _ = handle.emit(EV_ERROR, e.to_string());
-            }
-        }
+    let emitter = app.clone();
+    let queue_for_stage = Arc::clone(queue);
+    let stage_id = meeting.id.clone();
+    let stage_app = app.clone();
+    let stage_transcribing = Arc::clone(&transcribing);
 
-        if let Some(state) = state_handle.try_state::<AppState>() {
-            *state.processing.lock().expect("processing poisoned") = false;
+    let result = pipeline::run(pipeline_config, &control, move |progress| match progress {
+        Progress::Stage(stage, stage_state) => {
+            // Only on entry. `Done` for one stage arrives immediately before
+            // `Working` for the next, and acting on both would briefly show the
+            // finished stage as if it were the current one.
+            if stage_state != StageState::Working {
+                return;
+            }
+
+            queue_for_stage.set_stage(
+                &stage_id,
+                match stage {
+                    Stage::Audio => queue::Stage::Audio,
+                    Stage::Whisper => queue::Stage::Whisper,
+                    Stage::Summary => queue::Stage::Summary,
+                },
+            );
+            queue_for_stage.set_percent(match stage {
+                Stage::Audio => PERCENT_AUDIO,
+                Stage::Whisper => PERCENT_WHISPER_START,
+                Stage::Summary => PERCENT_WHISPER_END,
+            });
+            stage_transcribing.store(
+                stage == Stage::Whisper,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+
+            // The card is how a stage reaches the user now, so it has to be
+            // redrawn here — there is no longer a stage event doing it.
+            emit_queue_changed(&stage_app);
         }
-        emit_recording_state(&handle, false, false);
+        Progress::Status(status) => {
+            let _ = emitter.emit(EV_STATUS, status);
+        }
     });
 
+    ticker.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // The folder as it stands now: the audio stage renames it.
+    let folder = match &result {
+        Ok(pipeline::RunOutcome::Finished(output)) => output.folder.clone(),
+        _ => job.folder.clone(),
+    };
+
+    match result {
+        Ok(pipeline::RunOutcome::Finished(output)) => {
+            let _ = app.emit(
+                EV_COMPLETE,
+                CompleteDto {
+                    folder: output.folder.to_string_lossy().into_owned(),
+                    transcript_file: output.transcript_file.to_string_lossy().into_owned(),
+                    summary_file: output.summary_file.to_string_lossy().into_owned(),
+                },
+            );
+            meeting.stage = queue::Stage::Done;
+            meeting.error = None;
+        }
+        Ok(pipeline::RunOutcome::Paused(resume)) => {
+            // Not an error and not reported as one. The stage records how far it
+            // got so the card can say so and the next run can pick it up.
+            meeting.mic_offset_seconds = resume.mic_offset_seconds;
+            meeting.system_offset_seconds = resume.system_offset_seconds;
+            meeting.summary_chunk = resume.summary_chunk;
+            meeting.stage = if resume.summary_chunk > 0 {
+                queue::Stage::Summary
+            } else {
+                queue::Stage::Whisper
+            };
+        }
+        Err(e) => {
+            let message = e.to_string();
+            let _ = app.emit(EV_ERROR, message.clone());
+            meeting.stage = queue::Stage::Failed;
+            meeting.error = Some(message);
+        }
+    }
+
+    (meeting, folder)
+}
+
+/// Tell the frontend the queue moved; it then asks for a fresh snapshot.
+///
+/// One signal rather than a job id threaded through every stage, status,
+/// completion and error event. The frontend renders the queue from
+/// [`list_jobs`], so it cannot drift out of step with the worker the way an
+/// incrementally-applied event stream can.
+pub fn emit_queue_changed(app: &AppHandle) {
+    let _ = app.emit(EV_QUEUE_CHANGED, ());
+}
+
+/// Everything in the queue, for rendering.
+#[tauri::command(async)]
+pub fn list_jobs(state: State<AppState>) -> Vec<queue::JobView> {
+    state.queue.view()
+}
+
+#[tauri::command(async)]
+pub fn is_processing_paused(state: State<AppState>) -> bool {
+    state.queue.is_paused()
+}
+
+/// Hold, or release, all processing.
+///
+/// Persisted to the config because the choice has a horizon of hours — "do this
+/// at lunch", "do this tonight" — and resetting it on the next launch would
+/// silently start the very work the user postponed.
+#[tauri::command(async)]
+pub fn set_processing_paused(
+    app: AppHandle,
+    paused: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    state.queue.set_paused(paused);
+
+    // Written through the same path as any other setting, so there is one place
+    // that knows how the config reaches disk.
+    let mut config = state.config_snapshot();
+    config.processing_paused = paused;
+    let app_folder = platform::app_data_dir();
+    std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
+    std::fs::write(&state.config_file, config.to_json()).map_err(|e| e.to_string())?;
+    *state.config.lock().expect("config poisoned") = config;
+
+    emit_queue_changed(&app);
     Ok(())
 }
 
-fn stage_name(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Audio => "audio",
-        Stage::Whisper => "whisper",
-        Stage::Summary => "summary",
-    }
+/// Remove a meeting from the queue and delete it.
+///
+/// # This deletes audio
+///
+/// Same meaning as cancelling a recording: the meeting should not exist, so its
+/// folder goes with it. It exists because a meeting started by accident should
+/// not have to wait its turn in a queue to be got rid of, and pausing everything
+/// is not a way to remove one thing.
+///
+/// The job is taken out of the queue and aborted **before** anything is removed.
+/// `Queue::take` deliberately returns the folder rather than deleting it, so the
+/// pipeline is never standing inside a directory that is being unlinked.
+#[tauri::command(async)]
+pub fn discard_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(), String> {
+    let Some(folder) = state.queue.take(&id) else {
+        return Err("that meeting is no longer in the queue".into());
+    };
+
+    // Bounded: the path comes from the queue entry, never from the caller.
+    let _ = app.emit(EV_LOG, format!("discarding meeting {}", folder.display()));
+    std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+
+    emit_queue_changed(&app);
+    Ok(())
 }
 
-fn state_name(state: StageState) -> &'static str {
-    match state {
-        StageState::Pending => "pending",
-        StageState::Working => "working",
-        StageState::Done => "done",
-        StageState::Error => "error",
+/// Put a failed meeting back in line, resuming rather than restarting.
+#[tauri::command(async)]
+pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(), String> {
+    if !state.queue.retry(&id) {
+        return Err("that meeting is not waiting to be retried".into());
     }
+    emit_queue_changed(&app);
+    Ok(())
 }
+
 
 /// `YYYY-MM-DD_HH-MM-SS`, matching the Python's folder naming.
 ///

@@ -19,8 +19,13 @@ pub struct AppState {
     /// to start, stop or toggle mute — never across a blocking operation.
     pub session: Mutex<Option<RecordingSession>>,
     pub config: Mutex<Config>,
-    /// Set while the pipeline is running so a second start is refused.
-    pub processing: Mutex<bool>,
+    /// Meetings waiting to be processed, and the one being processed.
+    ///
+    /// Replaces a `processing: bool` that existed to REFUSE a second recording
+    /// while the first was still being transcribed. Blocking the user at exactly
+    /// the moment they are busiest was the thing worth fixing; the queue is what
+    /// makes more than one meeting in flight safe instead.
+    pub queue: Arc<crate::queue::Queue>,
     /// Where `config.json` lives, resolved once at startup.
     pub config_file: PathBuf,
     /// The folder the current recording is writing into.
@@ -49,7 +54,7 @@ impl AppState {
         Self {
             session: Mutex::new(None),
             config: Mutex::new(config),
-            processing: Mutex::new(false),
+            queue: Arc::new(crate::queue::Queue::new()),
             config_file,
             current_folder: Mutex::new(None),
             muted: Arc::new(AtomicBool::new(false)),
@@ -70,8 +75,9 @@ impl AppState {
         self.session.lock().expect("session poisoned").is_some()
     }
 
+    /// Whether any meeting is being processed or waiting to be.
     pub fn is_processing(&self) -> bool {
-        *self.processing.lock().expect("processing poisoned")
+        self.queue.has_outstanding()
     }
 
     pub fn is_muted(&self) -> bool {

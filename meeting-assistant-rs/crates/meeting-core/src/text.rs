@@ -65,7 +65,10 @@ pub fn format_time(seconds: f64) -> String {
 }
 
 /// One transcribed span of speech, already offset onto the shared timeline.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializable because a paused transcription persists the segments it has
+/// produced so far, so resuming appends to them rather than starting over.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     /// Seconds from the start of the meeting, not from the start of the track.
     pub start: f64,
