@@ -5,6 +5,9 @@
  * event listeners; the data flow is the same one-way worker → UI it always was.
  */
 
+// Installed before anything that can throw, so a failure in the modules
+// below is reported on screen instead of leaving a blank or half-built window.
+import "./errors.js";
 import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
@@ -233,8 +236,15 @@ let chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
  */
 function contentHeight() {
   const row = document.querySelector(".result-row");
+  // `main` now stretches to fill the window, so the toolbar's bottom is pinned
+  // to the viewport and measuring it alone would always report the current
+  // height back — the window would never resize again. The spacer holds exactly
+  // the surplus, so subtracting it recovers the natural height. When the content
+  // needs more room than the window has, the spacer is 0 and this exceeds
+  // `innerHeight`, which is what makes the window grow.
+  const surplus = document.querySelector(".spacer").getBoundingClientRect().height;
   // rect.bottom excludes the row's own 10px bottom margin.
-  return Math.ceil(row.getBoundingClientRect().bottom + 12);
+  return Math.ceil(row.getBoundingClientRect().bottom - surplus + 12);
 }
 
 /** Last height asked for, so an unchanged measurement costs nothing. */
@@ -555,7 +565,23 @@ async function main() {
   // First run opens the wizard over the main window. `needs_setup` keys off the
   // absence of the config FILE, so an existing user upgrading never sees it.
   if (await api.needsSetup()) {
-    api.openSetup();
+    await api.openSetup();
+
+    // On Windows the wizard opened as a blank white window. Confirm the webview
+    // actually navigated, and if it did not, say so where it can be seen —
+    // there is no console on a release build, and a white rectangle looks the
+    // same whichever of three very different things went wrong.
+    setTimeout(async () => {
+      try {
+        const entry = (await api.windowUrls()).find(([label]) => label === "setup");
+        const url = entry?.[1] ?? "";
+        if (!url.includes("setup.html")) {
+          setStatus(`Wizard did not load: ${url || "window missing"}`);
+        }
+      } catch (error) {
+        setStatus(`Wizard check failed: ${String(error)}`);
+      }
+    }, 2500);
   }
 
   // Watch for device changes while idle.
@@ -579,7 +605,19 @@ async function main() {
     showResolvedDevices(latest);
   });
 
-  api.startupCheck();
+  // Awaited and reported. Unawaited, a rejection here was invisible: the status
+  // line kept its static "Checking environment..." placeholder, which reads
+  // exactly like a check still in progress.
+  try {
+    await api.startupCheck();
+  } catch (error) {
+    setStatus(`Startup check failed: ${String(error)}`);
+  }
 }
 
-main();
+main().catch((error) => {
+  // Without this the window renders its static HTML and looks merely unfinished.
+  const status = el("status");
+  if (status) status.textContent = `Startup failed: ${String(error)}`;
+  throw error;
+});

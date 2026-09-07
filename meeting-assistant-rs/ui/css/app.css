@@ -586,6 +586,27 @@ html, body {
  * Python hand-builds a 3-column grid with a uniform group for the outer
  * columns; space-between with a centred middle group is the same thing.
  */
+/*
+ * The window is sized to the content by `resizeToContent`, but that needs JS,
+ * an IPC round trip, and a correct guess at the height of the title bar. When
+ * any of those is wrong the surplus used to appear as blank chrome under the
+ * toolbar. Filling the viewport puts the surplus in the spacer instead, which
+ * reads as layout rather than as truncation, and it degrades correctly: with no
+ * JS at all the window is merely a little roomy.
+ */
+main {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* `min-height: 0` so it collapses fully when the content needs the room —
+ * without it the flex floor keeps a gap and the toolbar gets pushed out. */
+.spacer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .result-row {
   display: flex;
   align-items: center;

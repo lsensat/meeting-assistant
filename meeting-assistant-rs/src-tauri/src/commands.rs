@@ -333,6 +333,18 @@ pub fn needs_setup(state: State<AppState>) -> bool {
 /// Its own window: the main view is 375x275 and Settings is 590x610, and a
 /// 5-step wizard fits neither. See `open_settings` for why reusing or resizing
 /// an existing window was rejected.
+/// Open the inspector for a window when `MA_DEBUG=1`.
+///
+/// The Windows build is only ever run as a release artifact from CI, so a
+/// webview that fails to load has no console anyone can reach. This is the
+/// hatch. It is a no-op unless the variable is set, so it costs nothing in
+/// normal use.
+fn debug_inspect(window: &tauri::WebviewWindow) {
+    if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+        window.open_devtools();
+    }
+}
+
 #[tauri::command]
 pub fn open_setup(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("setup") {
@@ -341,16 +353,42 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
-        .title("Welcome to Meeting Assistant")
-        .inner_size(620.0, 560.0)
-        .resizable(false)
-        .maximizable(false)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let window =
+        tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
+            .title("Welcome to Meeting Assistant")
+            .inner_size(620.0, 560.0)
+            .resizable(false)
+            .maximizable(false)
+            .center()
+            .build()
+            .map_err(|e| e.to_string())?;
 
+    debug_inspect(&window);
     Ok(())
+}
+
+/// What each window's webview currently has loaded.
+///
+/// Diagnostic. The Windows wizard opened as a plain white rectangle, and from a
+/// screenshot that is indistinguishable between three very different faults: the
+/// document not loading at all, the stylesheet being refused, or the module
+/// graph throwing. `html, body` carries a dark background, so white means no CSS
+/// applied — but only the URL says whether the webview ever navigated.
+///
+/// There is no console on a release Windows build, so the app has to be able to
+/// answer this itself.
+#[tauri::command]
+pub fn window_urls(app: AppHandle) -> Vec<(String, String)> {
+    app.webview_windows()
+        .iter()
+        .map(|(label, window)| {
+            let url = window
+                .url()
+                .map(|u| u.to_string())
+                .unwrap_or_else(|e| format!("<error: {e}>"));
+            (label.clone(), url)
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -429,7 +467,7 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    tauri::WebviewWindowBuilder::new(
+    let window = tauri::WebviewWindowBuilder::new(
         &app,
         "settings",
         tauri::WebviewUrl::App("settings.html".into()),
@@ -441,6 +479,7 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .build()
     .map_err(|e| e.to_string())?;
 
+    debug_inspect(&window);
     Ok(())
 }
 

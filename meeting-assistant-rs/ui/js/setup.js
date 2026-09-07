@@ -12,6 +12,9 @@
  *    wizard from silently resetting settings it never showed.
  */
 
+// Installed before anything that can throw, so a failure in the modules
+// below is reported on screen instead of leaving a blank or half-built window.
+import "./errors.js";
 import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 
@@ -255,4 +258,7 @@ async function main() {
   await enterStep();
 }
 
-main();
+main().catch((error) => {
+  // Surfaced by errors.js as an on-screen banner.
+  throw error;
+});
