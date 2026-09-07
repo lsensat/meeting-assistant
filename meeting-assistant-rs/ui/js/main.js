@@ -514,10 +514,34 @@ async function showResolvedDevices(config) {
     ? `${tr("computer_audio")}: ${system.label}${system.automatic ? ` (${tr("automatic")})` : ""}`
     : `${tr("computer_audio")}: ${tr("computer_audio_missing")}`;
 
-  // Open on a genuine fallback: hiding the panel must not hide the one thing
-  // it exists to tell you, which is that the app is not using the device you
-  // chose. Never auto-collapses — that would fight the user.
-  if (mic?.automatic || system?.automatic) setDevicesExpanded(true);
+  announceFallback(mic?.automatic === true || system?.automatic === true);
+}
+
+/**
+ * Whether the panel was last seen reporting a fallback.
+ *
+ * Only a change is worth acting on. This function is reached from a 1.5-second
+ * poll as well as from the recorder's own events, and expanding on the *state*
+ * rather than the *transition* meant the panel reopened a second after every
+ * time the user closed it, for as long as the fallback lasted — which is
+ * indefinitely, if the configured device is simply not plugged in.
+ */
+let fallbackAnnounced = false;
+
+/**
+ * Open the panel the first time a fallback appears, and not again.
+ *
+ * Hiding the panel must not hide the one thing it exists to say — that the app
+ * is not using the device you chose — but saying it once is enough. Closing it
+ * afterwards is the user acknowledging the message, and reopening it then is
+ * arguing with them. It never auto-collapses either: that would hide the notice
+ * while it is still true.
+ *
+ * @param {boolean} active
+ */
+function announceFallback(active) {
+  if (active && !fallbackAnnounced) setDevicesExpanded(true);
+  fallbackAnnounced = active;
 }
 
 /** Must match `tauri.conf.json`'s window height. */
@@ -758,18 +782,21 @@ function wireEvents() {
 
   api.on(api.EVENTS.deviceMic, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name}`;
+    // Back on the configured device: a later fallback is news again.
+    fallbackAnnounced = false;
   });
   api.on(api.EVENTS.micFallback, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name} (${tr("automatic")})`;
     // Mid-recording is when this matters most — the device changed under you.
-    setDevicesExpanded(true);
+    // Once, though: the recorder re-reports its device on every stream open.
+    announceFallback(true);
   });
   api.on(api.EVENTS.deviceSystem, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name}`;
   });
   api.on(api.EVENTS.systemFallback, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name} (${tr("automatic")})`;
-    setDevicesExpanded(true);
+    announceFallback(true);
   });
 
   // Recorder diagnostics are not surfaced in the UI; the console keeps them

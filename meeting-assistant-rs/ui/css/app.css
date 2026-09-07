@@ -185,9 +185,21 @@ html, body {
   stroke-linejoin: round;
 }
 
+/*
+ * One treatment for every button that can be pressed: amber-dark, lighting to
+ * amber on hover. The folder button had this on its own and the rest were steel,
+ * which made the toolbar look like some keys worked and others did not.
+ *
+ * The label must stay `--ink`. Dark text on amber-dark is 4.70:1 and clears the
+ * 4.5 that text needs; cream on the same fill is 2.39:1 and would not.
+ *
+ * The exceptions below are exceptions on purpose: `.btn--unavailable` and a
+ * muted microphone both mean "this is not doing what the others are doing", and
+ * that is exactly what the colour is now free to say.
+ */
 .btn--primary   { background: var(--amber-dark); color: var(--ink); }
-.btn--secondary { background: var(--steel-dark); color: var(--ink-invert); }
-.btn--dark      { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--secondary { background: var(--amber-dark); color: var(--ink); }
+.btn--dark      { background: var(--amber-dark); color: var(--ink); }
 /*
  * The microphone is the one control whose colour carries state: steel-dark when
  * idle, amber while it is live. That is the VU-meter reading of amber.
@@ -199,7 +211,7 @@ html, body {
  * which is the opposite of the state it represents.
  */
 .btn--mic.is-muted { background: var(--steel-dark); color: var(--ink-invert); }
-.btn--result    { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--result    { background: var(--amber-dark); color: var(--ink); }
 
 .btn--primary:hover:not(:disabled)   { background: var(--amber);      color: var(--ink); }
 /*
@@ -219,10 +231,10 @@ html, body {
  * buttons vanish against the chrome they sit on, and the outline existed only
  * to give them back an edge.
  */
-.btn--secondary:hover:not(:disabled):not(.btn--unavailable) { background: var(--faceplate-2); color: var(--ink); }
-.btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--faceplate-2); color: var(--ink); }
-.btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber);      color: var(--ink); }
-.btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--faceplate-2); color: var(--ink); }
+.btn--secondary:hover:not(:disabled):not(.btn--unavailable) { background: var(--amber); color: var(--ink); }
+.btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--amber); color: var(--ink); }
+.btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber); color: var(--ink); }
+.btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--amber); color: var(--ink); }
 
 /*
  * Result buttons have a third state. Until their stage reaches `done` they are
@@ -681,8 +693,8 @@ main {
  * amber-dark rather than joining the neutral steel family. Settings stays
  * neutral: it is not a critical action and must not take the red.
  */
-#folder-button:not(.btn--unavailable) { background: var(--amber-dark); color: var(--ink); }
-#folder-button:not(.btn--unavailable):hover { background: var(--amber); color: var(--ink); }
+/* The folder button used to be special-cased to amber. Every button is now, so
+ * the exception is gone rather than repeated. */
 
 /* -------------------------------------------------------- settings window */
 
@@ -812,22 +824,31 @@ input[type="password"] { cursor: text; }
   z-index: 50;
 }
 
+/*
+ * `--body`, the window's own chrome, rather than a cream panel. A light box over
+ * a dark app read as a system dialog borrowed from somewhere else; on the chrome
+ * it reads as part of the same machine, with the panels behind it dimmed by the
+ * backdrop. Cream text on `--body` is 11.24:1.
+ */
 .modal {
-  background: var(--panel);
+  background: var(--body);
   border: var(--border);
   border-radius: var(--radius-card);
   padding: 14px 16px;
   width: 300px;
-  color: var(--ink);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+  color: var(--ink-invert);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.5);
 }
 
 .modal label { display: block; font-size: 11px; margin-bottom: 5px; }
 
+/* Still a light fill. A field being darker than the surface around it is what
+ * makes it read as somewhere to type; matching the chrome would hide it. */
 .modal input[type="text"] {
   width: 100%;
   height: 30px;
-  background: var(--panel-recess);
+  background: var(--panel);
+  color: var(--ink);
 }
 
 .modal-actions {
