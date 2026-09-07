@@ -944,18 +944,58 @@ input[type="password"] { cursor: text; }
 
 .model-row .btn { height: 26px; padding: 0 12px; font-size: 11px; }
 
-/* Icon-only: the text padding would make it needlessly wide in a narrow row. */
-.model-row .btn--icon { padding: 0 8px; }
+/*
+ * The downloaded-models rows in Settings, matched to the form controls they sit
+ * among rather than to the wizard's rows.
+ *
+ * Scoped to `#downloaded-list`: `.model-row` is shared with the setup wizard,
+ * where the recessed fill and taller padding are right — those rows sit in a
+ * list of their own, not in a column of dropdowns. Here the row has to line up
+ * with the selects above and below it, so it takes their height, fill, border
+ * and radius verbatim from `select, input[type="text"], ...`.
+ */
+#downloaded-list .model-row {
+  height: 30px;
+  padding: 0 8px;
+  background: var(--panel);
+  border: var(--border);
+  border-radius: var(--radius-button);
+}
 
 /*
- * Scoped rather than a global `.btn:disabled`, which does not exist and would
- * change the transport and wizard buttons too. Without it a disabled control
- * looks identical to an enabled one — the exact complaint the stop button drew.
+ * A bare icon, not a button. Inside a form control a second bevelled surface
+ * reads as a control within a control; the trash glyph alone is the affordance.
+ * `--ink` is the same near-black the row's own text uses, so the icon belongs
+ * to the row rather than floating on it.
  */
-.model-row .btn--icon:disabled { opacity: 0.4; cursor: default; }
+#downloaded-list .trash-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* `.btn svg` no longer applies, so the stroke setup is repeated here. */
+#downloaded-list .trash-button svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 /* Destructive, so the hover says so rather than reading as any other action. */
-.model-row .btn--icon:hover:not(:disabled) { color: var(--red-dark); }
+#downloaded-list .trash-button:hover:not(:disabled) { color: var(--red-dark); }
+
+/* Without this a disabled control looks identical to an enabled one — the
+ * exact complaint the stop button drew. */
+#downloaded-list .trash-button:disabled { opacity: 0.35; cursor: default; }
 
 .badge {
   background: var(--amber);

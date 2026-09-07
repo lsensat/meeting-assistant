@@ -134,7 +134,7 @@ function renderDownloaded(models) {
     label.textContent = `${model.id} · ${formatSize(model.size_bytes)}`;
 
     const remove = document.createElement("button");
-    remove.className = "btn btn--secondary btn--icon";
+    remove.className = "trash-button";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
