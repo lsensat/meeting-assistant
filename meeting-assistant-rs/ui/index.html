@@ -82,17 +82,14 @@
       </div>
     </section>
 
-    <div class="stages">
-      <div class="chip" id="stage-audio" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_audio">Audio</span>
-      </div>
-      <div class="chip" id="stage-whisper" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_whisper">Transcript</span>
-      </div>
-      <div class="chip" id="stage-summary" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_summary">Summary</span>
-      </div>
-    </div>
+    <!--
+      The three stage chips lived here: Audio / Transcript / Summary. Removed
+      with the processing queue, which says the same thing per meeting and says
+      it better — "Transcribing 2/3", on the card that owns it. The chips
+      described *the* meeting, and once more than one can be in flight there is
+      no such thing: they would flicker between jobs, showing a state that
+      belongs to neither.
+    -->
 
     <!--
       Collapsed by default. A <button>, not a clickable <div>, so it is

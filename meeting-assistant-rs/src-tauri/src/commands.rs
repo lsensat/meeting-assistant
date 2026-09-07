@@ -19,7 +19,7 @@ use meeting_core::{i18n, policy, text};
 use crate::audio::devices::{self, SourceKind};
 use crate::audio::recorder::Event as RecorderEvent;
 use crate::queue;
-use crate::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
+use crate::pipeline::{self, PipelineConfig, Progress, Stage};
 use crate::session::RecordingSession;
 use crate::state::AppState;
 use crate::{ollama, platform, whisper};
@@ -36,7 +36,6 @@ pub const EV_DEVICE_MIC: &str = "device_mic";
 pub const EV_MIC_FALLBACK: &str = "mic_fallback";
 pub const EV_DEVICE_SYSTEM: &str = "device_system";
 pub const EV_SYSTEM_FALLBACK: &str = "system_fallback";
-pub const EV_STAGE: &str = "stage";
 pub const EV_LOG: &str = "log";
 pub const EV_ERROR: &str = "error";
 pub const EV_COMPLETE: &str = "complete";
@@ -109,12 +108,6 @@ pub struct OllamaStatusDto {
     pub running: bool,
     pub models: Vec<String>,
     pub error: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-pub struct StageDto {
-    pub stage: &'static str,
-    pub state: &'static str,
 }
 
 #[derive(Serialize, Clone)]
@@ -1086,13 +1079,10 @@ fn run_job(
                 Stage::Whisper => PERCENT_WHISPER_START,
                 Stage::Summary => PERCENT_WHISPER_END,
             });
-            let _ = emitter.emit(
-                EV_STAGE,
-                StageDto {
-                    stage: stage_name(stage),
-                    state: state_name(stage_state),
-                },
-            );
+            // No longer emitted to the frontend: the stage chips it drove are
+            // gone, and one global stage event cannot describe several jobs.
+            // The stage still matters here, for the card's progress.
+            let _ = stage_state;
         }
         Progress::Status(status) => {
             let _ = emitter.emit(EV_STATUS, status);
@@ -1226,22 +1216,6 @@ pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(
     Ok(())
 }
 
-fn stage_name(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Audio => "audio",
-        Stage::Whisper => "whisper",
-        Stage::Summary => "summary",
-    }
-}
-
-fn state_name(state: StageState) -> &'static str {
-    match state {
-        StageState::Pending => "pending",
-        StageState::Working => "working",
-        StageState::Done => "done",
-        StageState::Error => "error",
-    }
-}
 
 /// `YYYY-MM-DD_HH-MM-SS`, matching the Python's folder naming.
 ///

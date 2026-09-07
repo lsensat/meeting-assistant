@@ -132,7 +132,6 @@ export const EVENTS = {
   micFallback: "mic_fallback",
   deviceSystem: "device_system",
   systemFallback: "system_fallback",
-  stage: "stage",
   log: "log",
   error: "error",
   complete: "complete",

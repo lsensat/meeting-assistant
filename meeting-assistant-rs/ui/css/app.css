@@ -552,56 +552,11 @@ html, body {
 }
 
 /* stage chips */
-.stages { display: flex; justify-content: center; gap: 4px; }
-
-.chip {
-  width: 92px;
-  height: 25px;
-  border-radius: var(--radius-chip);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 11px;
-  background: var(--steel-dark);
-  color: var(--ink-invert);
-}
-
-.chip svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.chip .marker { font-size: 10px; line-height: 1; }
-
 /*
- * The working dot dims, matching the recording indicator, but stays --body
- * rather than turning red: the chip is already amber, which is what "in
- * progress" means here, and red is reserved for record and failure. Making
- * this red would spend the one colour that has to keep meaning "consequential".
+ * The stage chips and their state colours lived here. Removed with the
+ * processing queue: the card for each meeting carries its own stage, and one
+ * global set of chips could only ever describe one of several jobs.
  */
-@media (prefers-reduced-motion: no-preference) {
-  .chip[data-state="working"] .marker {
-    animation: rec-pulse 1.8s ease-in-out infinite;
-  }
-}
-
-/*
- * Four states, not the two a simple toggle would need. `working` takes the
- * amber because that is what amber means here; `error` takes the red because a
- * failed stage is exactly the "critical" the red is reserved for — the meeting
- * produced no output.
- */
-.chip[data-state="pending"] { background: var(--steel-dark); color: var(--ink-invert); }
-.chip[data-state="working"] { background: var(--amber);      color: var(--ink); }
-/* Done is the ready lamp. */
-.chip[data-state="done"]    { background: var(--green);      color: var(--ink-invert); }
-/* red-dark, not red: cream on --red is 4.40:1, just under the 4.5 for text. */
-.chip[data-state="error"]   { background: var(--red-dark);   color: var(--ink-invert); }
 
 .audio-panel {
   /*

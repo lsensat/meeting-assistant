@@ -39,11 +39,6 @@ const ui = {
   deviceSystem: el("device-system"),
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
-  stages: {
-    audio: el("stage-audio"),
-    whisper: el("stage-whisper"),
-    summary: el("stage-summary"),
-  },
 };
 
 /**
@@ -98,26 +93,12 @@ function isAvailable(button) {
   return !button.classList.contains("btn--unavailable");
 }
 
-function setStage(name, state) {
-  const chip = ui.stages[name];
-  if (!chip) return;
-  chip.dataset.state = state;
-
-  const marker = chip.querySelector(".marker");
-  if (!marker) return;
-
-  // pending/working use a glyph prefix; done and error swap to a real icon.
-  if (state === "done") {
-    marker.textContent = "✓";
-  } else if (state === "error") {
-    marker.textContent = "✕";
-  } else {
-    marker.textContent = state === "working" ? "●" : "○";
-  }
-}
-
-function resetStages() {
-  for (const name of Object.keys(ui.stages)) setStage(name, "pending");
+/**
+ * Reset the result buttons between meetings.
+ *
+ * Was `resetStages`, which also drove three chips that no longer exist.
+ */
+function resetResults() {
   setAvailable(ui.transcript, false);
   setAvailable(ui.summary, false);
   // The folder button stays available: the output folder exists whether or not
@@ -791,30 +772,24 @@ function wireEvents() {
     setDevicesExpanded(true);
   });
 
-  api.on(api.EVENTS.stage, ({ stage, state }) => {
-    setStage(stage, state);
-
-    // A result becomes clickable exactly when its stage completes.
-    if (state === "done") {
-      if (stage === "whisper") setAvailable(ui.transcript, true);
-      if (stage === "summary") setAvailable(ui.summary, true);
-    }
-  });
-
   // Recorder diagnostics are not surfaced in the UI; the console keeps them
   // reachable without adding a log panel the original never had.
   api.on(api.EVENTS.log, (message) => console.log("[recorder]", message));
 
   api.on(api.EVENTS.error, (message) => {
+    // A failed job also shows as failed on its own card, which is where the
+    // meeting it belongs to can actually be identified.
     setStatus(message || tr("error_occurred"));
-    for (const name of Object.keys(ui.stages)) {
-      if (ui.stages[name].dataset.state === "working") setStage(name, "error");
-    }
     setRecording(false);
   });
 
   api.on(api.EVENTS.complete, (payload) => {
     results = payload;
+    // Enabled here rather than when each stage reported done. The paths these
+    // buttons open arrive with THIS event, so enabling them earlier left them
+    // clickable while `results` still pointed at the previous meeting.
+    setAvailable(ui.transcript, true);
+    setAvailable(ui.summary, true);
     setStatus(tr("processed_ok"));
   });
 }
@@ -844,7 +819,7 @@ async function cancelFlow() {
   try {
     await api.cancelRecording();
     ui.timer.textContent = "00:00:00";
-    resetStages();
+    resetResults();
     setStatus(tr("ready"));
   } catch (error) {
     setStatus(String(error));
@@ -855,7 +830,7 @@ async function cancelFlow() {
 
 function wireControls() {
   ui.start.addEventListener("click", async () => {
-    resetStages();
+    resetResults();
     ui.timer.textContent = "00:00:00";
     try {
       // No setRecording here: the recording_state event does it, so this
@@ -917,7 +892,7 @@ async function main() {
   initTooltips(el("tooltip"));
   wireEvents();
   wireControls();
-  resetStages();
+  resetResults();
   setRecording(false);
 
   // Applied before the first device query so the window does not visibly jump
