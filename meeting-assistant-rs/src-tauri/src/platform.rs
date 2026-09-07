@@ -145,7 +145,24 @@ pub fn start_ollama() -> std::io::Result<()> {
         ));
     };
 
-    std::process::Command::new(exe).arg("serve").spawn()?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("serve");
+
+    // Without this, `ollama serve` inherits a console and Windows opens a
+    // terminal window in the user's face, full of GIN request logs, for the
+    // lifetime of the server. It is a background service the app started on the
+    // user's behalf; they did not ask to watch it run.
+    //
+    // The flag suppresses the console only. The server still starts, still logs
+    // to its own file, and `list_models` still reaches it on 127.0.0.1:11434.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command.spawn()?;
     Ok(())
 }
 

@@ -82,6 +82,9 @@ pub fn init(app: &AppHandle) -> tauri::Result<TrayIcon> {
     TrayIconBuilder::with_id("main")
         .icon(icon)
         .icon_as_template(as_template)
+        // Windows shows nothing on hover without this, which reads as a
+        // stray unidentified icon among a dozen others in the notification area.
+        .tooltip("Meeting Assistant")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event)
