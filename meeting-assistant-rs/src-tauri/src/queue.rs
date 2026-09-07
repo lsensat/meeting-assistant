@@ -307,3 +307,339 @@ mod tests {
         assert!(scan(Path::new("/nonexistent/meeting-assistant/meetings")).is_empty());
     }
 }
+
+// ---------------------------------------------------------------- the queue
+
+use std::collections::VecDeque;
+use std::sync::{Condvar, Mutex};
+
+use crate::whisper::TranscriptionControl;
+
+/// One meeting waiting for, or receiving, the worker's attention.
+#[derive(Debug, Clone)]
+pub struct Job {
+    pub folder: PathBuf,
+    pub state: MeetingState,
+}
+
+/// A job flattened for the UI.
+///
+/// The frontend renders the queue from a snapshot of these rather than
+/// reconstructing it from a stream of per-job events. One "something changed"
+/// signal plus a snapshot is far less machinery than an id on every event, and
+/// it cannot drift out of sync with the truth the way an incrementally-applied
+/// stream can.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobView {
+    pub id: String,
+    pub title: String,
+    pub stage: Stage,
+    pub percent: u8,
+    pub error: Option<String>,
+    pub running: bool,
+}
+
+#[derive(Default)]
+struct Inner {
+    jobs: VecDeque<Job>,
+    /// Id of the job the worker currently holds, if any.
+    running: Option<String>,
+    paused: bool,
+    /// Live percentage for the running job, updated by the worker.
+    percent: u8,
+    /// Set when the worker should exit entirely, at shutdown.
+    stopped: bool,
+}
+
+/// The processing queue: one worker, one global pause.
+pub struct Queue {
+    inner: Mutex<Inner>,
+    /// Woken when work arrives, when the pause lifts, or at shutdown.
+    wake: Condvar,
+    /// The running job's handle. Held here so `pause` and `discard` can reach
+    /// into a transcription that is already underway — a `full()` call blocks
+    /// its thread for the whole file, so there is no other way to stop it.
+    control: Mutex<TranscriptionControl>,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Queue {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(Inner::default()),
+            wake: Condvar::new(),
+            control: Mutex::new(TranscriptionControl::new()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().expect("queue poisoned")
+    }
+
+    pub fn enqueue(&self, job: Job) {
+        self.lock().jobs.push_back(job);
+        self.wake.notify_all();
+    }
+
+    /// Rebuild the queue from disk. Called once at startup.
+    ///
+    /// Existing entries are kept and duplicates skipped, so calling it twice
+    /// cannot queue the same meeting for a second transcription.
+    pub fn absorb(&self, found: Vec<(PathBuf, MeetingState)>) {
+        let mut inner = self.lock();
+        for (folder, state) in found {
+            if inner.jobs.iter().any(|job| job.state.id == state.id) {
+                continue;
+            }
+            inner.jobs.push_back(Job { folder, state });
+        }
+        drop(inner);
+        self.wake.notify_all();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.lock().paused
+    }
+
+    /// True while a meeting is being processed or is waiting to be.
+    ///
+    /// Used by the guard on deleting a Whisper model: a **queued** meeting still
+    /// needs its model when its turn comes, so "is anything outstanding" is the
+    /// right question, not "is anything running".
+    pub fn has_outstanding(&self) -> bool {
+        let inner = self.lock();
+        inner.running.is_some() || inner.jobs.iter().any(|j| j.state.stage.is_outstanding())
+    }
+
+    /// Stop or start processing.
+    ///
+    /// Pausing aborts the running job rather than letting it finish: the point
+    /// of the switch is to stop competing for the machine *now*, and a
+    /// large-v3 transcription can run for many minutes. Nothing is lost —
+    /// the pipeline persists its progress before returning.
+    pub fn set_paused(&self, paused: bool) {
+        self.lock().paused = paused;
+        if paused {
+            self.control.lock().expect("control poisoned").abort();
+        }
+        self.wake.notify_all();
+    }
+
+    /// Remove a meeting from the queue, aborting it first if it is running.
+    ///
+    /// Returns its folder so the caller can delete it. Deleting here would be
+    /// wrong: the pipeline may still be inside that directory, and removing it
+    /// underneath is exactly the corruption the rename ordering avoids.
+    pub fn take(&self, id: &str) -> Option<PathBuf> {
+        let mut inner = self.lock();
+
+        if inner.running.as_deref() == Some(id) {
+            drop(inner);
+            self.control.lock().expect("control poisoned").abort();
+            // The worker clears `running` when it unwinds; the caller waits for
+            // that before touching the folder.
+            inner = self.lock();
+        }
+
+        let index = inner.jobs.iter().position(|job| job.state.id == id)?;
+        let job = inner.jobs.remove(index)?;
+        Some(job.folder)
+    }
+
+    /// Put a failed meeting back in line.
+    pub fn retry(&self, id: &str) -> bool {
+        let mut inner = self.lock();
+        let Some(job) = inner.jobs.iter_mut().find(|job| job.state.id == id) else {
+            return false;
+        };
+        if job.state.stage != Stage::Failed {
+            return false;
+        }
+        // Back to where it got to, not back to the beginning: the offsets and
+        // partial files are still on disk and still valid.
+        job.state.stage = if job.state.mic_offset_seconds > 0.0 {
+            Stage::Whisper
+        } else {
+            Stage::Queued
+        };
+        job.state.error = None;
+        let folder = job.folder.clone();
+        let state = job.state.clone();
+        drop(inner);
+        let _ = save(&folder, &state);
+        self.wake.notify_all();
+        true
+    }
+
+    /// A snapshot for the UI, oldest first.
+    pub fn view(&self) -> Vec<JobView> {
+        let inner = self.lock();
+        inner
+            .jobs
+            .iter()
+            .map(|job| {
+                let running = inner.running.as_deref() == Some(job.state.id.as_str());
+                JobView {
+                    id: job.state.id.clone(),
+                    title: job.state.title.clone(),
+                    stage: job.state.stage,
+                    percent: if running { inner.percent } else { 0 },
+                    error: job.state.error.clone(),
+                    running,
+                }
+            })
+            .collect()
+    }
+
+    /// Block until there is work and processing is not paused.
+    ///
+    /// `None` means the app is shutting down. Each job gets a **fresh**
+    /// control: reusing one would carry the previous job's abort flag into the
+    /// next, so resuming after a pause would immediately stop again.
+    pub fn next(&self) -> Option<Job> {
+        let mut inner = self.lock();
+        loop {
+            if inner.stopped {
+                return None;
+            }
+
+            if !inner.paused {
+                if let Some(index) = inner.jobs.iter().position(|j| j.state.stage.is_outstanding())
+                {
+                    let job = inner.jobs[index].clone();
+                    inner.running = Some(job.state.id.clone());
+                    inner.percent = 0;
+                    *self.control.lock().expect("control poisoned") = TranscriptionControl::new();
+                    return Some(job);
+                }
+            }
+
+            inner = self.wake.wait(inner).expect("queue poisoned");
+        }
+    }
+
+    /// The running job's handle, for polling progress from another thread.
+    pub fn control(&self) -> TranscriptionControl {
+        self.control.lock().expect("control poisoned").clone()
+    }
+
+    pub fn set_percent(&self, percent: u8) {
+        self.lock().percent = percent;
+    }
+
+    /// Record where a job got to and release the worker.
+    ///
+    /// Finished meetings leave the queue — they are done, and the main window's
+    /// result buttons point at them. Failed ones stay, because they need a
+    /// decision the user has not made yet.
+    pub fn finish(&self, id: &str, updated: MeetingState) {
+        let mut inner = self.lock();
+        inner.running = None;
+        inner.percent = 0;
+        if let Some(job) = inner.jobs.iter_mut().find(|j| j.state.id == id) {
+            job.state = updated;
+        }
+        inner.jobs.retain(|j| j.state.stage != Stage::Done);
+        drop(inner);
+        self.wake.notify_all();
+    }
+
+    pub fn shutdown(&self) {
+        self.lock().stopped = true;
+        self.control.lock().expect("control poisoned").abort();
+        self.wake.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn job(id: &str, stage: Stage) -> Job {
+        let mut state = MeetingState::new(id.into(), String::new(), serde_json::json!({}));
+        state.stage = stage;
+        Job { folder: PathBuf::from("/tmp").join(id), state }
+    }
+
+    #[test]
+    fn absorb_does_not_queue_the_same_meeting_twice() {
+        // Guards the resume path: scanning at startup while something is
+        // already queued must not schedule it for a second transcription.
+        let queue = Queue::new();
+        queue.enqueue(job("a", Stage::Queued));
+        queue.absorb(vec![
+            (PathBuf::from("/tmp/a"), job("a", Stage::Queued).state),
+            (PathBuf::from("/tmp/b"), job("b", Stage::Queued).state),
+        ]);
+        let ids: Vec<String> = queue.view().into_iter().map(|v| v.id).collect();
+        assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_queued_meeting_counts_as_outstanding() {
+        // The Whisper-model delete guard depends on this: a meeting waiting its
+        // turn still needs its model to exist when the worker reaches it.
+        let queue = Queue::new();
+        assert!(!queue.has_outstanding());
+        queue.enqueue(job("a", Stage::Queued));
+        assert!(queue.has_outstanding());
+    }
+
+    #[test]
+    fn a_failed_meeting_is_not_outstanding_until_retried() {
+        let queue = Queue::new();
+        queue.enqueue(job("a", Stage::Failed));
+        assert!(!queue.has_outstanding(), "a failure must not be retried on a loop");
+    }
+
+    #[test]
+    fn retry_resumes_rather_than_restarting() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.mic_offset_seconds = 42.0;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a"));
+        let view = queue.view();
+        assert_eq!(view[0].stage, Stage::Whisper, "work already done must not be repeated");
+        assert!(view[0].error.is_none());
+    }
+
+    #[test]
+    fn retry_only_applies_to_failures() {
+        let queue = Queue::new();
+        queue.enqueue(job("a", Stage::Queued));
+        assert!(!queue.retry("a"));
+        assert!(!queue.retry("nonexistent"));
+    }
+
+    #[test]
+    fn take_removes_the_job_and_reports_its_folder() {
+        let queue = Queue::new();
+        queue.enqueue(job("a", Stage::Queued));
+        queue.enqueue(job("b", Stage::Queued));
+
+        assert_eq!(queue.take("a"), Some(PathBuf::from("/tmp/a")));
+        let ids: Vec<String> = queue.view().into_iter().map(|v| v.id).collect();
+        assert_eq!(ids, ["b"]);
+        assert_eq!(queue.take("gone"), None);
+    }
+
+    #[test]
+    fn pausing_aborts_the_running_transcription() {
+        // Pause has to reach into a `full()` call that is already blocking its
+        // thread; without this it would only take effect between meetings.
+        let queue = Queue::new();
+        let control = queue.control.lock().expect("control").clone();
+        assert!(!control.is_aborted());
+
+        queue.set_paused(true);
+        assert!(queue.is_paused());
+        assert!(control.is_aborted());
+    }
+}

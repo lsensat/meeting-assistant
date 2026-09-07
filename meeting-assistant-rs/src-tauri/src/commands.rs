@@ -18,6 +18,7 @@ use meeting_core::{i18n, policy, text};
 
 use crate::audio::devices::{self, SourceKind};
 use crate::audio::recorder::Event as RecorderEvent;
+use crate::queue;
 use crate::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
 use crate::session::RecordingSession;
 use crate::state::AppState;
@@ -52,6 +53,10 @@ pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
 /// zero and Start still enabled. Any front-end that can change the state must
 /// announce it here, and every front-end reacts to it rather than to its own
 /// clicks.
+/// The queue changed: a job was added, finished, failed or was removed, or the
+/// pause switch moved. Carries no payload — the frontend asks for a snapshot.
+pub const EV_QUEUE_CHANGED: &str = "queue_changed";
+
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
 pub const EV_MUTE_STATE: &str = "mute_state";
@@ -288,9 +293,10 @@ pub fn list_ollama_models() -> OllamaStatusDto {
 ///    a different model first is one click and makes the intent explicit.
 #[tauri::command(async)]
 pub fn delete_whisper_model(id: String, state: State<AppState>) -> Result<(), String> {
-    if state.session.lock().expect("session poisoned").is_some()
-        || *state.processing.lock().expect("processing poisoned")
-    {
+    // `is_processing` covers QUEUED meetings, not just the running one: a
+    // meeting waiting its turn still needs this model to exist when the worker
+    // reaches it, and by then the user is nowhere near this dialog.
+    if state.is_recording() || state.is_processing() {
         return Err("A meeting is in progress.".into());
     }
 
@@ -739,10 +745,6 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     if state.is_recording() {
         return Err("already recording".into());
     }
-    if state.is_processing() {
-        return Err("still processing the previous meeting".into());
-    }
-
     let config = state.config_snapshot();
 
     // One folder per meeting, named for when it started. The user's optional
@@ -913,9 +915,8 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
         }
     }
 
-    *state.processing.lock().expect("processing poisoned") = true;
     *state.pending.lock().expect("pending poisoned") = Some(summary);
-    emit_recording_state(&app, false, true);
+    emit_recording_state(&app, false, state.is_processing());
     Ok(())
 }
 
@@ -939,12 +940,93 @@ pub fn finalize_meeting(
         .take()
         .ok_or("no meeting is waiting to be processed")?;
 
+    // Snapshotted HERE, at enqueue, and stored with the meeting — not read
+    // when the worker reaches it. Changing the summary type or the provider
+    // between meetings must not reach back and rewrite what a meeting already
+    // waiting in the queue will produce.
     let config = state.config_snapshot();
+
+    let id = summary
+        .folder
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "meeting".to_string());
+
+    let meeting = queue::MeetingState::new(
+        id,
+        text::sanitize_name(&meeting_title),
+        serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+    );
+
+    // Written before the job is visible to the worker, so a crash in between
+    // leaves a meeting the startup scan will find rather than one it will not.
+    queue::save(&summary.folder, &meeting).map_err(|e| e.to_string())?;
+
+    state.queue.enqueue(queue::Job {
+        folder: summary.folder,
+        state: meeting,
+    });
+
+    emit_queue_changed(&app);
+    emit_recording_state(&app, false, state.is_processing());
+    Ok(())
+}
+
+/// Percentages the stages occupy on the queue card's progress bar.
+///
+/// Transcription is the long pole by a wide margin, so it gets most of the bar.
+/// The numbers are honest about that rather than dividing the bar into three
+/// equal thirds, which would sit at 33% for minutes and then leap to 100%.
+const PERCENT_AUDIO: u8 = 3;
+const PERCENT_WHISPER_START: u8 = 5;
+const PERCENT_WHISPER_END: u8 = 80;
+
+/// The single background worker.
+///
+/// One, not several: each Whisper job loads its own copy of the model — 3.1 GB
+/// for large-v3 — and Ollama serialises requests internally anyway, so running
+/// two would double the memory to no purpose.
+pub fn spawn_worker(app: AppHandle) {
+    std::thread::spawn(move || {
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let queue = Arc::clone(&state.queue);
+
+        while let Some(job) = queue.next() {
+            let id = job.state.id.clone();
+            let (updated, folder) = run_job(&app, &queue, job);
+
+            // Persisted before the queue is told, so a crash in between leaves
+            // the truth on disk rather than only in memory.
+            let _ = queue::save(&folder, &updated);
+            queue.finish(&id, updated);
+            emit_queue_changed(&app);
+            emit_recording_state(&app, state.is_recording(), state.is_processing());
+        }
+    });
+}
+
+/// Run one meeting to completion, to a pause, or to a failure.
+///
+/// Returns the state to persist and the folder it belongs in — the folder is
+/// returned because `pipeline::run` renames it partway through, so the path the
+/// job started with is not the one the state file must be written to.
+fn run_job(
+    app: &AppHandle,
+    queue: &Arc<queue::Queue>,
+    job: queue::Job,
+) -> (queue::MeetingState, std::path::PathBuf) {
+    let mut meeting = job.state;
+    let config = Config::from_json(
+        &serde_json::to_string(&meeting.config).unwrap_or_default(),
+        &platform::documents_dir(),
+    );
     let language = config.language;
 
     let pipeline_config = PipelineConfig {
-        folder: summary.folder,
-        meeting_title: text::sanitize_name(&meeting_title),
+        folder: job.folder.clone(),
+        meeting_title: meeting.title.clone(),
         output_folder: config.output_folder.clone(),
         whisper_model: config.whisper_model.clone(),
         transcription_language: config.transcription_language.whisper_code().map(str::to_string),
@@ -955,50 +1037,189 @@ pub fn finalize_meeting(
         keep_audio: config.keep_audio,
         speaker_me: i18n::tr(language, "speaker_me").to_string(),
         speaker_meeting: i18n::tr(language, "speaker_meeting").to_string(),
+        resume: pipeline::ResumePoint {
+            mic_offset_seconds: meeting.mic_offset_seconds,
+            system_offset_seconds: meeting.system_offset_seconds,
+            summary_chunk: meeting.summary_chunk,
+        },
     };
 
-    let handle = app.clone();
-    let state_handle: Arc<AppHandle> = Arc::new(app);
+    let control = queue.control();
 
-    std::thread::spawn(move || {
-        let emitter = handle.clone();
-        let result = pipeline::run(pipeline_config, move |progress| match progress {
-            Progress::Stage(stage, stage_state) => {
-                let _ = emitter.emit(
-                    EV_STAGE,
-                    StageDto {
-                        stage: stage_name(stage),
-                        state: state_name(stage_state),
-                    },
-                );
-            }
-            Progress::Status(status) => {
-                let _ = emitter.emit(EV_STATUS, status);
+    // `full()` blocks its thread for the whole file, so the only way to observe
+    // a transcription in progress is from another thread reading the control.
+    // The ticker ends when the job does, via the same abort flag.
+    let ticker = {
+        let total = pipeline::wav_duration(&job.folder.join(crate::session::MIC_FILENAME))
+            .unwrap_or(0.0)
+            + pipeline::wav_duration(&job.folder.join(crate::session::SYSTEM_FILENAME))
+                .unwrap_or(0.0);
+        let queue = Arc::clone(queue);
+        let app = app.clone();
+        let control = control.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+
+        std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if total > 0.0 {
+                    let fraction = (control.seconds_done() / total).clamp(0.0, 1.0);
+                    let span = (PERCENT_WHISPER_END - PERCENT_WHISPER_START) as f64;
+                    queue.set_percent(PERCENT_WHISPER_START + (fraction * span) as u8);
+                    emit_queue_changed(&app);
+                }
             }
         });
+        done
+    };
 
-        match result {
-            Ok(output) => {
-                let _ = handle.emit(
-                    EV_COMPLETE,
-                    CompleteDto {
-                        folder: output.folder.to_string_lossy().into_owned(),
-                        transcript_file: output.transcript_file.to_string_lossy().into_owned(),
-                        summary_file: output.summary_file.to_string_lossy().into_owned(),
-                    },
-                );
-            }
-            Err(e) => {
-                let _ = handle.emit(EV_ERROR, e.to_string());
-            }
+    let emitter = app.clone();
+    let queue_for_stage = Arc::clone(queue);
+    let result = pipeline::run(pipeline_config, &control, move |progress| match progress {
+        Progress::Stage(stage, stage_state) => {
+            queue_for_stage.set_percent(match stage {
+                Stage::Audio => PERCENT_AUDIO,
+                Stage::Whisper => PERCENT_WHISPER_START,
+                Stage::Summary => PERCENT_WHISPER_END,
+            });
+            let _ = emitter.emit(
+                EV_STAGE,
+                StageDto {
+                    stage: stage_name(stage),
+                    state: state_name(stage_state),
+                },
+            );
         }
-
-        if let Some(state) = state_handle.try_state::<AppState>() {
-            *state.processing.lock().expect("processing poisoned") = false;
+        Progress::Status(status) => {
+            let _ = emitter.emit(EV_STATUS, status);
         }
-        emit_recording_state(&handle, false, false);
     });
 
+    ticker.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // The folder as it stands now: the audio stage renames it.
+    let folder = match &result {
+        Ok(pipeline::RunOutcome::Finished(output)) => output.folder.clone(),
+        _ => job.folder.clone(),
+    };
+
+    match result {
+        Ok(pipeline::RunOutcome::Finished(output)) => {
+            let _ = app.emit(
+                EV_COMPLETE,
+                CompleteDto {
+                    folder: output.folder.to_string_lossy().into_owned(),
+                    transcript_file: output.transcript_file.to_string_lossy().into_owned(),
+                    summary_file: output.summary_file.to_string_lossy().into_owned(),
+                },
+            );
+            meeting.stage = queue::Stage::Done;
+            meeting.error = None;
+        }
+        Ok(pipeline::RunOutcome::Paused(resume)) => {
+            // Not an error and not reported as one. The stage records how far it
+            // got so the card can say so and the next run can pick it up.
+            meeting.mic_offset_seconds = resume.mic_offset_seconds;
+            meeting.system_offset_seconds = resume.system_offset_seconds;
+            meeting.summary_chunk = resume.summary_chunk;
+            meeting.stage = if resume.summary_chunk > 0 {
+                queue::Stage::Summary
+            } else {
+                queue::Stage::Whisper
+            };
+        }
+        Err(e) => {
+            let message = e.to_string();
+            let _ = app.emit(EV_ERROR, message.clone());
+            meeting.stage = queue::Stage::Failed;
+            meeting.error = Some(message);
+        }
+    }
+
+    (meeting, folder)
+}
+
+/// Tell the frontend the queue moved; it then asks for a fresh snapshot.
+///
+/// One signal rather than a job id threaded through every stage, status,
+/// completion and error event. The frontend renders the queue from
+/// [`list_jobs`], so it cannot drift out of step with the worker the way an
+/// incrementally-applied event stream can.
+pub fn emit_queue_changed(app: &AppHandle) {
+    let _ = app.emit(EV_QUEUE_CHANGED, ());
+}
+
+/// Everything in the queue, for rendering.
+#[tauri::command(async)]
+pub fn list_jobs(state: State<AppState>) -> Vec<queue::JobView> {
+    state.queue.view()
+}
+
+#[tauri::command(async)]
+pub fn is_processing_paused(state: State<AppState>) -> bool {
+    state.queue.is_paused()
+}
+
+/// Hold, or release, all processing.
+///
+/// Persisted to the config because the choice has a horizon of hours — "do this
+/// at lunch", "do this tonight" — and resetting it on the next launch would
+/// silently start the very work the user postponed.
+#[tauri::command(async)]
+pub fn set_processing_paused(
+    app: AppHandle,
+    paused: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    state.queue.set_paused(paused);
+
+    // Written through the same path as any other setting, so there is one place
+    // that knows how the config reaches disk.
+    let mut config = state.config_snapshot();
+    config.processing_paused = paused;
+    let app_folder = platform::app_data_dir();
+    std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
+    std::fs::write(&state.config_file, config.to_json()).map_err(|e| e.to_string())?;
+    *state.config.lock().expect("config poisoned") = config;
+
+    emit_queue_changed(&app);
+    Ok(())
+}
+
+/// Remove a meeting from the queue and delete it.
+///
+/// # This deletes audio
+///
+/// Same meaning as cancelling a recording: the meeting should not exist, so its
+/// folder goes with it. It exists because a meeting started by accident should
+/// not have to wait its turn in a queue to be got rid of, and pausing everything
+/// is not a way to remove one thing.
+///
+/// The job is taken out of the queue and aborted **before** anything is removed.
+/// `Queue::take` deliberately returns the folder rather than deleting it, so the
+/// pipeline is never standing inside a directory that is being unlinked.
+#[tauri::command(async)]
+pub fn discard_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(), String> {
+    let Some(folder) = state.queue.take(&id) else {
+        return Err("that meeting is no longer in the queue".into());
+    };
+
+    // Bounded: the path comes from the queue entry, never from the caller.
+    let _ = app.emit(EV_LOG, format!("discarding meeting {}", folder.display()));
+    std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+
+    emit_queue_changed(&app);
+    Ok(())
+}
+
+/// Put a failed meeting back in line, resuming rather than restarting.
+#[tauri::command(async)]
+pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(), String> {
+    if !state.queue.retry(&id) {
+        return Err("that meeting is not waiting to be retried".into());
+    }
+    emit_queue_changed(&app);
     Ok(())
 }
 

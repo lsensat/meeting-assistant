@@ -9,7 +9,9 @@
 //! ```
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use meeting_assistant::summary::ProviderConfig;
 use meeting_assistant::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
@@ -80,6 +82,9 @@ fn main() {
         keep_audio: true,
         speaker_me: i18n::tr(language, "speaker_me").to_string(),
         speaker_meeting: i18n::tr(language, "speaker_meeting").to_string(),
+        // The CLI always processes a folder from the beginning. Resuming is the
+        // app's concern; here `--folder` means "do this one, now".
+        resume: pipeline::ResumePoint::default(),
     };
 
     println!("folder  : {}", config.folder.display());
@@ -90,7 +95,32 @@ fn main() {
     let started = Instant::now();
     let mut last_status = String::new();
 
-    let result = pipeline::run(config, |progress| match progress {
+    // Live transcription progress, printed from a second thread.
+    //
+    // `full()` blocks the thread it runs on for the whole file, so the progress
+    // that used to be printed from inside the pipeline could only appear once
+    // the work was already finished. Polling the control from here is what makes
+    // it actually tick — the same mechanism the app's queue cards use.
+    let control = whisper::TranscriptionControl::new();
+    let total_audio = pipeline::wav_duration(&config.folder.join("microphone.wav")).unwrap_or(0.0)
+        + pipeline::wav_duration(&config.folder.join("system_audio.wav")).unwrap_or(0.0);
+    let finished = Arc::new(AtomicBool::new(false));
+
+    let ticker = {
+        let control = control.clone();
+        let finished = Arc::clone(&finished);
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(2));
+                if total_audio > 0.0 && control.seconds_done() > 0.0 {
+                    let percent = (control.seconds_done() / total_audio * 100.0).min(100.0);
+                    println!("  transcribed {:.0}% of the audio", percent);
+                }
+            }
+        })
+    };
+
+    let result = pipeline::run(config, &control, |progress| match progress {
         Progress::Stage(stage, state) => {
             println!("\n[{}] {}", stage_name(stage), state_name(state));
         }
@@ -103,14 +133,23 @@ fn main() {
         }
     });
 
+    finished.store(true, Ordering::Relaxed);
+    let _ = ticker.join();
+
     match result {
-        Ok(output) => {
+        Ok(pipeline::RunOutcome::Finished(output)) => {
             println!("\n----------------------------------------------------------");
             println!("done in {:.1}s", started.elapsed().as_secs_f64());
             println!("segments   : {}", output.segment_count);
             println!("transcript : {}", output.transcript_file.display());
             println!("summary    : {}", output.summary_file.display());
             println!("----------------------------------------------------------");
+        }
+        // Unreachable from the CLI, which never asks the control to abort —
+        // but the compiler is right to insist it be handled rather than assumed.
+        Ok(pipeline::RunOutcome::Paused(_)) => {
+            eprintln!("\nstopped early");
+            std::process::exit(1);
         }
         Err(e) => {
             eprintln!("\nFAILED: {e}");

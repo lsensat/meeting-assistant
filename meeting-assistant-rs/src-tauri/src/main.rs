@@ -68,9 +68,32 @@ fn main() {
             commands::open_settings,
             commands::close_settings,
             commands::startup_check,
+            commands::list_jobs,
+            commands::is_processing_paused,
+            commands::set_processing_paused,
+            commands::discard_job,
+            commands::retry_job,
         ])
         .setup(|app| {
             meeting_assistant::tray::init(app.handle())?;
+
+            // Pick up anything left unfinished, before the worker starts looking.
+            //
+            // Meetings survive a quit because their audio and their state file
+            // are both on disk from the moment recording stops. Without this the
+            // work would simply be forgotten — and worse, silently: the folder
+            // would sit there looking like a finished meeting with no summary.
+            let state = tauri::Manager::state::<AppState>(app);
+            let config = state.config_snapshot();
+            state
+                .queue
+                .absorb(meeting_assistant::queue::scan(&config.output_folder));
+
+            // Restored, not reset. The switch means "not now, do it tonight",
+            // and a horizon that long has to survive closing the app.
+            state.queue.set_paused(config.processing_paused);
+
+            commands::spawn_worker(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
