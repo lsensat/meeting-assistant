@@ -438,6 +438,15 @@ fn rename_folder(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    // Already named. A meeting that was paused and resumed comes back through
+    // here with the folder the FIRST pass renamed, and appending the title again
+    // gave `2026-09-07_14-03-22_Standup_Standup` — once more on every
+    // pause. Idempotent here rather than gated by the caller, because this is
+    // the function that knows what the folder is called.
+    if !title.is_empty() && !moving && base.ends_with(&format!("_{title}")) {
+        return Ok(folder.to_path_buf());
+    }
+
     let mut target = if title.is_empty() {
         parent.join(&base)
     } else {
@@ -499,6 +508,25 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
+    }
+
+    #[test]
+    fn a_resumed_meeting_is_not_renamed_twice() {
+        // Found by `queue_lifecycle`: every pause and resume appended the title
+        // again, so a meeting paused three times became `..._Standup_Standup_Standup`
+        // and the state file could no longer be found where it was left.
+        let dir = temp_dir("resumed-rename");
+        let folder = dir.join("2026-09-07_14-03-22");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+
+        let first = rename_folder(&folder, "Standup", Path::new("")).expect("first pass");
+        assert_eq!(first.file_name().unwrap(), "2026-09-07_14-03-22_Standup");
+
+        let second = rename_folder(&first, "Standup", Path::new("")).expect("resumed pass");
+        assert_eq!(
+            second, first,
+            "resuming must leave the folder where the first pass put it"
+        );
     }
 
     #[test]
