@@ -265,11 +265,25 @@ function jobTime(id) {
   return match ? `${match[1]}:${match[2]}` : id;
 }
 
+/** Which of the three processing steps a stage is. */
+const STAGE_STEP = { audio: 1, whisper: 2, summary: 3 };
+
+/**
+ * "Transcribing 2/3".
+ *
+ * The step number is what turns a stage name into progress. "Transcribing" on
+ * its own says nothing about how much is left; "2/3" says there is a whole
+ * summary still to come, which is the difference between a card that informs
+ * and a card that just moves.
+ */
 function stageLabel(job) {
   if (job.stage === "failed") return tr("queue_stage_failed");
   // Paused work is not "waiting its turn"; say which it is.
   if (!job.running && processingPaused) return tr("queue_paused");
-  return tr(`queue_stage_${job.stage}`);
+
+  const name = tr(`queue_stage_${job.stage}`);
+  const step = STAGE_STEP[job.stage];
+  return step ? `${name} ${step}/3` : name;
 }
 
 function queueCard(job) {
@@ -295,8 +309,9 @@ function queueCard(job) {
   stage.className = "queue-card-stage";
   stage.textContent = stageLabel(job);
 
-  line.append(time, title, stage);
-
+  // Fixed width and on the line, not a full-width rule beneath it. A bar that
+  // spans the card reads as a divider between meetings rather than as the
+  // progress of one, and at this size the row has the space for it.
   const bar = document.createElement("div");
   bar.className = "queue-bar";
   const fill = document.createElement("div");
@@ -306,7 +321,8 @@ function queueCard(job) {
   fill.style.width = `${job.running ? job.percent : 0}%`;
   bar.append(fill);
 
-  body.append(line, bar);
+  line.append(time, title, stage, bar);
+  body.append(line);
   card.append(body);
 
   if (job.stage === "failed") {

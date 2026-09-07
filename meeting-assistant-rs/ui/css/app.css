@@ -934,7 +934,9 @@ input[type="password"] { cursor: text; }
 
 .queue-card-line {
   display: flex;
-  align-items: baseline;
+  /* `center`, not `baseline`: the bar has no text baseline to align to, and
+   * with `baseline` it sat on the bottom of the row. */
+  align-items: center;
   gap: 6px;
   font-size: 11px;
 }
@@ -951,13 +953,22 @@ input[type="password"] { cursor: text; }
 .queue-card-time { flex: none; color: var(--steel-dark); }
 .queue-card-stage { flex: none; color: var(--steel-dark); }
 
-/* A track that is always the full width, so the fill reads as a proportion of
- * something rather than as a bar of unknown length. */
+/*
+ * Fixed width, on the same line as the title.
+ *
+ * A full-width bar under the row read as a rule separating meetings rather than
+ * as one meeting's progress, and it cost the card a second line for information
+ * that fits on the first.
+ */
 .queue-bar {
-  height: 3px;
-  margin-top: 5px;
+  flex: none;
+  width: 44px;
+  height: 4px;
   border-radius: 2px;
-  background: var(--alloy-2);
+  /* `--steel`, not `--alloy-2`: `--panel-recess` IS `--alloy-2`, so the empty
+   * track was the same colour as the card and a job at 0% showed no bar at all
+   * — indistinguishable from a card that has no bar. */
+  background: var(--steel);
   overflow: hidden;
 }
 
