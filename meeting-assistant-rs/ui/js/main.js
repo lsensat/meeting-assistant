@@ -19,6 +19,11 @@ const ui = {
   statusAction: el("status-action"),
   lampWhisper: el("lamp-whisper"),
   lampSummary: el("lamp-summary"),
+  queue: el("queue"),
+  queueList: el("queue-list"),
+  queueCount: el("queue-count"),
+  queueToggle: el("queue-toggle"),
+  queuePause: el("queue-pause"),
   timer: el("timer"),
   start: el("start-button"),
   stop: el("stop-button"),
@@ -210,6 +215,210 @@ function offerOllamaAction(installed) {
 
   // Showing the button can wrap the status row onto a second line.
   resizeToContent();
+}
+
+// ------------------------------------------------------------------ queue
+
+/** Heroicons outline. */
+const ICON_PAUSE = "M15.75 5.25v13.5m-7.5-13.5v13.5";
+const ICON_PLAY = "M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.347a1.125 1.125 0 0 1-1.667-.985V5.653Z";
+const ICON_TRASH =
+  "m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 " +
+  "19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 " +
+  "0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 " +
+  "0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18 " +
+  ".037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0";
+const ICON_RETRY =
+  "M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 " +
+  "0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99";
+
+/** True while processing is held. Mirrored from Rust, which owns the truth. */
+let processingPaused = false;
+
+function iconButton(className, path, tooltipKey, onClick) {
+  const button = document.createElement("button");
+  button.className = className;
+  button.setAttribute("data-tooltip", tooltipKey);
+  button.setAttribute("aria-label", tr(tooltipKey));
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  button.append(svg);
+
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/**
+ * `2026-09-07_14-03-22` — the job id — as a clock time.
+ *
+ * The id is the meeting's own start time, so this needs no extra field: the
+ * thing the user recognises a meeting by is already the thing that identifies
+ * it. Anything unexpected falls back to the raw id rather than showing nothing.
+ */
+function jobTime(id) {
+  const match = /^\d{4}-\d{2}-\d{2}_(\d{2})-(\d{2})/.exec(id);
+  return match ? `${match[1]}:${match[2]}` : id;
+}
+
+function stageLabel(job) {
+  if (job.stage === "failed") return tr("queue_stage_failed");
+  // Paused work is not "waiting its turn"; say which it is.
+  if (!job.running && processingPaused) return tr("queue_paused");
+  return tr(`queue_stage_${job.stage}`);
+}
+
+function queueCard(job) {
+  const card = document.createElement("div");
+  card.className = "queue-card";
+  card.dataset.state = job.stage;
+
+  const body = document.createElement("div");
+  body.className = "queue-card-body";
+
+  const line = document.createElement("div");
+  line.className = "queue-card-line";
+
+  const time = document.createElement("span");
+  time.className = "queue-card-time";
+  time.textContent = jobTime(job.id);
+
+  const title = document.createElement("span");
+  title.className = "queue-card-title";
+  title.textContent = job.title || tr("queue_untitled");
+
+  const stage = document.createElement("span");
+  stage.className = "queue-card-stage";
+  stage.textContent = stageLabel(job);
+
+  line.append(time, title, stage);
+
+  const bar = document.createElement("div");
+  bar.className = "queue-bar";
+  const fill = document.createElement("div");
+  fill.className = "queue-bar-fill";
+  // Through the CSSOM, not a `style` attribute: the CSP has no
+  // `unsafe-inline` in `style-src`, which would block the attribute form.
+  fill.style.width = `${job.running ? job.percent : 0}%`;
+  bar.append(fill);
+
+  body.append(line, bar);
+  card.append(body);
+
+  if (job.stage === "failed") {
+    card.append(
+      iconButton("retry-button", ICON_RETRY, "queue_retry", () => retryJob(job.id)),
+    );
+  }
+  card.append(
+    iconButton("trash-button", ICON_TRASH, "queue_discard", () => confirmDiscard(job)),
+  );
+
+  // A failure is otherwise invisible: the error itself only reaches the status
+  // line, which the next meeting overwrites.
+  if (job.error) card.title = job.error;
+
+  return card;
+}
+
+async function retryJob(id) {
+  try {
+    await api.retryJob(id);
+  } catch (error) {
+    setStatus(String(error));
+  }
+  await renderQueue();
+}
+
+/**
+ * Ask before deleting a recording.
+ *
+ * @param {{id: string, title: string}} job
+ */
+function confirmDiscard(job) {
+  const modal = el("discard-modal");
+
+  const close = () => {
+    modal.hidden = true;
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close();
+  };
+
+  el("discard-no").onclick = close;
+  el("discard-yes").onclick = async () => {
+    close();
+    try {
+      await api.discardJob(job.id);
+    } catch (error) {
+      setStatus(String(error));
+    }
+    await renderQueue();
+  };
+
+  document.addEventListener("keydown", onKey);
+  modal.hidden = false;
+  el("discard-no").focus();
+}
+
+/** Redraw the queue from Rust's snapshot. */
+async function renderQueue() {
+  let jobs = [];
+  try {
+    jobs = await api.listJobs();
+    processingPaused = await api.isProcessingPaused();
+  } catch {
+    // The window can outlive a command failing; an empty queue is the honest
+    // thing to draw, and the status line reports anything that matters.
+  }
+
+  // Hidden rather than empty: an "Processing" heading over nothing is noise on
+  // every launch, and the window should not carry height it has no use for.
+  ui.queue.hidden = jobs.length === 0;
+  ui.queueCount.textContent = jobs.length > 1 ? `(${jobs.length})` : "";
+
+  ui.queuePause.querySelector("path").setAttribute("d", processingPaused ? ICON_PLAY : ICON_PAUSE);
+  const pauseKey = processingPaused ? "queue_resume" : "queue_pause";
+  ui.queuePause.setAttribute("data-tooltip", pauseKey);
+  ui.queuePause.setAttribute("aria-label", tr(pauseKey));
+
+  ui.queueList.replaceChildren(...jobs.map(queueCard));
+  resizeToContent();
+}
+
+/**
+ * Poll while something is running.
+ *
+ * `queue_changed` covers every discrete transition, but not a percentage
+ * climbing inside one — the worker emits that on a timer and this reads it. It
+ * stops as soon as nothing is running, so an idle app does no work.
+ */
+function startQueuePolling() {
+  setInterval(async () => {
+    if (ui.queue.hidden) return;
+    const jobs = await api.listJobs().catch(() => []);
+    if (jobs.some((job) => job.running)) await renderQueue();
+  }, 700);
+}
+
+function setQueueExpanded(expanded, persist = true) {
+  if (expanded) {
+    ui.queueList.removeAttribute("hidden");
+  } else {
+    ui.queueList.setAttribute("hidden", "");
+  }
+  ui.queueToggle.setAttribute("aria-expanded", String(expanded));
+  ui.queue.classList.toggle("is-collapsed", !expanded);
+  requestAnimationFrame(resizeToContent);
+
+  if (persist) {
+    api.getConfig().then((config) => api.saveConfig({ ...config, queue_expanded: expanded }));
+  }
 }
 
 function setRecording(active) {
@@ -470,6 +679,13 @@ function applyMuted(muted) {
 // ----------------------------------------------------------------- events
 
 function wireEvents() {
+  // Every discrete change: a meeting enqueued, finished, failed or discarded,
+  // and the pause switch moving. The percentage climbing within a job comes
+  // from the poll instead.
+  api.on(api.EVENTS.queueChanged, () => {
+    renderQueue();
+  });
+
   api.on(api.EVENTS.startupStatus, setStatus);
 
   api.on(api.EVENTS.startupResult, (result) => {
@@ -720,6 +936,25 @@ async function main() {
 
   // Amber until the first result: the check has started but has not answered.
   setLampsPending();
+
+  setQueueExpanded(config.queue_expanded !== false, false);
+  await renderQueue();
+  startQueuePolling();
+
+  ui.queueToggle.addEventListener("click", () =>
+    setQueueExpanded(ui.queueToggle.getAttribute("aria-expanded") !== "true"),
+  );
+
+  ui.queuePause.addEventListener("click", async () => {
+    ui.queuePause.disabled = true;
+    try {
+      await api.setProcessingPaused(!processingPaused);
+    } catch (error) {
+      setStatus(String(error));
+    }
+    ui.queuePause.disabled = false;
+    await renderQueue();
+  });
 
   // Watch for device changes while idle.
   //

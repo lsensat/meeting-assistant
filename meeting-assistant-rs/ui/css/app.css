@@ -881,6 +881,124 @@ input[type="password"] { cursor: text; }
 
 .modal p { margin: 0 0 4px; font-size: 12px; line-height: 1.4; }
 
+/* -------------------------------------------------------- queue panel */
+
+/*
+ * Shares `.audio-panel` so it reads as a sibling of the device panel rather
+ * than a new kind of thing, and inherits its collapse behaviour for free.
+ */
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-head .devices-toggle {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-count {
+  font-size: 11px;
+  color: var(--steel-dark);
+  flex: none;
+}
+
+/*
+ * Three cards, then scroll. The window grows to fit what is here, and without a
+ * ceiling a backlog of ten meetings would push the toolbar off the screen —
+ * which is the failure this layout has already had twice.
+ */
+.queue-list {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-recess);
+  border-radius: var(--radius-chip);
+  padding: 6px 8px;
+  color: var(--ink);
+}
+
+.queue-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-card-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+
+/* The title is the variable-length part, so it is the part that truncates. */
+.queue-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-card-time { flex: none; color: var(--steel-dark); }
+.queue-card-stage { flex: none; color: var(--steel-dark); }
+
+/* A track that is always the full width, so the fill reads as a proportion of
+ * something rather than as a bar of unknown length. */
+.queue-bar {
+  height: 3px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--alloy-2);
+  overflow: hidden;
+}
+
+.queue-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--green-lamp);
+  transition: width 200ms linear;
+}
+
+/* A failure is not progress. Colouring the bar rather than only the text means
+ * the state is legible at a glance in a list of several. */
+.queue-card[data-state="failed"] .queue-bar-fill { background: var(--red); width: 100%; }
+.queue-card[data-state="failed"] .queue-card-stage { color: var(--red-dark); }
+
+.queue-card .trash-button,
+.queue-card .retry-button {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.queue-card svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.queue-card .trash-button:hover { color: var(--red-dark); }
+.queue-card .retry-button:hover { color: var(--green); }
+
 /* ------------------------------------------------------------- wizard */
 
 .wizard {

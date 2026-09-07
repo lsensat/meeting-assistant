@@ -117,6 +117,40 @@
     </div>
 
     <!--
+      The processing queue. Hidden entirely when empty, which is the normal
+      state — it appears when a meeting finishes and goes away when the work is
+      done, so the window is only as tall as there is something to say.
+
+      A panel in this window rather than separate bubble windows: each Tauri
+      window is a full webview, and one per meeting would make an app that is
+      meant to feel light considerably heavier. The chrome is already dark with
+      rounded panels floating on it, so these read as separate cards anyway, and
+      moving and minimising are inherently correct with a single window.
+    -->
+    <div class="audio-panel queue-panel" id="queue" hidden>
+      <div class="queue-head">
+        <button class="devices-toggle" id="queue-toggle" aria-expanded="true"
+                aria-controls="queue-list">
+          <span data-i18n="queue_title">Processing</span>
+          <span class="queue-count" id="queue-count"></span>
+          <span class="rule" aria-hidden="true"></span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>
+          </svg>
+        </button>
+        <!--
+          One switch, for everything. Per-meeting pausing would be a different
+          verb wearing the same icon: this is a decision about when the machine
+          does work, not about which meetings matter.
+        -->
+        <button class="status-action" id="queue-pause" data-tooltip="queue_pause">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
+        </button>
+      </div>
+      <div class="devices-detail queue-list" id="queue-list"></div>
+    </div>
+
+    <!--
       Absorbs any surplus window height, so a window taller than the content
       shows the toolbar sitting at the bottom edge rather than a dead gap below
       it. This is pure CSS and therefore the only part of the fit that still
@@ -216,6 +250,22 @@
       <div class="modal-actions">
         <button class="btn btn--secondary" id="confirm-no" data-i18n="confirm_no">Keep recording</button>
         <button class="btn btn--primary" id="confirm-yes" data-i18n="confirm_yes">Discard</button>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Discard destroys the one artifact that cannot be recreated, so it asks
+    first. Its own modal rather than the cancel one above: those buttons say
+    "Keep recording", which is wrong for a meeting that has already stopped.
+  -->
+  <div class="modal-backdrop" id="discard-modal" hidden>
+    <div class="modal">
+      <h2 data-i18n="queue_discard_title"></h2>
+      <p data-i18n="queue_discard_body"></p>
+      <div class="modal-actions">
+        <button class="btn btn--secondary" id="discard-no" data-i18n="queue_discard_cancel"></button>
+        <button class="btn btn--primary" id="discard-yes" data-i18n="queue_discard_confirm"></button>
       </div>
     </div>
   </div>

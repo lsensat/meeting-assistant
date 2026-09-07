@@ -535,7 +535,10 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
 /// request would be larger still.
 pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
     const MIN: f64 = 200.0;
-    const MAX: f64 = 420.0;
+    // Raised from 420 for the processing queue, which adds a panel of up to
+    // three cards. The queue list scrolls past that, so this is a ceiling on
+    // the window rather than on how many meetings can be waiting.
+    const MAX: f64 = 640.0;
     const WIDTH: f64 = 375.0;
 
     let window = app
