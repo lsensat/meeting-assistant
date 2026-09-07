@@ -92,6 +92,118 @@ async function populateWhisper() {
   el("whisper-note").textContent = chosen?.installed
     ? tr("whisper_available")
     : tr("whisper_first_use");
+
+  renderDownloaded(models);
+}
+
+/** Bytes as the user's file manager would show them. */
+function formatSize(bytes) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+/**
+ * The installed models, with what each is costing on disk.
+ *
+ * Only the installed ones: the dropdown above already lists all five, and this
+ * exists to answer "what can I delete to get space back".
+ *
+ * @param {{id: string, installed: boolean, size_bytes: number}[]} models
+ */
+function renderDownloaded(models) {
+  const list = el("downloaded-list");
+  list.replaceChildren();
+
+  const installed = models.filter((model) => model.installed);
+  const total = installed.reduce((sum, model) => sum + model.size_bytes, 0);
+  el("downloaded-total").textContent = total > 0 ? formatSize(total) : "";
+
+  if (installed.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = tr("no_models_downloaded");
+    list.append(empty);
+    return;
+  }
+
+  for (const model of installed) {
+    const row = document.createElement("div");
+    row.className = "model-row";
+
+    const label = document.createElement("span");
+    label.textContent = `${model.id} · ${formatSize(model.size_bytes)}`;
+
+    const remove = document.createElement("button");
+    remove.className = "btn btn--secondary btn--icon";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    // Heroicons outline, trash.
+    path.setAttribute(
+      "d",
+      "m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 " +
+        "19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 " +
+        "0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 " +
+        "0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18 " +
+        ".037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0",
+    );
+    svg.append(path);
+    remove.append(svg);
+
+    // The one guard the user meets constantly, so it is explained in place
+    // rather than only as a rejected command. `delete_whisper_model` refuses
+    // this too — the UI is not trusted to be the only gate.
+    const isSelected = model.id === config.whisper_model;
+    remove.disabled = isSelected;
+    remove.setAttribute(
+      "data-tooltip",
+      isSelected ? "delete_model_selected" : "tooltip_delete_model",
+    );
+    remove.setAttribute("aria-label", tr(isSelected ? "delete_model_selected" : "tooltip_delete_model"));
+    if (!isSelected) remove.addEventListener("click", () => confirmDelete(model));
+
+    row.append(label, remove);
+    list.append(row);
+  }
+}
+
+/**
+ * Ask before removing gigabytes.
+ *
+ * @param {{id: string, size_bytes: number}} model
+ */
+function confirmDelete(model) {
+  const modal = el("delete-modal");
+  el("delete-title").textContent = tr("delete_model_title", { model: model.id });
+  el("delete-message").textContent = tr("delete_model_body", {
+    size: formatSize(model.size_bytes),
+  });
+
+  const close = () => {
+    modal.hidden = true;
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close();
+  };
+
+  el("delete-no").onclick = close;
+  el("delete-yes").onclick = async () => {
+    close();
+    try {
+      await api.deleteWhisperModel(model.id);
+    } catch (error) {
+      el("whisper-note").textContent = String(error);
+    }
+    // Re-read rather than mutating the list in place: the command may have
+    // refused, and the disk is the only thing that knows what is really there.
+    await populateWhisper();
+  };
+
+  document.addEventListener("keydown", onKey);
+  modal.hidden = false;
+  el("delete-no").focus();
 }
 
 /** Show the fields for the chosen engine, and the privacy note with them. */

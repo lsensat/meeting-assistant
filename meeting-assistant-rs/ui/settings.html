@@ -28,6 +28,21 @@
         <div class="helper" id="whisper-note"></div>
       </div>
 
+      <!--
+        Only the INSTALLED models, because this exists to free disk space, not
+        to browse the catalogue — the dropdown above already lists all five.
+        Usually one or two rows, which matters in a window that already scrolls.
+      -->
+      <div class="field">
+        <div class="field-head">
+          <label data-i18n="downloaded_models">Downloaded models</label>
+          <!-- Total on the label line: the reason anyone opens this is to see
+               what the models are costing before deciding what to remove. -->
+          <span class="helper" id="downloaded-total"></span>
+        </div>
+        <div class="model-list" id="downloaded-list"></div>
+      </div>
+
       <div class="field">
         <label for="transcription-language" data-i18n="transcription_language">Transcription language</label>
         <select id="transcription-language"></select>
@@ -125,6 +140,21 @@
 
     <div class="save-row">
       <button class="btn btn--primary" id="save-settings" data-i18n="save_settings">Save settings</button>
+    </div>
+  </div>
+
+  <!--
+    Deleting is slow to undo: large-v3 is 3.1 GB to fetch again. Same modal
+    markup and styling as the main window's cancel confirmation.
+  -->
+  <div class="modal-backdrop" id="delete-modal" hidden>
+    <div class="modal">
+      <h2 id="delete-title"></h2>
+      <p id="delete-message"></p>
+      <div class="modal-actions">
+        <button class="btn btn--secondary" id="delete-no" data-i18n="delete_model_cancel"></button>
+        <button class="btn btn--primary" id="delete-yes" data-i18n="delete_model_confirm"></button>
+      </div>
     </div>
   </div>
 

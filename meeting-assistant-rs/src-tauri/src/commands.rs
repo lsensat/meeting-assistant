@@ -93,6 +93,9 @@ pub struct WhisperModelDto {
     pub id: String,
     pub approx_mb: u64,
     pub installed: bool,
+    /// Real bytes on disk, 0 when not installed. `approx_mb` is what a model
+    /// *will* cost before you fetch it; this is what deleting it would free.
+    pub size_bytes: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -270,6 +273,38 @@ pub fn list_ollama_models() -> OllamaStatusDto {
     }
 }
 
+/// Delete an installed Whisper model.
+///
+/// Three guards, none of which the UI is trusted to enforce on its own — the
+/// settings window disables the control in each of these cases, but a command
+/// that destroys gigabytes must not depend on that:
+///
+/// 1. **Not during a meeting or its processing.** whisper.cpp memory-maps the
+///    model file; removing it mid-transcription risks a crash rather than a
+///    clean error.
+/// 2. **Not during a download**, which may be writing this very model.
+/// 3. **Not the selected model.** Deleting what the next meeting is about to
+///    load turns a space-saving action into a silent 3 GB re-download. Choosing
+///    a different model first is one click and makes the intent explicit.
+#[tauri::command(async)]
+pub fn delete_whisper_model(id: String, state: State<AppState>) -> Result<(), String> {
+    if state.session.lock().expect("session poisoned").is_some()
+        || *state.processing.lock().expect("processing poisoned")
+    {
+        return Err("A meeting is in progress.".into());
+    }
+
+    if state.downloading.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("A model download is in progress.".into());
+    }
+
+    if state.config_snapshot().whisper_model == id {
+        return Err("The selected model cannot be deleted. Choose another model first.".into());
+    }
+
+    whisper::delete_model(&id).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn list_whisper_models() -> Vec<WhisperModelDto> {
     whisper::MODELS
@@ -278,6 +313,7 @@ pub fn list_whisper_models() -> Vec<WhisperModelDto> {
             id: spec.id.to_string(),
             approx_mb: spec.approx_mb,
             installed: whisper::is_installed(spec.id),
+            size_bytes: whisper::installed_size(spec.id),
         })
         .collect()
 }

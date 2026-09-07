@@ -934,7 +934,28 @@ input[type="password"] { cursor: text; }
   font-size: 12px;
   color: var(--ink);
 }
+/* A label with a value on the far right of the same line. */
+.field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .model-row .btn { height: 26px; padding: 0 12px; font-size: 11px; }
+
+/* Icon-only: the text padding would make it needlessly wide in a narrow row. */
+.model-row .btn--icon { padding: 0 8px; }
+
+/*
+ * Scoped rather than a global `.btn:disabled`, which does not exist and would
+ * change the transport and wizard buttons too. Without it a disabled control
+ * looks identical to an enabled one — the exact complaint the stop button drew.
+ */
+.model-row .btn--icon:disabled { opacity: 0.4; cursor: default; }
+
+/* Destructive, so the hover says so rather than reading as any other action. */
+.model-row .btn--icon:hover:not(:disabled) { color: var(--red-dark); }
 
 .badge {
   background: var(--amber);

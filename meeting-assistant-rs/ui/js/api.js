@@ -36,6 +36,9 @@ export const listOllamaModels = () => invoke("list_ollama_models");
 /** @returns {Promise<{id: string, approx_mb: number, installed: boolean}[]>} */
 export const listWhisperModels = () => invoke("list_whisper_models");
 
+/** @param {string} id */
+export const deleteWhisperModel = (id) => invoke("delete_whisper_model", { id });
+
 /** @param {string} model */
 export const downloadWhisperModel = (model) =>
   invoke("download_whisper_model", { model });

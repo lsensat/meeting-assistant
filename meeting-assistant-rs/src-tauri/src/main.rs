@@ -33,6 +33,7 @@ fn main() {
             commands::refresh_devices,
             commands::list_ollama_models,
             commands::list_whisper_models,
+            commands::delete_whisper_model,
             commands::download_whisper_model,
             commands::start_recording,
             commands::stop_recording,

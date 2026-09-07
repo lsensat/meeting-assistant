@@ -308,6 +308,35 @@ pub fn installed_models() -> Vec<String> {
 /// A partial download left by a crash or a killed process would otherwise be
 /// treated as present and then fail at load time, in the middle of processing a
 /// meeting the user has already recorded.
+/// Bytes the model occupies on disk, or 0 when it is not installed.
+///
+/// The real file size rather than `ModelSpec::approx_mb`: this is shown to
+/// someone deciding what to delete to free space, and an approximation is not
+/// what they are looking at in Finder or Explorer.
+pub fn installed_size(id: &str) -> u64 {
+    std::fs::metadata(model_path(id)).map(|m| m.len()).unwrap_or(0)
+}
+
+/// Remove an installed model from disk.
+///
+/// **Bounded by construction.** `spec` accepts only the five pinned ids, and
+/// the path is derived from the id rather than supplied by the caller, so no
+/// input can name a file outside the models directory. This is the same stance
+/// as the meeting delete in `commands.rs`: recursive, irreversible operations
+/// take an identifier, never a path.
+pub fn delete_model(id: &str) -> Result<(), WhisperError> {
+    if spec(id).is_none() {
+        return Err(WhisperError::UnknownModel(id.to_string()));
+    }
+
+    match std::fs::remove_file(model_path(id)) {
+        Ok(()) => Ok(()),
+        // Already absent is the desired end state, not a failure.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(WhisperError::Io(e)),
+    }
+}
+
 pub fn is_installed(id: &str) -> bool {
     let Some(spec) = spec(id) else {
         return false;
