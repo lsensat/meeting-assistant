@@ -183,7 +183,10 @@ async function showResolvedDevices(config) {
     // It also matters here specifically, because the panel auto-expands on a
     // fallback and would otherwise never stay collapsed.
     return {
-      name: chosen.name,
+      // `label` is for the panel; `name` stays the identity that `configured`
+      // is compared against. Comparing labels would report a fallback whenever
+      // two devices collided and kept their full names.
+      label: chosen.label ?? chosen.name,
       automatic: configured !== "" && chosen.name !== configured,
     };
   };
@@ -192,11 +195,11 @@ async function showResolvedDevices(config) {
   const system = resolve(devices.system, String(config.system_audio_name ?? ""));
 
   ui.deviceMic.textContent = mic
-    ? `${tr("microphone")}: ${mic.name}${mic.automatic ? ` (${tr("automatic")})` : ""}`
+    ? `${tr("microphone")}: ${mic.label}${mic.automatic ? ` (${tr("automatic")})` : ""}`
     : `${tr("microphone")}: ${tr("microphone_missing")}`;
 
   ui.deviceSystem.textContent = system
-    ? `${tr("computer_audio")}: ${system.name}${system.automatic ? ` (${tr("automatic")})` : ""}`
+    ? `${tr("computer_audio")}: ${system.label}${system.automatic ? ` (${tr("automatic")})` : ""}`
     : `${tr("computer_audio")}: ${tr("computer_audio_missing")}`;
 
   // Open on a genuine fallback: hiding the panel must not hide the one thing

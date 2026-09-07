@@ -15,6 +15,7 @@
 
 pub mod config;
 pub mod convert;
+pub mod devices;
 pub mod i18n;
 pub mod policy;
 pub mod progress;

@@ -71,7 +71,12 @@ pub struct WhisperProgressDto {
 #[derive(Serialize, Clone)]
 pub struct DeviceDto {
     pub id: String,
+    /// The raw OS name. This is the **identity**: it is what `Config` stores and
+    /// what the recorder resolves against. Never show it where `label` fits.
     pub name: String,
+    /// The same device, named for a person. Display only — see
+    /// `meeting_core::devices`.
+    pub label: String,
     pub sample_rate: u32,
     pub channels: u16,
     pub is_default: bool,
@@ -183,13 +188,21 @@ fn snapshot_dto(kind: SourceKind) -> Vec<DeviceDto> {
     };
     let default_id = snapshot.default_id().map(|s| s.to_string());
 
+    // Computed over the whole list, because shortening two devices on one
+    // adapter can collide and `display_labels` resolves that by keeping the
+    // full name for the entries that clash.
+    let names: Vec<String> = snapshot.devices.iter().map(|d| d.name.clone()).collect();
+    let labels = meeting_core::devices::display_labels(&names);
+
     snapshot
         .devices
         .into_iter()
-        .map(|d| DeviceDto {
+        .zip(labels)
+        .map(|(d, label)| DeviceDto {
             is_default: Some(&d.id) == default_id.as_ref(),
             id: d.id,
             name: d.name,
+            label,
             sample_rate: d.sample_rate,
             channels: d.channels,
         })
@@ -345,7 +358,26 @@ fn debug_inspect(window: &tauri::WebviewWindow) {
     }
 }
 
-#[tauri::command]
+/// # `(async)` is load-bearing, not a style choice
+///
+/// `WebviewWindowBuilder::new` carries this warning in Tauri's own source
+/// (`tauri-2.11.5/src/webview/webview_window.rs:58`):
+///
+/// > On Windows, this function deadlocks when used in a synchronous command
+/// > and event handlers.
+///
+/// A bare `#[tauri::command]` on a synchronous function *is* a synchronous
+/// command — it runs on the main thread. So opening the wizard on first run
+/// deadlocked the app's own main thread, and every symptom that followed was
+/// downstream of it: the wizard and Settings painted white because WebView2
+/// never finished initialising and so never navigated; `app.emit` dispatches to
+/// the main thread, so `startup_check`'s status events were never delivered and
+/// the status line kept its static placeholder; and `set_main_height` never ran,
+/// so expanding the device panel clipped the toolbar instead of growing the
+/// window. Three rounds of fixes to three "separate bugs" achieved nothing.
+///
+/// Do not remove the `(async)`.
+#[tauri::command(async)]
 pub fn open_setup(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("setup") {
         existing.show().map_err(|e| e.to_string())?;
@@ -377,7 +409,13 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
 ///
 /// There is no console on a release Windows build, so the app has to be able to
 /// answer this itself.
-#[tauri::command]
+///
+/// `(async)` because the first version of this was a synchronous command, and a
+/// synchronous command runs on the main thread — the very thing it was written
+/// to diagnose. It reported nothing at all, because it hung on the same
+/// deadlock. **A diagnostic that depends on the thing being diagnosed cannot
+/// report.**
+#[tauri::command(async)]
 pub fn window_urls(app: AppHandle) -> Vec<(String, String)> {
     app.webview_windows()
         .iter()
@@ -459,7 +497,8 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
 ///
 /// A separate window makes closing it mean "close settings", which is what the
 /// close button on a settings window should do.
-#[tauri::command]
+/// `(async)` for the same reason as `open_setup` — see the note there.
+#[tauri::command(async)]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("settings") {
         existing.show().map_err(|e| e.to_string())?;
