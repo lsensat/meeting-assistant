@@ -110,11 +110,19 @@ fn main() {
         let control = control.clone();
         let finished = Arc::clone(&finished);
         std::thread::spawn(move || {
+            let mut last = -1i32;
             while !finished.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_secs(2));
-                if total_audio > 0.0 && control.seconds_done() > 0.0 {
-                    let percent = (control.seconds_done() / total_audio * 100.0).min(100.0);
-                    println!("  transcribed {:.0}% of the audio", percent);
+                if total_audio <= 0.0 || control.seconds_done() <= 0.0 {
+                    continue;
+                }
+                // Only on a change. The control holds its last position after a
+                // track finishes, so a plain tick repeated the same number
+                // through the whole summary stage.
+                let percent = (control.seconds_done() / total_audio * 100.0).min(100.0) as i32;
+                if percent != last {
+                    println!("  transcribed {percent}% of the audio");
+                    last = percent;
                 }
             }
         })

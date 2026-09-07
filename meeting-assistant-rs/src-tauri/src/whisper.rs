@@ -499,12 +499,25 @@ impl TranscriptionControl {
     }
 }
 
+/// Reads the shared abort flag for whisper.cpp.
+///
+/// # Safety
+///
+/// `user_data` must be a pointer to a live `AtomicBool`, which is guaranteed by
+/// the only call site: it passes `Arc::as_ptr` of a flag held by a
+/// `TranscriptionControl` that outlives the `full()` call.
+unsafe extern "C" fn abort_trampoline(user_data: *mut std::ffi::c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    unsafe { (*(user_data as *const AtomicBool)).load(Ordering::SeqCst) }
+}
+
 /// What one `transcribe` call produced.
 pub struct TranscriptionOutcome {
     pub segments: Vec<Segment>,
-    /// End of the last segment produced, in seconds **from the start of this
-    /// file** — the offset passed in is not included. This is the resume point:
-    /// pass it back as `offset_seconds` on the next attempt.
+    /// End of the last segment produced, in seconds from the start of the file.
+    /// This is the resume point: pass it back as `resume_from_seconds`.
     pub last_end_seconds: f64,
     /// True when the run stopped early because the control asked it to. The
     /// segments are still valid, they are simply not the whole file.
@@ -566,16 +579,16 @@ impl Transcriber {
     ///
     /// # Resuming
     ///
-    /// `offset_seconds` does two jobs, and both are required. `set_offset_ms`
-    /// tells whisper.cpp where in the audio to start, so the work is not
-    /// repeated; adding it to each segment's start puts the text back at its
-    /// true position in the meeting. Doing only the first would stack the
-    /// resumed half on top of the first at time zero.
+    /// `resume_from_seconds` seeks, and does **only** that. whisper.cpp reports
+    /// segment positions relative to the file rather than to the seek point, so
+    /// the timeline needs no correction here — adding the offset back on gave a
+    /// run resumed at 114s a first segment at 228s, past the end of a 192s
+    /// recording.
     pub fn transcribe(
         &self,
         audio_file: &Path,
         speaker: &str,
-        offset_seconds: f64,
+        resume_from_seconds: f64,
         control: &TranscriptionControl,
     ) -> Result<TranscriptionOutcome, WhisperError> {
         let samples = read_wav_as_16k_mono(audio_file)?;
@@ -599,9 +612,9 @@ impl Transcriber {
         params.set_print_special(false);
         params.set_print_timestamps(false);
 
-        if offset_seconds > 0.0 {
+        if resume_from_seconds > 0.0 {
             // Skip what a previous attempt already transcribed.
-            params.set_offset_ms((offset_seconds * 1000.0) as i32);
+            params.set_offset_ms((resume_from_seconds * 1000.0) as i32);
         }
 
         // Shared with the FFI callbacks, which must be `'static` and so cannot
@@ -625,16 +638,17 @@ impl Transcriber {
                 // timestamp in the transcript by 10 or 100, and is not obvious
                 // from a short test clip.
                 //
-                // These are relative to the offset we started at, so the offset
-                // goes back on to reach a position in the meeting.
-                let start = data.start_timestamp as f64 / 100.0 + offset_seconds;
+                // Already absolute. whisper.cpp reports positions in the FILE,
+                // not relative to `offset_ms`, so adding the resume point back
+                // on would double it — a run resumed at 114s reported its first
+                // segment at 228s, past the end of a 192s recording. The seek
+                // and the timeline need the offset applied once, by
+                // `set_offset_ms`, and not again here.
+                let start = data.start_timestamp as f64 / 100.0;
                 let end_cs = data.end_timestamp;
 
                 last_end_cs.store(end_cs, Ordering::Relaxed);
-                progress_cs.store(
-                    end_cs + (offset_seconds * 100.0) as i64,
-                    Ordering::Relaxed,
-                );
+                progress_cs.store(end_cs, Ordering::Relaxed);
 
                 // Blank segments are dropped before they reach the transcript,
                 // as the Python does (`app.py:1898`).
@@ -653,9 +667,29 @@ impl Transcriber {
             });
         }
 
-        {
-            let abort = Arc::clone(&control.abort);
-            params.set_abort_callback_safe(move || abort.load(Ordering::SeqCst));
+        // --- cancellation ------------------------------------------------
+        //
+        // NOT `set_abort_callback_safe`, which is unsound in whisper-rs 0.16.0.
+        // It boxes the closure twice and stores a `*mut Box<dyn FnMut() -> bool>`,
+        // but its trampoline casts that pointer to `*mut F` — the concrete
+        // closure type — and calls it. The callback therefore reads the box's own
+        // pointer bytes as if they were the closure's captures and returns
+        // whatever that happens to be.
+        //
+        // The symptom is not a crash. whisper.cpp polls this inside the encoder,
+        // so a garbage `true` aborts the encode and `full()` returns **-6**,
+        // nondeterministically, on audio that is perfectly fine. It cost an
+        // afternoon precisely because it looks like a transcription failure.
+        //
+        // The raw setters take a pointer whose type we control, so the trampoline
+        // below and the pointer passed to it agree. `control` outlives this call,
+        // so the `AtomicBool` behind the `Arc` outlives every invocation — no
+        // ownership is transferred and nothing leaks.
+        unsafe {
+            params.set_abort_callback(Some(abort_trampoline));
+            params.set_abort_callback_user_data(
+                Arc::as_ptr(&control.abort) as *mut std::ffi::c_void
+            );
         }
 
         let mut state = self
@@ -676,9 +710,19 @@ impl Transcriber {
 
         let segments = collected.lock().map_or_else(|e| e.into_inner().clone(), |g| g.clone());
 
+        // Falls back to where this attempt started when it produced nothing at
+        // all — an abort during the very first segment must not reset the
+        // resume point to zero and re-transcribe everything already done.
+        let last_end_cs = last_end_cs.load(Ordering::Relaxed);
+        let last_end_seconds = if last_end_cs > 0 {
+            last_end_cs as f64 / 100.0
+        } else {
+            resume_from_seconds
+        };
+
         Ok(TranscriptionOutcome {
             segments,
-            last_end_seconds: last_end_cs.load(Ordering::Relaxed) as f64 / 100.0 + offset_seconds,
+            last_end_seconds,
             aborted,
         })
     }
