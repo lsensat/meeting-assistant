@@ -44,6 +44,7 @@ fn main() {
             commands::start_ollama,
             commands::needs_setup,
             commands::open_setup,
+            commands::window_urls,
             commands::close_setup,
             commands::set_api_key,
             commands::has_api_key,

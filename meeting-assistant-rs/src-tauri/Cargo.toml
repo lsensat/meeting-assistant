@@ -16,7 +16,12 @@ meeting-core = { path = "../crates/meeting-core" }
 # so the frontend is plain ES modules with no bundler and no build step.
 # `tray-icon` alone is not enough to load an icon from a file: constructing a
 # `tauri::image::Image` from the bundled PNG needs `image-png` as well.
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `devtools` is normally debug-only. It is enabled here because the Windows
+# build is only ever exercised as a RELEASE artifact from CI — there is no
+# Windows dev machine — and without it a webview that fails to load is a white
+# rectangle with no way to ask it why. Right-click -> Inspect, or set MA_DEBUG=1
+# to have the windows open their own inspector. Remove once Windows is verified.
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 # Native folder picker and "reveal in Finder/Explorer", replacing the Python's
 # `filedialog` and `os.startfile` (`app.py:689`).
 tauri-plugin-dialog = "2"

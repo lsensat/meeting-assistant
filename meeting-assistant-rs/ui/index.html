@@ -86,6 +86,16 @@
       </div>
     </div>
 
+    <!--
+      Absorbs any surplus window height, so a window taller than the content
+      shows the toolbar sitting at the bottom edge rather than a dead gap below
+      it. This is pure CSS and therefore the only part of the fit that still
+      works when the frontend JS fails to run, which is how Windows first
+      presented. Its measured height is also exactly the surplus, which is what
+      lets `contentHeight()` recover the natural height despite the stretch.
+    -->
+    <div class="spacer" aria-hidden="true"></div>
+
     <div class="result-row">
       <!--
         Mute is available at rest, not only mid-meeting: muting before you start

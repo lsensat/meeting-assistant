@@ -12,6 +12,10 @@ const { listen } = window.__TAURI__.event;
 const { open } = window.__TAURI__.dialog;
 const opener = window.__TAURI__.opener;
 
+/** Diagnostic: what each window's webview actually has loaded.
+ * @returns {Promise<[string, string][]>} */
+export const windowUrls = () => invoke("window_urls");
+
 /** @returns {Promise<Record<string, unknown>>} */
 export const getConfig = () => invoke("get_config");
 
