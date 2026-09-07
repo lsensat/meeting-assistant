@@ -16,11 +16,6 @@ name: release
 on:
   push:
     tags: ['v*']
-    # Temporary, for bringing the Windows build up. GitHub only offers the
-    # "Run workflow" button for workflow_dispatch when the workflow file is on
-    # the DEFAULT branch, so on a feature branch a push trigger is the only way
-    # to exercise it. Remove this line once the branch is merged.
-    branches: ['rust-port']
   # Runs the whole matrix without cutting a release. This is how the Windows
   # build should be iterated on — expect several rounds before it passes.
   workflow_dispatch:
