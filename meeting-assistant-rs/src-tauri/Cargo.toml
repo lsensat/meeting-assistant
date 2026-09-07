@@ -26,6 +26,13 @@ tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 # `filedialog` and `os.startfile` (`app.py:689`).
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# One running app, enforced by the app because the OS does not do it. macOS
+# reuses a running bundle when launched from Finder or the Dock but not via
+# `open -n` or the binary directly; Windows does nothing at all. With a
+# processing queue that is not untidiness but corruption: two instances would
+# scan the same output folder, race on the same meeting.json and compete for the
+# same audio devices.
+tauri-plugin-single-instance = "2"
 
 # Pinned exactly. cpal 0.18 was a large API break (streams no longer auto-start,
 # StreamConfig by value, unified Error type, `description()` replacing `name()`)

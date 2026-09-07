@@ -15,6 +15,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -308,6 +310,35 @@ pub fn installed_models() -> Vec<String> {
 /// A partial download left by a crash or a killed process would otherwise be
 /// treated as present and then fail at load time, in the middle of processing a
 /// meeting the user has already recorded.
+/// Bytes the model occupies on disk, or 0 when it is not installed.
+///
+/// The real file size rather than `ModelSpec::approx_mb`: this is shown to
+/// someone deciding what to delete to free space, and an approximation is not
+/// what they are looking at in Finder or Explorer.
+pub fn installed_size(id: &str) -> u64 {
+    std::fs::metadata(model_path(id)).map(|m| m.len()).unwrap_or(0)
+}
+
+/// Remove an installed model from disk.
+///
+/// **Bounded by construction.** `spec` accepts only the five pinned ids, and
+/// the path is derived from the id rather than supplied by the caller, so no
+/// input can name a file outside the models directory. This is the same stance
+/// as the meeting delete in `commands.rs`: recursive, irreversible operations
+/// take an identifier, never a path.
+pub fn delete_model(id: &str) -> Result<(), WhisperError> {
+    if spec(id).is_none() {
+        return Err(WhisperError::UnknownModel(id.to_string()));
+    }
+
+    match std::fs::remove_file(model_path(id)) {
+        Ok(()) => Ok(()),
+        // Already absent is the desired end state, not a failure.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(WhisperError::Io(e)),
+    }
+}
+
 pub fn is_installed(id: &str) -> bool {
     let Some(spec) = spec(id) else {
         return false;
@@ -424,6 +455,75 @@ pub struct Transcriber {
     language: Option<String>,
 }
 
+
+/// A handle onto a running transcription: stop it, and watch how far it has got.
+///
+/// whisper.cpp's callbacks are FFI trampolines and must be `'static`, so they
+/// cannot borrow anything from the caller. That rules out passing a closure that
+/// writes to local state, which is why progress and cancellation both travel
+/// through this shared, atomic handle instead.
+///
+/// It also solves a second problem. `full()` blocks its thread for the whole
+/// file, so whoever wants to *report* progress cannot be the same thread that
+/// started it. A holder of this handle on another thread can poll
+/// [`seconds_done`] whenever it likes.
+#[derive(Clone, Default)]
+pub struct TranscriptionControl {
+    abort: Arc<AtomicBool>,
+    /// Centiseconds, whisper.cpp's own unit, kept as an integer so it fits an
+    /// atomic. Converted only at the boundary.
+    progress_cs: Arc<AtomicI64>,
+}
+
+impl TranscriptionControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the run to stop at the next opportunity. Whatever has been
+    /// transcribed so far is kept and returned.
+    pub fn abort(&self) {
+        self.abort.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.abort.load(Ordering::SeqCst)
+    }
+
+    /// How far into the file the transcription has reached, in seconds.
+    ///
+    /// Safe to call from another thread while `transcribe` is running; that is
+    /// the point of it.
+    pub fn seconds_done(&self) -> f64 {
+        self.progress_cs.load(Ordering::Relaxed) as f64 / 100.0
+    }
+}
+
+/// Reads the shared abort flag for whisper.cpp.
+///
+/// # Safety
+///
+/// `user_data` must be a pointer to a live `AtomicBool`, which is guaranteed by
+/// the only call site: it passes `Arc::as_ptr` of a flag held by a
+/// `TranscriptionControl` that outlives the `full()` call.
+unsafe extern "C" fn abort_trampoline(user_data: *mut std::ffi::c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    unsafe { (*(user_data as *const AtomicBool)).load(Ordering::SeqCst) }
+}
+
+/// What one `transcribe` call produced.
+pub struct TranscriptionOutcome {
+    pub segments: Vec<Segment>,
+    /// End of the last segment produced, in seconds from the start of the file.
+    /// This is the resume point: pass it back as `resume_from_seconds`.
+    pub last_end_seconds: f64,
+    /// True when the run stopped early because the control asked it to. The
+    /// segments are still valid, they are simply not the whole file.
+    pub aborted: bool,
+}
+
 impl Transcriber {
     /// Load a model from disk, downloading it first if necessary.
     ///
@@ -465,13 +565,32 @@ impl Transcriber {
     /// `on_progress` receives the end timestamp of each segment so the caller
     /// can drive `transcription_percent` without this module knowing about the
     /// other track.
+    /// Transcribe one track, optionally resuming part-way through it.
+    ///
+    /// # Segments are collected live, not read back afterwards
+    ///
+    /// This used to call `full()` and then walk `state.as_iter()`. That is fine
+    /// for a run that completes, and useless for one that does not: an aborted
+    /// `full()` leaves nothing to iterate, so every second of work would be
+    /// thrown away. Collecting from the segment callback means an abort keeps
+    /// everything up to that point — which is what makes pausing cheap enough
+    /// to offer. It also makes progress live rather than a jump to 100% once
+    /// the file is already finished.
+    ///
+    /// # Resuming
+    ///
+    /// `resume_from_seconds` seeks, and does **only** that. whisper.cpp reports
+    /// segment positions relative to the file rather than to the seek point, so
+    /// the timeline needs no correction here — adding the offset back on gave a
+    /// run resumed at 114s a first segment at 228s, past the end of a 192s
+    /// recording.
     pub fn transcribe(
         &self,
         audio_file: &Path,
         speaker: &str,
-        offset_seconds: f64,
-        mut on_progress: impl FnMut(f64),
-    ) -> Result<Vec<Segment>, WhisperError> {
+        resume_from_seconds: f64,
+        control: &TranscriptionControl,
+    ) -> Result<TranscriptionOutcome, WhisperError> {
         let samples = read_wav_as_16k_mono(audio_file)?;
 
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
@@ -493,49 +612,119 @@ impl Transcriber {
         params.set_print_special(false);
         params.set_print_timestamps(false);
 
+        if resume_from_seconds > 0.0 {
+            // Skip what a previous attempt already transcribed.
+            params.set_offset_ms((resume_from_seconds * 1000.0) as i32);
+        }
+
+        // Shared with the FFI callbacks, which must be `'static` and so cannot
+        // borrow these.
+        let collected: Arc<Mutex<Vec<Segment>>> = Arc::new(Mutex::new(Vec::new()));
+        let last_end_cs = Arc::new(AtomicI64::new(0));
+
+        {
+            let collected = Arc::clone(&collected);
+            let last_end_cs = Arc::clone(&last_end_cs);
+            let progress_cs = Arc::clone(&control.progress_cs);
+            let speaker = speaker.to_string();
+
+            // The `_lossy` variant for the same reason the old code used
+            // `to_str_lossy`: whisper.cpp can emit invalid UTF-8 mid-word on a
+            // truncated multibyte token, and losing one character is far better
+            // than failing the whole meeting.
+            params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
+                // whisper.cpp reports timestamps in centiseconds (10 ms units),
+                // not seconds or milliseconds. Getting this wrong scales every
+                // timestamp in the transcript by 10 or 100, and is not obvious
+                // from a short test clip.
+                //
+                // Already absolute. whisper.cpp reports positions in the FILE,
+                // not relative to `offset_ms`, so adding the resume point back
+                // on would double it — a run resumed at 114s reported its first
+                // segment at 228s, past the end of a 192s recording. The seek
+                // and the timeline need the offset applied once, by
+                // `set_offset_ms`, and not again here.
+                let start = data.start_timestamp as f64 / 100.0;
+                let end_cs = data.end_timestamp;
+
+                last_end_cs.store(end_cs, Ordering::Relaxed);
+                progress_cs.store(end_cs, Ordering::Relaxed);
+
+                // Blank segments are dropped before they reach the transcript,
+                // as the Python does (`app.py:1898`).
+                let text = data.text.trim();
+                if text.is_empty() {
+                    return;
+                }
+
+                if let Ok(mut segments) = collected.lock() {
+                    segments.push(Segment {
+                        start,
+                        speaker: speaker.clone(),
+                        text: text.to_string(),
+                    });
+                }
+            });
+        }
+
+        // --- cancellation ------------------------------------------------
+        //
+        // NOT `set_abort_callback_safe`, which is unsound in whisper-rs 0.16.0.
+        // It boxes the closure twice and stores a `*mut Box<dyn FnMut() -> bool>`,
+        // but its trampoline casts that pointer to `*mut F` — the concrete
+        // closure type — and calls it. The callback therefore reads the box's own
+        // pointer bytes as if they were the closure's captures and returns
+        // whatever that happens to be.
+        //
+        // The symptom is not a crash. whisper.cpp polls this inside the encoder,
+        // so a garbage `true` aborts the encode and `full()` returns **-6**,
+        // nondeterministically, on audio that is perfectly fine. It cost an
+        // afternoon precisely because it looks like a transcription failure.
+        //
+        // The raw setters take a pointer whose type we control, so the trampoline
+        // below and the pointer passed to it agree. `control` outlives this call,
+        // so the `AtomicBool` behind the `Arc` outlives every invocation — no
+        // ownership is transferred and nothing leaks.
+        unsafe {
+            params.set_abort_callback(Some(abort_trampoline));
+            params.set_abort_callback_user_data(
+                Arc::as_ptr(&control.abort) as *mut std::ffi::c_void
+            );
+        }
+
         let mut state = self
             .context
             .create_state()
             .map_err(|e| WhisperError::Transcribe(e.to_string()))?;
 
-        state
-            .full(params, &samples)
-            .map_err(|e| WhisperError::Transcribe(e.to_string()))?;
+        let outcome = state.full(params, &samples);
 
-        let mut segments = Vec::new();
-
-        for segment in state.as_iter() {
-            // whisper.cpp reports timestamps in centiseconds (10 ms units), not
-            // seconds or milliseconds. Getting this wrong scales every
-            // timestamp in the transcript by 10 or 100 and is not obvious from
-            // a short test clip.
-            let start = segment.start_timestamp() as f64 / 100.0;
-            let end = segment.end_timestamp() as f64 / 100.0;
-
-            on_progress(end);
-
-            // `to_str_lossy` rather than `to_str`: whisper.cpp can emit invalid
-            // UTF-8 mid-word on a truncated multibyte token, and losing one
-            // character is far better than failing the whole meeting.
-            let text = segment
-                .to_str_lossy()
-                .map_err(|e| WhisperError::Transcribe(e.to_string()))?;
-
-            // Blank segments are dropped before they reach the transcript, as
-            // the Python does (`app.py:1898`).
-            let text = text.trim();
-            if text.is_empty() {
-                continue;
-            }
-
-            segments.push(Segment {
-                start: start + offset_seconds,
-                speaker: speaker.to_string(),
-                text: text.to_string(),
-            });
+        let aborted = control.is_aborted();
+        // An aborted run reports failure, which here is the expected result of
+        // being asked to stop rather than something to surface. Checking the
+        // flag first is what keeps a deliberate pause from looking like a
+        // transcription error to the user.
+        if !aborted {
+            outcome.map_err(|e| WhisperError::Transcribe(e.to_string()))?;
         }
 
-        Ok(segments)
+        let segments = collected.lock().map_or_else(|e| e.into_inner().clone(), |g| g.clone());
+
+        // Falls back to where this attempt started when it produced nothing at
+        // all — an abort during the very first segment must not reset the
+        // resume point to zero and re-transcribe everything already done.
+        let last_end_cs = last_end_cs.load(Ordering::Relaxed);
+        let last_end_seconds = if last_end_cs > 0 {
+            last_end_cs as f64 / 100.0
+        } else {
+            resume_from_seconds
+        };
+
+        Ok(TranscriptionOutcome {
+            segments,
+            last_end_seconds,
+            aborted,
+        })
     }
 }
 

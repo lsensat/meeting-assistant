@@ -212,6 +212,16 @@ pub struct Config {
     /// a fifth of a 275px window. The app reopens it by itself when a device
     /// actually falls back, which is the one case the panel exists for.
     pub devices_expanded: bool,
+    /// Whether the processing queue section in the main window is open.
+    /// Mirrors `devices_expanded`: a view preference, not a setting.
+    pub queue_expanded: bool,
+    /// Hold all meeting processing until the user says otherwise.
+    ///
+    /// Persisted deliberately. The point of the switch is deferring work to
+    /// lunch or the evening, and a choice with that horizon has to survive
+    /// quitting the app — resetting it on launch would silently start the very
+    /// work the user postponed.
+    pub processing_paused: bool,
     /// Whether the first-run wizard has been completed.
     ///
     /// First run is really "no config file exists"; this flag additionally
@@ -260,6 +270,8 @@ impl Config {
             system_audio_name: String::new(),
             custom_summary_prompt: DEFAULT_CUSTOM_PROMPT.to_string(),
             devices_expanded: false,
+            queue_expanded: true,
+            processing_paused: false,
             summary_provider: SummaryProvider::Ollama,
             api_base_url: String::new(),
             api_model: String::new(),
@@ -326,6 +338,8 @@ impl Config {
                 .unwrap_or(defaults.custom_summary_prompt),
 
             devices_expanded: raw.devices_expanded.unwrap_or(defaults.devices_expanded),
+            queue_expanded: raw.queue_expanded.unwrap_or(defaults.queue_expanded),
+            processing_paused: raw.processing_paused.unwrap_or(defaults.processing_paused),
 
             summary_provider: raw
                 .summary_provider
@@ -362,6 +376,8 @@ impl Config {
             system_audio_name: Some(self.system_audio_name.clone()),
             custom_summary_prompt: Some(self.custom_summary_prompt.clone()),
             devices_expanded: Some(self.devices_expanded),
+            queue_expanded: Some(self.queue_expanded),
+            processing_paused: Some(self.processing_paused),
             summary_provider: Some(self.summary_provider.as_str().to_string()),
             api_base_url: Some(self.api_base_url.clone()),
             api_model: Some(self.api_model.clone()),
@@ -399,6 +415,8 @@ struct RawConfig {
     custom_summary_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     devices_expanded: Option<bool>,
+    queue_expanded: Option<bool>,
+    processing_paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

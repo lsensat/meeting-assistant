@@ -20,8 +20,38 @@
         `textContent`, which would wipe out any element nested inside it.
       -->
       <div class="status-row">
+        <!--
+          Readiness lamps, absolutely positioned so the status message stays
+          centred on the row regardless of them, and so a long message cannot
+          shift them. `role="img"` with an `aria-label` because the state is
+          otherwise carried by colour alone, which is not available to everyone;
+          the label and the tooltip say the same thing.
+        -->
+        <div class="status-lamps">
+          <span class="lamp" id="lamp-whisper" role="img"
+                data-state="pending" data-tooltip="lamp_whisper_pending"></span>
+          <span class="lamp" id="lamp-summary" role="img"
+                data-state="pending" data-tooltip="lamp_ollama_pending"></span>
+        </div>
         <span class="rec-dot" aria-hidden="true"></span>
         <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
+        <!--
+          Sits inline with the message, as the one action that sentence implies.
+          The icon, tooltip and behaviour are all set in JS because they depend
+          on whether Ollama is installed: offering to start something absent is
+          a dead end, so that case offers the download instead.
+
+          The `d` is swapped rather than toggling two `<svg>` elements —
+          `hidden` is an IDL attribute of HTMLElement and does nothing on an
+          SVGElement, which has caught this codebase once already.
+
+          `data-tooltip` must be present at init: `initTooltips` binds only
+          elements that already carry it, though it reads the value lazily on
+          hover, so JS can change which key it points at.
+        -->
+        <button class="status-action" id="status-action" hidden data-tooltip="setup_open_ollama">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
+        </button>
       </div>
 
       <!--
@@ -52,17 +82,14 @@
       </div>
     </section>
 
-    <div class="stages">
-      <div class="chip" id="stage-audio" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_audio">Audio</span>
-      </div>
-      <div class="chip" id="stage-whisper" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_whisper">Transcript</span>
-      </div>
-      <div class="chip" id="stage-summary" data-state="pending">
-        <span class="marker">○</span><span data-i18n="stage_summary">Summary</span>
-      </div>
-    </div>
+    <!--
+      The three stage chips lived here: Audio / Transcript / Summary. Removed
+      with the processing queue, which says the same thing per meeting and says
+      it better — "Transcribing 2/3", on the card that owns it. The chips
+      described *the* meeting, and once more than one can be in flight there is
+      no such thing: they would flicker between jobs, showing a state that
+      belongs to neither.
+    -->
 
     <!--
       Collapsed by default. A <button>, not a clickable <div>, so it is
@@ -84,6 +111,40 @@
         <div id="device-mic">—</div>
         <div id="device-system">—</div>
       </div>
+    </div>
+
+    <!--
+      The processing queue. Hidden entirely when empty, which is the normal
+      state — it appears when a meeting finishes and goes away when the work is
+      done, so the window is only as tall as there is something to say.
+
+      A panel in this window rather than separate bubble windows: each Tauri
+      window is a full webview, and one per meeting would make an app that is
+      meant to feel light considerably heavier. The chrome is already dark with
+      rounded panels floating on it, so these read as separate cards anyway, and
+      moving and minimising are inherently correct with a single window.
+    -->
+    <div class="audio-panel queue-panel" id="queue" hidden>
+      <div class="queue-head">
+        <button class="devices-toggle" id="queue-toggle" aria-expanded="true"
+                aria-controls="queue-list">
+          <span data-i18n="queue_title">Processing</span>
+          <span class="queue-count" id="queue-count"></span>
+          <span class="rule" aria-hidden="true"></span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>
+          </svg>
+        </button>
+        <!--
+          One switch, for everything. Per-meeting pausing would be a different
+          verb wearing the same icon: this is a decision about when the machine
+          does work, not about which meetings matter.
+        -->
+        <button class="status-action" id="queue-pause" data-tooltip="queue_pause">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
+        </button>
+      </div>
+      <div class="devices-detail queue-list" id="queue-list"></div>
     </div>
 
     <!--
@@ -184,8 +245,24 @@
     <div class="modal">
       <p id="confirm-message"></p>
       <div class="modal-actions">
-        <button class="btn btn--secondary" id="confirm-no" data-i18n="confirm_no">Keep recording</button>
+        <button class="btn btn--quiet" id="confirm-no" data-i18n="confirm_no">Keep recording</button>
         <button class="btn btn--primary" id="confirm-yes" data-i18n="confirm_yes">Discard</button>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Discard destroys the one artifact that cannot be recreated, so it asks
+    first. Its own modal rather than the cancel one above: those buttons say
+    "Keep recording", which is wrong for a meeting that has already stopped.
+  -->
+  <div class="modal-backdrop" id="discard-modal" hidden>
+    <div class="modal">
+      <h2 data-i18n="queue_discard_title"></h2>
+      <p data-i18n="queue_discard_body"></p>
+      <div class="modal-actions">
+        <button class="btn btn--quiet" id="discard-no" data-i18n="queue_discard_cancel"></button>
+        <button class="btn btn--primary" id="discard-yes" data-i18n="queue_discard_confirm"></button>
       </div>
     </div>
   </div>

@@ -75,6 +75,22 @@
    * amber working state at 3.50:1.
    */
   --green:       #4F6B45;
+  /*
+   * A bright green, for the readiness lamps and the queue's progress bar.
+   *
+   * Separate from `--green` because that one is a text background elsewhere and
+   * cannot be brightened without failing contrast for the text on it. A lamp is
+   * an 8px dot with no text on it, so it has no such constraint.
+   *
+   * Chosen by rendering the candidates as actual lamps rather than by reading
+   * ratios, because at 8px the deciding factor is hue, not luminance. Two
+   * earlier attempts were both reported as unclear: #4F6B45 and then #2E8B3D
+   * measured well against the light card but read as dark olive. Brighter still
+   * — #2BE05F — washes out against it. The `--steel-dark` ring is what keeps the
+   * lamp perceivable as an object, which frees the fill to be chosen for how
+   * unmistakably green it looks.
+   */
+  --green-lamp:  #22C55E;
 
   /*
    * Semantic aliases. Component rules below reach for these, not for the raw
@@ -169,9 +185,21 @@ html, body {
   stroke-linejoin: round;
 }
 
+/*
+ * One treatment for every button that can be pressed: amber-dark, lighting to
+ * amber on hover. The folder button had this on its own and the rest were steel,
+ * which made the toolbar look like some keys worked and others did not.
+ *
+ * The label must stay `--ink`. Dark text on amber-dark is 4.70:1 and clears the
+ * 4.5 that text needs; cream on the same fill is 2.39:1 and would not.
+ *
+ * The exceptions below are exceptions on purpose: `.btn--unavailable` and a
+ * muted microphone both mean "this is not doing what the others are doing", and
+ * that is exactly what the colour is now free to say.
+ */
 .btn--primary   { background: var(--amber-dark); color: var(--ink); }
-.btn--secondary { background: var(--steel-dark); color: var(--ink-invert); }
-.btn--dark      { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--secondary { background: var(--amber-dark); color: var(--ink); }
+.btn--dark      { background: var(--amber-dark); color: var(--ink); }
 /*
  * The microphone is the one control whose colour carries state: steel-dark when
  * idle, amber while it is live. That is the VU-meter reading of amber.
@@ -183,7 +211,21 @@ html, body {
  * which is the opposite of the state it represents.
  */
 .btn--mic.is-muted { background: var(--steel-dark); color: var(--ink-invert); }
-.btn--result    { background: var(--steel-dark); color: var(--ink-invert); }
+.btn--result    { background: var(--amber-dark); color: var(--ink); }
+
+/*
+ * The quiet half of a pair.
+ *
+ * The one place amber is wrong. Every other button is a thing to do; these sit
+ * beside a button that commits — Back next to Next, Keep next to Discard — and
+ * two identical buttons make the reader stop and read rather than reach. Steel
+ * says "the other one" without saying "disabled".
+ *
+ * Applies only where there IS a pair. A lone secondary button, like Browse or
+ * Download now, has nothing to be quieter than and stays amber with the rest.
+ * Cream on steel-dark is 5.39:1.
+ */
+.btn--quiet     { background: var(--steel-dark); color: var(--ink-invert); }
 
 .btn--primary:hover:not(:disabled)   { background: var(--amber);      color: var(--ink); }
 /*
@@ -203,10 +245,13 @@ html, body {
  * buttons vanish against the chrome they sit on, and the outline existed only
  * to give them back an edge.
  */
-.btn--secondary:hover:not(:disabled):not(.btn--unavailable) { background: var(--faceplate-2); color: var(--ink); }
-.btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--faceplate-2); color: var(--ink); }
-.btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber);      color: var(--ink); }
-.btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--faceplate-2); color: var(--ink); }
+.btn--secondary:hover:not(:disabled):not(.btn--unavailable) { background: var(--amber); color: var(--ink); }
+.btn--dark:hover:not(:disabled):not(.btn--unavailable)      { background: var(--amber); color: var(--ink); }
+.btn--mic:hover:not(:disabled):not(.btn--unavailable)       { background: var(--amber); color: var(--ink); }
+.btn--result:hover:not(:disabled):not(.btn--unavailable)    { background: var(--amber); color: var(--ink); }
+/* Cream rather than amber, so hovering the quiet one never looks like the
+ * committing one. */
+.btn--quiet:hover:not(:disabled):not(.btn--unavailable)     { background: var(--faceplate-2); color: var(--ink); }
 
 /*
  * Result buttons have a third state. Until their stage reaches `done` they are
@@ -256,12 +301,95 @@ html, body {
   justify-content: center;
   gap: 6px;
   margin-bottom: 2px;
+  /* Anchors the lamps, and the symmetric padding keeps a long message from
+   * running underneath them while leaving it centred. */
+  position: relative;
+  padding: 0 24px;
+  /* Insurance only: the inline icon fits beside every current message, but a
+   * longer translation must wrap rather than overflow. `resizeToContent` grows
+   * the window to match. */
+  flex-wrap: wrap;
 }
+
+/*
+ * Not a `.btn`. This sits inside a sentence rather than in a row of peers, so
+ * it carries no fill, border or bevel — the amber is the whole affordance, and
+ * a chromed button here would compete with the transport controls right below.
+ */
+.status-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  /*
+   * Ink, not amber. The status row sits on the light `--alloy` card, not on the
+   * dark chrome, and amber measures 1.22:1 against it — effectively invisible.
+   * `--body` is 9.95:1 and matches the sentence the icon belongs to; the hover
+   * tint is 7.20:1. Icons need 3:1, so check any change here against `--alloy`
+   * rather than against the window background.
+   */
+  color: var(--body);
+  cursor: pointer;
+}
+
+/* Slightly heavier stroke than `.btn svg` (1.5 at 16px), because this is
+ * smaller and still has to read at a glance. */
+.status-action svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.status-action:hover:not(:disabled) { color: var(--red-dark); }
+.status-action:disabled { color: var(--steel); cursor: default; }
 
 /*
  * Recording indicator. Hidden unless a meeting is running, and the same red as
  * the record button so the two read as one state.
  */
+/*
+ * Two readiness lamps: can this app transcribe, and can it summarise.
+ *
+ * Absolutely positioned against the row's vertical centre, which is exactly
+ * where `align-items: center` puts the recording dot — so all three read as one
+ * row of lamps at the same size, whichever are lit.
+ */
+.status-lamps {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 7px;
+}
+
+/*
+ * The ring is not decoration. These sit on the light `--alloy` card, where
+ * `--amber` measures 1.22:1 and `--amber-dark` 2.12:1 — below the 3:1 a
+ * meaningful graphic needs. A `--steel-dark` ring is 4.77:1, so the lamp is
+ * always perceivable as an object and the fill is left to carry the state.
+ * Same 8px as `.rec-dot`.
+ */
+.lamp {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--steel-dark);
+  box-shadow: inset 0 1px 1px rgb(255 255 255 / 0.3);
+}
+
+/* Traffic lights. */
+.lamp[data-state="on"]      { background: var(--green-lamp); }
+.lamp[data-state="pending"] { background: var(--amber); }
+.lamp[data-state="off"]     { background: var(--red); }
+
 .rec-dot { display: none; }
 [data-recorder-state="recording"] .rec-dot {
   display: block;
@@ -458,56 +586,11 @@ html, body {
 }
 
 /* stage chips */
-.stages { display: flex; justify-content: center; gap: 4px; }
-
-.chip {
-  width: 92px;
-  height: 25px;
-  border-radius: var(--radius-chip);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 11px;
-  background: var(--steel-dark);
-  color: var(--ink-invert);
-}
-
-.chip svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.chip .marker { font-size: 10px; line-height: 1; }
-
 /*
- * The working dot dims, matching the recording indicator, but stays --body
- * rather than turning red: the chip is already amber, which is what "in
- * progress" means here, and red is reserved for record and failure. Making
- * this red would spend the one colour that has to keep meaning "consequential".
+ * The stage chips and their state colours lived here. Removed with the
+ * processing queue: the card for each meeting carries its own stage, and one
+ * global set of chips could only ever describe one of several jobs.
  */
-@media (prefers-reduced-motion: no-preference) {
-  .chip[data-state="working"] .marker {
-    animation: rec-pulse 1.8s ease-in-out infinite;
-  }
-}
-
-/*
- * Four states, not the two a simple toggle would need. `working` takes the
- * amber because that is what amber means here; `error` takes the red because a
- * failed stage is exactly the "critical" the red is reserved for — the meeting
- * produced no output.
- */
-.chip[data-state="pending"] { background: var(--steel-dark); color: var(--ink-invert); }
-.chip[data-state="working"] { background: var(--amber);      color: var(--ink); }
-/* Done is the ready lamp. */
-.chip[data-state="done"]    { background: var(--green);      color: var(--ink-invert); }
-/* red-dark, not red: cream on --red is 4.40:1, just under the 4.5 for text. */
-.chip[data-state="error"]   { background: var(--red-dark);   color: var(--ink-invert); }
 
 .audio-panel {
   /*
@@ -627,8 +710,8 @@ main {
  * amber-dark rather than joining the neutral steel family. Settings stays
  * neutral: it is not a critical action and must not take the red.
  */
-#folder-button:not(.btn--unavailable) { background: var(--amber-dark); color: var(--ink); }
-#folder-button:not(.btn--unavailable):hover { background: var(--amber); color: var(--ink); }
+/* The folder button used to be special-cased to amber. Every button is now, so
+ * the exception is gone rather than repeated. */
 
 /* -------------------------------------------------------- settings window */
 
@@ -758,22 +841,31 @@ input[type="password"] { cursor: text; }
   z-index: 50;
 }
 
+/*
+ * `--body`, the window's own chrome, rather than a cream panel. A light box over
+ * a dark app read as a system dialog borrowed from somewhere else; on the chrome
+ * it reads as part of the same machine, with the panels behind it dimmed by the
+ * backdrop. Cream text on `--body` is 11.24:1.
+ */
 .modal {
-  background: var(--panel);
+  background: var(--body);
   border: var(--border);
   border-radius: var(--radius-card);
   padding: 14px 16px;
   width: 300px;
-  color: var(--ink);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+  color: var(--ink-invert);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.5);
 }
 
 .modal label { display: block; font-size: 11px; margin-bottom: 5px; }
 
+/* Still a light fill. A field being darker than the surface around it is what
+ * makes it read as somewhere to type; matching the chrome would hide it. */
 .modal input[type="text"] {
   width: 100%;
   height: 30px;
-  background: var(--panel-recess);
+  background: var(--panel);
+  color: var(--ink);
 }
 
 .modal-actions {
@@ -786,6 +878,135 @@ input[type="password"] { cursor: text; }
 .modal-actions .btn { height: 30px; }
 
 .modal p { margin: 0 0 4px; font-size: 12px; line-height: 1.4; }
+
+/* -------------------------------------------------------- queue panel */
+
+/*
+ * Shares `.audio-panel` so it reads as a sibling of the device panel rather
+ * than a new kind of thing, and inherits its collapse behaviour for free.
+ */
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-head .devices-toggle {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-count {
+  font-size: 11px;
+  color: var(--steel-dark);
+  flex: none;
+}
+
+/*
+ * Three cards, then scroll. The window grows to fit what is here, and without a
+ * ceiling a backlog of ten meetings would push the toolbar off the screen —
+ * which is the failure this layout has already had twice.
+ */
+.queue-list {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-recess);
+  border-radius: var(--radius-chip);
+  padding: 6px 8px;
+  color: var(--ink);
+}
+
+.queue-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-card-line {
+  display: flex;
+  /* `center`, not `baseline`: the bar has no text baseline to align to, and
+   * with `baseline` it sat on the bottom of the row. */
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+/* The title is the variable-length part, so it is the part that truncates. */
+.queue-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-card-time { flex: none; color: var(--steel-dark); }
+.queue-card-stage { flex: none; color: var(--steel-dark); }
+
+/*
+ * Fixed width, on the same line as the title.
+ *
+ * A full-width bar under the row read as a rule separating meetings rather than
+ * as one meeting's progress, and it cost the card a second line for information
+ * that fits on the first.
+ */
+.queue-bar {
+  flex: none;
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  /* `--steel`, not `--alloy-2`: `--panel-recess` IS `--alloy-2`, so the empty
+   * track was the same colour as the card and a job at 0% showed no bar at all
+   * — indistinguishable from a card that has no bar. */
+  background: var(--steel);
+  overflow: hidden;
+}
+
+.queue-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--green-lamp);
+  transition: width 200ms linear;
+}
+
+/* A failure is not progress. Colouring the bar rather than only the text means
+ * the state is legible at a glance in a list of several. */
+.queue-card[data-state="failed"] .queue-bar-fill { background: var(--red); width: 100%; }
+.queue-card[data-state="failed"] .queue-card-stage { color: var(--red-dark); }
+
+.queue-card .trash-button,
+.queue-card .retry-button {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.queue-card svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.queue-card .trash-button:hover { color: var(--red-dark); }
+.queue-card .retry-button:hover { color: var(--green); }
 
 /* ------------------------------------------------------------- wizard */
 
@@ -840,7 +1061,68 @@ input[type="password"] { cursor: text; }
   font-size: 12px;
   color: var(--ink);
 }
+/* A label with a value on the far right of the same line. */
+.field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .model-row .btn { height: 26px; padding: 0 12px; font-size: 11px; }
+
+/*
+ * The downloaded-models rows in Settings, matched to the form controls they sit
+ * among rather than to the wizard's rows.
+ *
+ * Scoped to `#downloaded-list`: `.model-row` is shared with the setup wizard,
+ * where the recessed fill and taller padding are right — those rows sit in a
+ * list of their own, not in a column of dropdowns. Here the row has to line up
+ * with the selects above and below it, so it takes their height, fill, border
+ * and radius verbatim from `select, input[type="text"], ...`.
+ */
+#downloaded-list .model-row {
+  height: 30px;
+  padding: 0 8px;
+  background: var(--panel);
+  border: var(--border);
+  border-radius: var(--radius-button);
+}
+
+/*
+ * A bare icon, not a button. Inside a form control a second bevelled surface
+ * reads as a control within a control; the trash glyph alone is the affordance.
+ * `--ink` is the same near-black the row's own text uses, so the icon belongs
+ * to the row rather than floating on it.
+ */
+#downloaded-list .trash-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* `.btn svg` no longer applies, so the stroke setup is repeated here. */
+#downloaded-list .trash-button svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Destructive, so the hover says so rather than reading as any other action. */
+#downloaded-list .trash-button:hover:not(:disabled) { color: var(--red-dark); }
+
+/* Without this a disabled control looks identical to an enabled one — the
+ * exact complaint the stop button drew. */
+#downloaded-list .trash-button:disabled { opacity: 0.35; cursor: default; }
 
 .badge {
   background: var(--amber);

@@ -69,6 +69,9 @@ async function renderModels() {
 
     const action = document.createElement("button");
     action.className = "btn btn--secondary";
+    // Lets the progress event find this exact button. Model ids are plain
+    // ASCII (`tiny`, `large-v3`), so they are safe in a selector.
+    action.dataset.model = model.id;
     if (model.installed) {
       action.textContent = tr("setup_installed");
       action.disabled = true;
@@ -82,11 +85,22 @@ async function renderModels() {
   }
 }
 
+/** The button for one model row, or null once the list has been re-rendered. */
+function modelButton(id) {
+  return el("model-list").querySelector(`button[data-model="${id}"]`);
+}
+
 async function downloadModel(id) {
   // Selecting the model is what matters even if the download fails — the
   // pipeline will retry it at transcription time.
   config.whisper_model = id;
   for (const button of el("model-list").querySelectorAll("button")) button.disabled = true;
+
+  // Immediate feedback on the button that was pressed. Without this the first
+  // progress event is up to a few seconds away on a slow connection, and the
+  // click looks like it did nothing. A bare percentage needs no translation.
+  const pressed = modelButton(id);
+  if (pressed) pressed.textContent = "0%";
 
   try {
     await api.downloadWhisperModel(id);
@@ -245,7 +259,11 @@ function wire() {
   // Structured payload, localized here rather than in Rust, so progress shows
   // in the user's language and only in the window that started the download.
   api.on(api.EVENTS.whisperProgress, ({ model, percent }) => {
-    el("model-status").textContent = tr("setup_downloading", { model, percent });
+    // On the row being downloaded, not in a separate line: the button is where
+    // the user just clicked and where they are already looking. `model-status`
+    // is left for errors, which is the only thing it now carries.
+    const button = modelButton(model);
+    if (button) button.textContent = `${percent}%`;
   });
 }
 

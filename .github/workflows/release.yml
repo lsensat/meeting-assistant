@@ -16,11 +16,6 @@ name: release
 on:
   push:
     tags: ['v*']
-    # Temporary, for bringing the Windows build up. GitHub only offers the
-    # "Run workflow" button for workflow_dispatch when the workflow file is on
-    # the DEFAULT branch, so on a feature branch a push trigger is the only way
-    # to exercise it. Remove this line once the branch is merged.
-    branches: ['rust-port']
   # Runs the whole matrix without cutting a release. This is how the Windows
   # build should be iterated on — expect several rounds before it passes.
   workflow_dispatch:
@@ -40,7 +35,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
       # Installed from source rather than via a third-party installer action:
@@ -86,7 +81,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No Node setup and no `npm install` on purpose. The frontend is plain ES
       # modules with no bundler, and tauri.conf.json has no beforeBuildCommand.
@@ -151,7 +146,7 @@ jobs:
       # workflow_dispatch creates no release, so keep the installers reachable.
       - name: Upload installers
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: meeting-assistant-${{ matrix.platform }}
           if-no-files-found: error
