@@ -16,6 +16,7 @@ const el = (id) => document.getElementById(id);
 
 const ui = {
   status: el("status"),
+  statusAction: el("status-action"),
   timer: el("timer"),
   start: el("start-button"),
   stop: el("stop-button"),
@@ -104,6 +105,66 @@ function resetStages() {
   setAvailable(ui.summary, false);
   // The folder button stays available: the output folder exists whether or not
   // a meeting has run, and "show me where recordings go" is useful at rest.
+}
+
+/** Heroicons outline, 24x24. */
+const ICON_POWER = "M5.636 5.636a9 9 0 1 0 12.728 0M12 3v9";
+const ICON_EXTERNAL =
+  "M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 " +
+  "2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25";
+
+function hideStatusAction() {
+  ui.statusAction.hidden = true;
+  ui.statusAction.onclick = null;
+}
+
+/**
+ * Offer the one action that can fix a stopped Ollama.
+ *
+ * The app has already tried: `startup_check` launches Ollama when it finds it
+ * and waits for it to answer. Reaching here means that failed, or that Ollama
+ * was stopped after launch — and until now the only remedy was restarting the
+ * app, which is what the (unused) `ollama_stopped` string used to advise.
+ *
+ * @param {boolean} installed Whether an `ollama` binary exists on this machine.
+ */
+function offerOllamaAction(installed) {
+  // Offering to start something that is not installed is a dead end, so the
+  // other half of the branch offers the download instead.
+  const key = installed ? "setup_open_ollama" : "setup_get_ollama";
+  const action = ui.statusAction;
+
+  // A power symbol for "start the thing", an open-in-new for "go and get it" —
+  // two different actions should not wear the same icon. Swapping the path
+  // rather than two `<svg>` elements avoids `hidden`, which does nothing on an
+  // SVGElement.
+  action.querySelector("path").setAttribute("d", installed ? ICON_POWER : ICON_EXTERNAL);
+  // Read lazily on hover, so changing it here is enough.
+  action.setAttribute("data-tooltip", key);
+  action.setAttribute("aria-label", tr(key));
+  action.hidden = false;
+
+  action.onclick = async () => {
+    if (!installed) {
+      api.openUrl("https://ollama.com/download");
+      return;
+    }
+
+    // Re-runs the whole check rather than reimplementing the probe here: it
+    // starts Ollama if it is still down, waits for it properly, and re-emits
+    // the result, which lands back in the same handler that put this button up.
+    action.disabled = true;
+    setStatus(tr("checking_ollama"));
+    try {
+      await api.startupCheck();
+    } catch (error) {
+      setStatus(`Startup check failed: ${String(error)}`);
+    }
+    action.disabled = false;
+  };
+
+  // Showing the button can wrap the status row onto a second line.
+  resizeToContent();
 }
 
 function setRecording(active) {
@@ -367,6 +428,10 @@ function wireEvents() {
   api.on(api.EVENTS.startupStatus, setStatus);
 
   api.on(api.EVENTS.startupResult, (result) => {
+    // Cleared on every result: a previous run may have left an offer standing
+    // for a problem that has since been resolved.
+    hideStatusAction();
+
     // Ollama's state is only worth reporting when Ollama is the configured
     // engine. A user on a remote endpoint would otherwise see
     // "Ollama is not responding" on every launch, about a component they
@@ -375,6 +440,7 @@ function wireEvents() {
 
     if (usesOllama && !result.ollama.running) {
       setStatus(tr("ollama_not_responding"));
+      offerOllamaAction(result.ollama_installed === true);
     } else if (usesOllama && result.ollama.models.length === 0) {
       setStatus(tr("ollama_no_models"));
     } else if (!usesOllama && !result.summary_ready) {

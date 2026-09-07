@@ -125,6 +125,12 @@ pub struct StartupResultDto {
     /// a model, or a remote endpoint with a base URL, model and stored key.
     pub summary_ready: bool,
     pub ollama: OllamaStatusDto,
+    /// Whether an `ollama` executable was found on this machine at all.
+    /// `ollama.running` says whether it answered; this says whether there is
+    /// anything to start. The difference decides whether the main window offers
+    /// "Start Ollama" or "Get Ollama" — offering to start something absent is a
+    /// dead end.
+    pub ollama_installed: bool,
     pub whisper_installed: Vec<String>,
     pub folder_ok: bool,
     pub has_microphone: bool,
@@ -415,6 +421,31 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
 /// to diagnose. It reported nothing at all, because it hung on the same
 /// deadlock. **A diagnostic that depends on the thing being diagnosed cannot
 /// report.**
+/// Wait for a freshly launched Ollama to become answerable.
+///
+/// Replaces a flat `sleep(3)`. Ollama binds its port almost immediately but
+/// cannot serve `/api/tags` until it has finished discovering GPUs. On the
+/// machine that reported this, the log shows the port bound at `12:07:28.108`
+/// and the first request served at `12:07:31` — the three-second probe landed
+/// exactly on the boundary, and losing that race made the app declare Ollama
+/// dead for the rest of the session with no way back except a restart.
+///
+/// Polling also makes the common case faster rather than slower: a warm Ollama
+/// answers on the first attempt instead of always costing three seconds.
+fn wait_for_ollama() -> OllamaStatusDto {
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+    let deadline = std::time::Instant::now() + BUDGET;
+    loop {
+        let status = list_ollama_models();
+        if status.running || std::time::Instant::now() >= deadline {
+            return status;
+        }
+        std::thread::sleep(INTERVAL);
+    }
+}
+
 #[tauri::command(async)]
 pub fn window_urls(app: AppHandle) -> Vec<(String, String)> {
     app.webview_windows()
@@ -605,20 +636,20 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // surprising and slow, and its "not running" state would be reported
         // as a startup error they cannot act on.
         let uses_ollama = config.summary_provider == SummaryProvider::Ollama;
+        // Short-circuited: a user on a remote endpoint should not pay for a
+        // filesystem search for a binary they have no use for.
+        let ollama_installed = uses_ollama && platform::find_ollama().is_some();
+
         let mut ollama_status = if uses_ollama {
             emit_status("checking_ollama");
             let status = list_ollama_models();
 
             // The Python auto-started Ollama when it was installed but not
             // running, then told the user to reopen the app if it had to
-            // (`app.py:200`).
-            if !status.running
-                && platform::find_ollama().is_some()
-                && platform::start_ollama().is_ok()
-            {
-                // Give it a moment to bind the port before deciding.
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                list_ollama_models()
+            // (`app.py:200`). Reopening is no longer the remedy: this waits for
+            // it properly, and the main window offers a retry if it still fails.
+            if !status.running && ollama_installed && platform::start_ollama().is_ok() {
+                wait_for_ollama()
             } else {
                 status
             }
@@ -653,6 +684,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
                         && crate::summary::has_api_key()
                 },
                 ollama: ollama_status,
+                ollama_installed,
                 whisper_installed,
                 folder_ok,
                 has_microphone: !mics.is_empty(),

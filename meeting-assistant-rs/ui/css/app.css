@@ -256,7 +256,49 @@ html, body {
   justify-content: center;
   gap: 6px;
   margin-bottom: 2px;
+  /* Insurance only: the inline icon fits beside every current message, but a
+   * longer translation must wrap rather than overflow. `resizeToContent` grows
+   * the window to match. */
+  flex-wrap: wrap;
 }
+
+/*
+ * Not a `.btn`. This sits inside a sentence rather than in a row of peers, so
+ * it carries no fill, border or bevel — the amber is the whole affordance, and
+ * a chromed button here would compete with the transport controls right below.
+ */
+.status-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  /*
+   * Ink, not amber. The status row sits on the light `--alloy` card, not on the
+   * dark chrome, and amber measures 1.22:1 against it — effectively invisible.
+   * `--body` is 9.95:1 and matches the sentence the icon belongs to; the hover
+   * tint is 7.20:1. Icons need 3:1, so check any change here against `--alloy`
+   * rather than against the window background.
+   */
+  color: var(--body);
+  cursor: pointer;
+}
+
+/* Slightly heavier stroke than `.btn svg` (1.5 at 16px), because this is
+ * smaller and still has to read at a glance. */
+.status-action svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.status-action:hover:not(:disabled) { color: var(--red-dark); }
+.status-action:disabled { color: var(--steel); cursor: default; }
 
 /*
  * Recording indicator. Hidden unless a meeting is running, and the same red as

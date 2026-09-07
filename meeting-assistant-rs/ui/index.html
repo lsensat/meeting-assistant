@@ -22,6 +22,23 @@
       <div class="status-row">
         <span class="rec-dot" aria-hidden="true"></span>
         <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
+        <!--
+          Sits inline with the message, as the one action that sentence implies.
+          The icon, tooltip and behaviour are all set in JS because they depend
+          on whether Ollama is installed: offering to start something absent is
+          a dead end, so that case offers the download instead.
+
+          The `d` is swapped rather than toggling two `<svg>` elements —
+          `hidden` is an IDL attribute of HTMLElement and does nothing on an
+          SVGElement, which has caught this codebase once already.
+
+          `data-tooltip` must be present at init: `initTooltips` binds only
+          elements that already carry it, though it reads the value lazily on
+          hover, so JS can change which key it points at.
+        -->
+        <button class="status-action" id="status-action" hidden data-tooltip="setup_open_ollama">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
+        </button>
       </div>
 
       <!--
