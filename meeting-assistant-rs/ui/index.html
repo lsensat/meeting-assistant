@@ -20,6 +20,19 @@
         `textContent`, which would wipe out any element nested inside it.
       -->
       <div class="status-row">
+        <!--
+          Readiness lamps, absolutely positioned so the status message stays
+          centred on the row regardless of them, and so a long message cannot
+          shift them. `role="img"` with an `aria-label` because the state is
+          otherwise carried by colour alone, which is not available to everyone;
+          the label and the tooltip say the same thing.
+        -->
+        <div class="status-lamps">
+          <span class="lamp" id="lamp-whisper" role="img"
+                data-state="pending" data-tooltip="lamp_whisper_pending"></span>
+          <span class="lamp" id="lamp-summary" role="img"
+                data-state="pending" data-tooltip="lamp_ollama_pending"></span>
+        </div>
         <span class="rec-dot" aria-hidden="true"></span>
         <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
         <!--

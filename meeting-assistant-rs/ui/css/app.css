@@ -256,6 +256,10 @@ html, body {
   justify-content: center;
   gap: 6px;
   margin-bottom: 2px;
+  /* Anchors the lamps, and the symmetric padding keeps a long message from
+   * running underneath them while leaving it centred. */
+  position: relative;
+  padding: 0 24px;
   /* Insurance only: the inline icon fits beside every current message, but a
    * longer translation must wrap rather than overflow. `resizeToContent` grows
    * the window to match. */
@@ -304,6 +308,43 @@ html, body {
  * Recording indicator. Hidden unless a meeting is running, and the same red as
  * the record button so the two read as one state.
  */
+/*
+ * Two readiness lamps: can this app transcribe, and can it summarise.
+ *
+ * Absolutely positioned against the row's vertical centre, which is exactly
+ * where `align-items: center` puts the recording dot — so all three read as one
+ * row of lamps at the same size, whichever are lit.
+ */
+.status-lamps {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 5px;
+}
+
+/*
+ * The ring is not decoration. These sit on the light `--alloy` card, where
+ * `--amber` measures 1.22:1 and `--amber-dark` 2.12:1 — below the 3:1 a
+ * meaningful graphic needs. A `--steel-dark` ring is 4.77:1, so the lamp is
+ * always perceivable as an object and the fill is left to carry the state.
+ * Same 8px as `.rec-dot`.
+ */
+.lamp {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--steel-dark);
+  box-shadow: inset 0 1px 1px rgb(255 255 255 / 0.3);
+}
+
+/* Traffic lights. */
+.lamp[data-state="on"]      { background: var(--green); }
+.lamp[data-state="pending"] { background: var(--amber); }
+.lamp[data-state="off"]     { background: var(--red); }
+
 .rec-dot { display: none; }
 [data-recorder-state="recording"] .rec-dot {
   display: block;

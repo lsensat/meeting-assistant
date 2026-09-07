@@ -17,6 +17,8 @@ const el = (id) => document.getElementById(id);
 const ui = {
   status: el("status"),
   statusAction: el("status-action"),
+  lampWhisper: el("lamp-whisper"),
+  lampSummary: el("lamp-summary"),
   timer: el("timer"),
   start: el("start-button"),
   stop: el("stop-button"),
@@ -38,6 +40,16 @@ const ui = {
     summary: el("stage-summary"),
   },
 };
+
+/**
+ * The last config read from Rust.
+ *
+ * The lamps need it and are driven by a Rust event, which carries the *state of
+ * the machine* — which models are installed, whether Ollama answered — but not
+ * the user's *choices*. Whether Whisper is ready is the intersection of the two:
+ * the selected model must be one of the installed ones.
+ */
+let currentConfig = {};
 
 /** Paths from the last `complete`, used by the three result buttons. */
 let results = { folder: "", transcript_file: "", summary_file: "" };
@@ -113,6 +125,38 @@ const ICON_EXTERNAL =
   "M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 " +
   "2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25";
 
+/**
+ * @param {HTMLElement} lamp
+ * @param {"on"|"pending"|"off"} state
+ * @param {string} key i18n key for the tooltip, e.g. `lamp_ollama_pending`.
+ */
+function setLamp(lamp, state, key) {
+  lamp.dataset.state = state;
+  // Read lazily on hover by `initTooltips`, so changing the value is enough.
+  lamp.setAttribute("data-tooltip", key);
+  // The same words as the tooltip: the state is otherwise colour-only.
+  lamp.setAttribute("aria-label", tr(key));
+}
+
+/** Which lamp keys apply, given the configured summary provider. */
+function summaryLampKeys() {
+  return currentConfig.summary_provider === "openai_compatible"
+    ? { on: "lamp_api_on", pending: "lamp_api_pending", off: "lamp_api_off" }
+    : { on: "lamp_ollama_on", pending: "lamp_ollama_pending", off: "lamp_ollama_off" };
+}
+
+/**
+ * Amber while a check is in flight — not off.
+ *
+ * "Not ready" and "not known yet" are different things, and showing red for the
+ * second would report a fault that may not exist. This is the traffic light's
+ * amber, and it is what both lamps show from launch until the first result.
+ */
+function setLampsPending() {
+  setLamp(ui.lampWhisper, "pending", "lamp_whisper_pending");
+  setLamp(ui.lampSummary, "pending", summaryLampKeys().pending);
+}
+
 function hideStatusAction() {
   ui.statusAction.hidden = true;
   ui.statusAction.onclick = null;
@@ -155,6 +199,7 @@ function offerOllamaAction(installed) {
     // the result, which lands back in the same handler that put this button up.
     action.disabled = true;
     setStatus(tr("checking_ollama"));
+    setLamp(ui.lampSummary, "pending", summaryLampKeys().pending);
     try {
       await api.startupCheck();
     } catch (error) {
@@ -432,6 +477,25 @@ function wireEvents() {
     // for a problem that has since been resolved.
     hideStatusAction();
 
+    // Whisper is ready only if the model the user actually selected is one of
+    // the installed ones. "Some model is installed" is a different question:
+    // transcription loads the configured model, and would stop to download it.
+    const whisperReady =
+      Array.isArray(result.whisper_installed) &&
+      result.whisper_installed.includes(String(currentConfig.whisper_model ?? ""));
+    setLamp(
+      ui.lampWhisper,
+      whisperReady ? "on" : "off",
+      whisperReady ? "lamp_whisper_on" : "lamp_whisper_off",
+    );
+
+    // `summary_ready` is Rust's own verdict and already covers both providers —
+    // Ollama running with at least one model, or a remote endpoint with a base
+    // URL, a model and a stored key.
+    const keys = summaryLampKeys();
+    setLamp(ui.lampSummary, result.summary_ready ? "on" : "off",
+            result.summary_ready ? keys.on : keys.off);
+
     // Ollama's state is only worth reporting when Ollama is the configured
     // engine. A user on a remote endpoint would otherwise see
     // "Ollama is not responding" on every launch, about a component they
@@ -614,6 +678,7 @@ async function main() {
   await loadCatalog();
 
   const config = await api.getConfig();
+  currentConfig = config;
   setLanguage(String(config.language ?? "en"));
   applyLanguage();
 
@@ -653,6 +718,9 @@ async function main() {
     }, 2500);
   }
 
+  // Amber until the first result: the check has started but has not answered.
+  setLampsPending();
+
   // Watch for device changes while idle.
   //
   // During a recording the recorder polls at 1 s and re-opens the stream
@@ -669,6 +737,7 @@ async function main() {
   window.addEventListener("focus", async () => {
     if (recording) return;
     const latest = await api.getConfig();
+    currentConfig = latest;
     setLanguage(String(latest.language ?? "en"));
     applyLanguage();
     showResolvedDevices(latest);
