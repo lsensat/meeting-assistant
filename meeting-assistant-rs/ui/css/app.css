@@ -75,6 +75,17 @@
    * amber working state at 3.50:1.
    */
   --green:       #4F6B45;
+  /*
+   * A brighter green, for the readiness lamps only.
+   *
+   * `--green` cannot be brightened in place: it is also the "done" chip's
+   * background, where cream text sits at 4.84:1 and would drop to 3.50:1 —
+   * below the 4.5:1 text needs. As a small dot rather than a text background,
+   * the lamp has no such constraint, and #4F6B45 reads as olive-grey at 8px:
+   * users could not tell it was green at all. This still clears 3:1 on both the
+   * light card (3.10:1) and the dark chrome (3.21:1), which `--green` does not.
+   */
+  --green-lamp:  #2E8B3D;
 
   /*
    * Semantic aliases. Component rules below reach for these, not for the raw
@@ -317,11 +328,11 @@ html, body {
  */
 .status-lamps {
   position: absolute;
-  left: 0;
+  left: 4px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
-  gap: 5px;
+  gap: 7px;
 }
 
 /*
@@ -341,7 +352,7 @@ html, body {
 }
 
 /* Traffic lights. */
-.lamp[data-state="on"]      { background: var(--green); }
+.lamp[data-state="on"]      { background: var(--green-lamp); }
 .lamp[data-state="pending"] { background: var(--amber); }
 .lamp[data-state="off"]     { background: var(--red); }
 
