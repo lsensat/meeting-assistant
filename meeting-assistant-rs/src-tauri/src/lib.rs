@@ -10,6 +10,7 @@ pub mod commands;
 pub mod ollama;
 pub mod openai;
 pub mod pipeline;
+pub mod queue;
 pub mod platform;
 pub mod session;
 pub mod state;

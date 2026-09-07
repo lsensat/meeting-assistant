@@ -22,6 +22,20 @@ fn main() {
         .unwrap_or_else(|_| Config::defaults(&documents));
 
     tauri::Builder::default()
+        // Must be registered FIRST: it decides whether this process lives at
+        // all, and doing that before anything else is initialised avoids a
+        // second instance briefly touching state the first one owns.
+        //
+        // The closure runs in the ALREADY RUNNING instance while the new one
+        // exits, so doing nothing here would make a relaunch appear to fail.
+        // That matters more than usual because closing the window only hides it
+        // (see `on_window_event` below) — relaunching from the Dock or Start
+        // menu is the natural way to get a tray-only app back, and it must
+        // behave as "reopen". `show_window` is what the macOS Dock click
+        // already does via `RunEvent::Reopen`.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            meeting_assistant::tray::show_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new(config_file, config))
