@@ -219,6 +219,15 @@ fn low_pass(samples: &[f32], sample_rate: u32, cutoff_hz: f64) -> Vec<f32> {
 }
 
 /// A block of silence covering `duration_seconds`. Port of `silent_samples`.
+/// The loudest sample in a buffer, as an absolute amplitude in 0.0..=1.0.
+///
+/// Peak rather than average on purpose: this is used to decide whether a track
+/// is worth transcribing at all, and a single spoken word in an otherwise empty
+/// hour must keep the track. An average would drown it.
+pub fn peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0_f32, |loudest, s| loudest.max(s.abs()))
+}
+
 pub fn silent_samples(duration_seconds: f64, sample_rate: u32) -> Vec<f32> {
     let duration_seconds = duration_seconds.max(0.0);
     let count = (duration_seconds * sample_rate as f64).round_ties_even() as usize;
@@ -332,6 +341,7 @@ mod whisper_resample_tests {
 
 #[cfg(test)]
 mod tests {
+    // (peak's own tests are grouped with the rest below)
     use super::*;
 
     // --- ported from tests/test_audio_stream_utils.py ---------------------
@@ -421,5 +431,28 @@ mod tests {
         // Beyond full scale must clamp rather than wrap.
         assert_eq!(f32_to_i16(2.0), 32_767);
         assert_eq!(f32_to_i16(-2.0), -32_768);
+    }
+
+    #[test]
+    fn peak_of_digital_silence_is_zero() {
+        assert_eq!(peak(&[0.0; 1000]), 0.0);
+        // An empty buffer is silent, not a panic.
+        assert_eq!(peak(&[]), 0.0);
+    }
+
+    #[test]
+    fn peak_finds_the_loudest_sample_either_side_of_zero() {
+        assert_eq!(peak(&[0.1, -0.8, 0.3]), 0.8);
+        assert_eq!(peak(&[-0.05, 0.02]), 0.05);
+    }
+
+    #[test]
+    fn one_loud_sample_carries_the_whole_buffer() {
+        // The case peak exists for. A single word in an otherwise empty hour
+        // must keep the track; an average would put this far below any
+        // threshold and the speech would be thrown away.
+        let mut samples = vec![0.0_f32; 100_000];
+        samples[42] = 0.6;
+        assert_eq!(peak(&samples), 0.6);
     }
 }

@@ -104,7 +104,8 @@ export const closeSettings = () => invoke("close_settings");
  * rejected by the ACL.
  * @param {number} height
  */
-export const setMainHeight = (height) => invoke("set_main_height", { height });
+/** @param {number} delta logical pixels to add to the window height */
+export const nudgeMainHeight = (delta) => invoke("nudge_main_height", { delta });
 
 /** @returns {Promise<boolean>} whether the first-run wizard should be shown */
 export const needsSetup = () => invoke("needs_setup");

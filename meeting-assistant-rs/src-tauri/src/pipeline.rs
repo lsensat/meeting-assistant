@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 
 use meeting_core::config::{Language, SummaryType};
-use meeting_core::progress::transcription_percent;
 use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
 
@@ -210,9 +209,10 @@ pub fn run(
         config.transcription_language.as_deref(),
     )?;
 
+    // Only the microphone's length is needed here: it is where the system
+    // track's share of the meeting's timeline begins. The queue worker measures
+    // both itself, to size the bar.
     let mic_duration = wav_duration(&mic_file).unwrap_or(0.0);
-    let system_duration = wav_duration(&system_file).unwrap_or(0.0);
-    let total_duration = mic_duration + system_duration;
 
     // Both tracks already share one origin: `RecordingSession::start` stamps a
     // single `Instant` and hands it to both recorders, and each track's
@@ -227,16 +227,21 @@ pub fn run(
     let mut segments: Vec<Segment> = read_partial(&partial_segments_file);
     let mut resume = config.resume;
 
-    // Reported once per track rather than continuously: `full()` blocks this
-    // thread for the whole file, so nobody here can observe its progress. Live
-    // percentages come from `control.seconds_done()`, which the queue worker
-    // polls from another thread — see `TranscriptionControl`.
+    // No percentage here, deliberately.
+    //
+    // `full()` blocks this thread for the whole file, so this line is written
+    // once and cannot be updated. It used to carry a number, which meant it
+    // announced "0%" and sat there for the length of the track — a progress
+    // report that never progresses is worse than none, because it reads as a
+    // stall. The live figure is `control.seconds_done()`, which the queue worker
+    // polls from another thread and shows on the meeting's card.
     on_progress(Progress::Status(format!(
-        "Transcribing {}... {}%",
-        config.speaker_me,
-        transcription_percent(resume.mic_offset_seconds, mic_duration, 0.0, total_duration)
+        "Transcribing {}...",
+        config.speaker_me
     )));
 
+    // The microphone track opens the meeting's timeline.
+    control.set_base_seconds(0.0);
     let mic = transcriber.transcribe(
         &mic_file,
         &config.speaker_me,
@@ -254,16 +259,13 @@ pub fn run(
     }
 
     on_progress(Progress::Status(format!(
-        "Transcribing {}... {}%",
-        config.speaker_meeting,
-        transcription_percent(
-            resume.system_offset_seconds,
-            system_duration,
-            mic_duration,
-            total_duration
-        )
+        "Transcribing {}...",
+        config.speaker_meeting
     )));
 
+    // The system track continues it, so progress keeps climbing instead of
+    // restarting when the first track finishes.
+    control.set_base_seconds(mic_duration);
     let system = transcriber.transcribe(
         &system_file,
         &config.speaker_meeting,
@@ -366,7 +368,21 @@ fn summarize(
     partials.truncate(start_chunk.min(chunks.len()));
     let total = chunks.len();
 
-    for (index, chunk) in chunks.iter().enumerate().skip(partials.len()) {
+    // A transcript that fits in one chunk needs no map step.
+    //
+    // The extraction exists to compress many chunks into something the final
+    // prompt can hold. With one chunk there is nothing to compress: it turned a
+    // 1,248-character transcript into 939 characters and then summarised those.
+    // That is the same work twice, and the second pass sees a compression of the
+    // meeting rather than the meeting — measured at 39.7s of a 66.1s summary
+    // stage, for a step that made the result worse.
+    //
+    // The final prompt never names its input, so a transcript reads there at
+    // least as naturally as a set of extracted notes.
+    let single_chunk = total <= 1;
+    let to_extract: &[String] = if single_chunk { &[] } else { &chunks };
+
+    for (index, chunk) in to_extract.iter().enumerate().skip(partials.len()) {
         if control.is_aborted() {
             write_partial(partial_file, &partials);
             return Ok(None);
@@ -379,7 +395,10 @@ fn summarize(
         )));
 
         let user = prompts::extraction_message(config.language, chunk);
-        partials.push(summary::chat(&config.provider, system, &user)?);
+        let started = std::time::Instant::now();
+        let extracted = summary::chat(&config.provider, system, &user)?;
+        debug_timing("extract", chunk.len(), extracted.len(), started);
+        partials.push(extracted);
         write_partial(partial_file, &partials);
     }
 
@@ -390,7 +409,11 @@ fn summarize(
 
     on_progress(Progress::Status("Generating the final summary...".into()));
 
-    let combined = prompts::combine_partials(&partials);
+    let combined = if single_chunk {
+        transcript.to_string()
+    } else {
+        prompts::combine_partials(&partials)
+    };
     let user = prompts::final_message(
         config.language,
         config.summary_type,
@@ -398,7 +421,23 @@ fn summarize(
         &combined,
     );
 
-    Ok(Some(summary::chat(&config.provider, system, &user)?))
+    let started = std::time::Instant::now();
+    let final_summary = summary::chat(&config.provider, system, &user)?;
+    debug_timing("final", user.len(), final_summary.len(), started);
+    Ok(Some(final_summary))
+}
+
+/// Per-request timing for the summary stage, under `MA_DEBUG=1`.
+///
+/// A stage total cannot say whether the time went into one long request or
+/// several, which is the difference between a slow model and too many calls.
+fn debug_timing(label: &str, sent: usize, received: usize, started: std::time::Instant) {
+    if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+        eprintln!(
+            "[llm] {label}: {:.1}s  sent {sent} chars, got {received}",
+            started.elapsed().as_secs_f64()
+        );
+    }
 }
 
 /// Append the user's meeting title to the folder name, if they gave one.

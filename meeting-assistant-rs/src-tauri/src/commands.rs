@@ -503,30 +503,25 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Resize the main window to fit its content.
+/// Grow or shrink the main window by `delta` logical pixels.
 ///
-/// # Why this is a Rust command and not a JS `setSize`
+/// # A delta, not a height
 ///
-/// `capabilities/default.json` does not grant `core:window:allow-set-size`, so a
-/// JS resize would be rejected by the ACL — and near-silently, the same failure
-/// class as the missing `withGlobalTauri` flag and the missing `setup` window
-/// label both were. Capabilities gate the JS API only; a Rust-side window
-/// operation needs no permission entry.
+/// This took a height, and the frontend worked one out by measuring the title
+/// bar: ask for H, see what `innerHeight` became, call the difference the
+/// chrome. Every part of that is unreliable. Tauri reports `outer_size` and
+/// `inner_size` as identical on macOS, so the difference is not the title bar;
+/// and the size read straight after `set_size` can still be the OLD one,
+/// because AppKit applies the change on the next pass of the run loop. Built on
+/// those numbers the arithmetic drifted a pixel per pass — measured, a window
+/// walking 242, 241, 240, 239 — until the toolbar was pushed out of view.
 ///
-/// The caller measures `document.documentElement.scrollHeight` rather than
-/// passing a constant, so a device name wrapping to a third line still fits.
-/// Clamped here because a measurement bug in the frontend must not be able to
-/// produce a 1px or a 4000px window.
+/// A delta needs none of it. The frontend knows only how much more or less room
+/// its content needs than it has, which it can measure exactly; this adds that
+/// to whatever the window currently is. Neither side needs to know what a title
+/// bar costs, and there is no round-trip figure to be stale.
 #[tauri::command]
-/// Resize the main window, returning the height actually applied.
-///
-/// The return value is not decoration. The frontend derives the height of the
-/// window furniture by comparing what it asked for against the `innerHeight`
-/// that resulted, and that subtraction is only meaningful if it knows the
-/// request was honoured. Left to infer it from its own un-clamped request, a
-/// height beyond MAX would be read as an enormous title bar and the next
-/// request would be larger still.
-pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
+pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     const MIN: f64 = 200.0;
     // Raised from 420 for the processing queue, which adds a panel of up to
     // three cards. The queue list scrolls past that, so this is a ceiling on
@@ -538,17 +533,44 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
         .get_webview_window("main")
         .ok_or("main window is missing")?;
 
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let current = window
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale)
+        .height;
+
+    let target = (current + delta).clamp(MIN, MAX);
+
+    // Release the previous pin BEFORE resizing.
+    //
+    // The min and max set by the LAST call are still in force, and a window
+    // manager enforces them against `set_size` — on Windows strictly, through
+    // WM_GETMINMAXINFO. A window pinned to 275 could therefore never be made
+    // 340: the request was silently clamped back and the extra content was
+    // simply cut off at the bottom. That is the clipped toolbar, and it only
+    // appeared once something made the layout taller than it was at the first
+    // resize.
+    let unpinned: Option<tauri::LogicalSize<f64>> = None;
+    let _ = window.set_min_size(unpinned);
+    let _ = window.set_max_size(unpinned);
+
     window
-        .set_size(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)))
+        .set_size(tauri::LogicalSize::new(WIDTH, target))
         .map_err(|e| e.to_string())?;
 
-    // Pinned so the window cannot be dragged to a size the fixed layout has no
-    // answer for. `resizable` must stay true in tauri.conf.json: with it false,
-    // programmatic resizing is unreliable on macOS.
-    let fixed = Some(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)));
+    // Pinned again so the window cannot be dragged to a size the fixed layout
+    // has no answer for. `resizable` must stay true in tauri.conf.json: with it
+    // false, programmatic resizing is unreliable on macOS.
+    let fixed = Some(tauri::LogicalSize::new(WIDTH, target));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
-    Ok(height.clamp(MIN, MAX))
+
+    if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+        eprintln!("[resize] {current:.0} {delta:+.0} -> {target:.0}");
+    }
+
+    Ok(())
 }
 
 /// Open, or focus, the settings window.

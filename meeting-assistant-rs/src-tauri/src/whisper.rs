@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use meeting_core::convert::{resample_for_whisper, WHISPER_SAMPLE_RATE};
+use meeting_core::convert::{peak, resample_for_whisper, WHISPER_SAMPLE_RATE};
 use meeting_core::text::Segment;
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -472,7 +472,14 @@ pub struct TranscriptionControl {
     abort: Arc<AtomicBool>,
     /// Centiseconds, whisper.cpp's own unit, kept as an integer so it fits an
     /// atomic. Converted only at the boundary.
+    ///
+    /// Position within the track being transcribed, which is not what a caller
+    /// wants: a meeting has two, and reporting each from zero made a progress
+    /// bar climb through the first and then fall back to nothing at the start of
+    /// the second. `base_cs` is what the earlier tracks already covered, so
+    /// `seconds_done` can answer for the meeting rather than the file.
     progress_cs: Arc<AtomicI64>,
+    base_cs: Arc<AtomicI64>,
 }
 
 impl TranscriptionControl {
@@ -490,14 +497,34 @@ impl TranscriptionControl {
         self.abort.load(Ordering::SeqCst)
     }
 
-    /// How far into the file the transcription has reached, in seconds.
+    /// How far into the MEETING the transcription has reached, in seconds.
     ///
     /// Safe to call from another thread while `transcribe` is running; that is
     /// the point of it.
     pub fn seconds_done(&self) -> f64 {
-        self.progress_cs.load(Ordering::Relaxed) as f64 / 100.0
+        let base = self.base_cs.load(Ordering::Relaxed);
+        (base + self.progress_cs.load(Ordering::Relaxed)) as f64 / 100.0
+    }
+
+    /// Declare how much of the meeting earlier tracks already covered.
+    ///
+    /// Called by the pipeline before each track. Without it every track reports
+    /// from zero and a bar spanning the whole meeting jumps backwards each time
+    /// one finishes.
+    pub fn set_base_seconds(&self, seconds: f64) {
+        self.base_cs.store((seconds * 100.0) as i64, Ordering::Relaxed);
+        self.progress_cs.store(0, Ordering::Relaxed);
     }
 }
+
+/// Below this peak amplitude a track is treated as having nothing in it.
+///
+/// −60 dBFS. Chosen far below any real microphone's noise floor, so a genuinely
+/// quiet recording is never mistaken for an empty one — quiet recordings are a
+/// real complaint, and discarding one would be a far worse bug than the wasted
+/// minutes this exists to save. It catches what it is aimed at: digital silence
+/// and a dead line.
+const SILENCE_PEAK: f32 = 0.001;
 
 /// Reads the shared abort flag for whisper.cpp.
 ///
@@ -592,6 +619,40 @@ impl Transcriber {
         control: &TranscriptionControl,
     ) -> Result<TranscriptionOutcome, WhisperError> {
         let samples = read_wav_as_16k_mono(audio_file)?;
+
+        // A silent track is skipped rather than transcribed.
+        //
+        // This was added to save time and turned out to be worth more for
+        // correctness. Whisper HALLUCINATES on silence: given a minute of
+        // digital silence it produced two segments reading "You", one per
+        // 30-second window. That is fabricated speech in the transcript, and
+        // worse, it is fed to the summariser as though someone had said it.
+        //
+        // The time saved is real but small — 2.6s to 2.1s over a silent minute,
+        // because whisper detects no-speech quickly and moves on. The reason to
+        // keep this is the two phantom segments it removes.
+        //
+        // Every meeting has two tracks, both running its full length, and one is
+        // often silent: system audio with nothing playing, or a muted
+        // microphone. So this is the common case, not an edge one.
+        //
+        // Checked here because this is where the samples already are: no second
+        // read of the file, and the pipeline needs no special case, since a
+        // silent track then contributes nothing either way.
+        if peak(&samples) < SILENCE_PEAK {
+            // Report the whole track as covered so a progress bar spanning the
+            // meeting moves past it rather than appearing to stall.
+            let seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            control
+                .progress_cs
+                .store((seconds * 100.0) as i64, Ordering::Relaxed);
+
+            return Ok(TranscriptionOutcome {
+                segments: Vec::new(),
+                last_end_seconds: resume_from_seconds + seconds,
+                aborted: false,
+            });
+        }
 
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             // Both match the Python's `model.transcribe(..., beam_size=5)`

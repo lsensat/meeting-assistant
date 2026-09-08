@@ -39,6 +39,7 @@ const ui = {
   deviceSystem: el("device-system"),
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
+  devicesFallback: el("devices-fallback"),
 };
 
 /**
@@ -539,101 +540,99 @@ async function showResolvedDevices(config) {
 }
 
 /**
- * Whether the panel was last seen reporting a fallback.
+ * Show or hide the marker that says a device the user did not choose is in use.
  *
- * Only a change is worth acting on. This function is reached from a 1.5-second
- * poll as well as from the recorder's own events, and expanding on the *state*
- * rather than the *transition* meant the panel reopened a second after every
- * time the user closed it, for as long as the fallback lasted — which is
- * indefinitely, if the configured device is simply not plugged in.
- */
-let fallbackAnnounced = false;
-
-/**
- * Open the panel the first time a fallback appears, and not again.
+ * **The panel is never opened by the app.** It used to open itself here, then
+ * only on the transition into a fallback, and both fought the user: the events
+ * that drive this fire on a 1.5-second poll and again whenever the recorder
+ * opens a stream, so a panel closed during a meeting reopened moments later.
  *
- * Hiding the panel must not hide the one thing it exists to say — that the app
- * is not using the device you chose — but saying it once is enough. Closing it
- * afterwards is the user acknowledging the message, and reopening it then is
- * arguing with them. It never auto-collapses either: that would hide the notice
- * while it is still true.
+ * The warning still has to be reachable — a fallback means the recording is not
+ * coming from the device that was chosen, which is worth knowing before the
+ * meeting rather than after. A dot in the header carries that while collapsed,
+ * and the panel opens only when the user opens it.
  *
  * @param {boolean} active
  */
 function announceFallback(active) {
-  if (active && !fallbackAnnounced) setDevicesExpanded(true);
-  fallbackAnnounced = active;
+  if (active) {
+    ui.devicesFallback.removeAttribute("hidden");
+  } else {
+    ui.devicesFallback.setAttribute("hidden", "");
+  }
 }
 
-/** Must match `tauri.conf.json`'s window height. */
-const CONFIG_WINDOW_HEIGHT = 275;
-
 /**
- * Height of the window furniture — the title bar — in CSS pixels.
+ * The height this window's content needs, in CSS pixels.
  *
- * `set_size` and the configured height both cover the whole window, while the
- * layout lives in the smaller webview inside it. Ignoring the difference is why
- * the toolbar kept getting clipped: every height asked for was a title bar too
- * short.
+ * # Measured from the parts, not from the whole
  *
- * This is **re-measured on every resize**, not derived once at startup. The
- * one-shot version assumed the window stood at exactly `CONFIG_WINDOW_HEIGHT`
- * at the moment of the first measurement. On Windows it does not: DPI scaling
- * and a title bar of a different height meant the first launch opened visibly
- * too tall, with empty space under the toolbar, while the second launch
- * happened to land correctly. Comparing the height last *asked for* against the
- * `innerHeight` that actually resulted needs no such assumption and converges
- * after one round-trip on any platform, title bar, or scale factor.
- */
-let chromeHeight = Math.max(0, CONFIG_WINDOW_HEIGHT - window.innerHeight);
-
-/**
- * The height the content needs, in CSS pixels.
+ * The obvious measurement — where the last row's bottom edge falls — is a trap
+ * here, because `main` fills the viewport and a spacer absorbs the slack. That
+ * makes the answer depend on the window's current height, so every correction
+ * changed the thing being measured. In practice the window oscillated: a run
+ * logged it walking 242 → 239, back to 278, and around again, never settling.
  *
- * Nothing in this window is sized against the viewport, so the bottom of the
- * last row depends only on the content above it — this returns the same answer
- * whatever size the window currently is, and cannot feed back into itself.
+ * Summing the children instead is independent of the window entirely. A flex
+ * column does not stretch its children on the main axis, so each one reports its
+ * own natural height whatever size the window is, and margins do not collapse
+ * inside a flex container. The spacer is skipped precisely because it is the
+ * part that varies.
  */
 function contentHeight() {
-  const row = document.querySelector(".result-row");
-  // `main` now stretches to fill the window, so the toolbar's bottom is pinned
-  // to the viewport and measuring it alone would always report the current
-  // height back — the window would never resize again. The spacer holds exactly
-  // the surplus, so subtracting it recovers the natural height. When the content
-  // needs more room than the window has, the spacer is 0 and this exceeds
-  // `innerHeight`, which is what makes the window grow.
-  const surplus = document.querySelector(".spacer").getBoundingClientRect().height;
-  // rect.bottom excludes the row's own 10px bottom margin.
-  return Math.ceil(row.getBoundingClientRect().bottom - surplus + 12);
+  const main = document.querySelector("main");
+  let total = 0;
+
+  for (const child of main.children) {
+    if (child.classList.contains("spacer")) continue;
+    const style = getComputedStyle(child);
+    if (style.display === "none") continue;
+    total +=
+      child.getBoundingClientRect().height +
+      parseFloat(style.marginTop) +
+      parseFloat(style.marginBottom);
+  }
+
+  return Math.ceil(total);
 }
 
-/** Last height asked for, so an unchanged measurement costs nothing. */
-let appliedHeight = null;
+/**
+ * Passes spent chasing a size this window cannot have.
+ *
+ * The delta is satisfied in one step whenever the window manager allows it. When
+ * it does not — the clamp in `nudge_main_height`, or a screen too short — the
+ * shortfall would otherwise be re-requested forever. Four attempts is far more
+ * than convergence needs and stops an argument nobody can win.
+ */
+let resizePasses = 0;
 
-/** Last height Rust reported it applied — the request after clamping. */
-let grantedHeight = null;
-
+/**
+ * Fit the window to its content.
+ *
+ * Asks for a **difference**, not a height. Working out an absolute height meant
+ * knowing what the title bar costs, and every way of learning that was wrong:
+ * Tauri reports the same value for a window's outer and inner size on macOS, and
+ * reading the size straight after setting it can return the previous one. The
+ * arithmetic built on those numbers lost a pixel per pass — a window measured
+ * walking 242, 241, 240, 239 — until the toolbar was pushed off the bottom.
+ *
+ * How much more room the content needs than it has is something this side can
+ * measure exactly, and it is all the other side needs to know.
+ */
 function resizeToContent() {
-  // The height Rust actually applied, versus the `innerHeight` that resulted,
-  // is the real chrome. Comparing against `appliedHeight` instead would read a
-  // clamped request as an enormous title bar and grow without bound. Still put
-  // through a sanity bound: a measurement taken mid-resize can be transiently
-  // absurd, and a bad value here is what puts the toolbar off-screen.
-  const observed = (grantedHeight ?? CONFIG_WINDOW_HEIGHT) - window.innerHeight;
-  if (observed >= 0 && observed <= 200) chromeHeight = observed;
+  const delta = Math.round(contentHeight() - window.innerHeight);
 
-  const wanted = contentHeight() + chromeHeight;
-  if (wanted === appliedHeight) return;
+  if (delta === 0) {
+    resizePasses = 0;
+    return;
+  }
+  if (resizePasses >= 4) {
+    resizePasses = 0;
+    return;
+  }
+  resizePasses += 1;
 
-  appliedHeight = wanted;
-  api.setMainHeight(wanted).then((granted) => {
-    grantedHeight = granted;
-    // Converge without waiting for the next status change. Once the window has
-    // settled, this re-reads the chrome and either corrects the height or — the
-    // normal case — measures the same number and returns at the guard above, so
-    // it cannot loop.
-    requestAnimationFrame(resizeToContent);
-  });
+  api.nudgeMainHeight(delta).then(() => requestAnimationFrame(resizeToContent));
 }
 
 /**
@@ -803,8 +802,7 @@ function wireEvents() {
 
   api.on(api.EVENTS.deviceMic, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name}`;
-    // Back on the configured device: a later fallback is news again.
-    fallbackAnnounced = false;
+    announceFallback(false);
   });
   api.on(api.EVENTS.micFallback, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name} (${tr("automatic")})`;
