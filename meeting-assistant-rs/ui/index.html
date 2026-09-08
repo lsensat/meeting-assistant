@@ -100,6 +100,14 @@
       <button class="devices-toggle" id="devices-toggle" aria-expanded="false"
               aria-controls="devices-detail">
         <span data-i18n="devices_summary">Microphone and Audio</span>
+        <!--
+          Lit when a device the user did not choose is in use. The panel used to
+          force itself open to say this, which meant it reopened every time it
+          was closed, for as long as the fallback lasted. A marker visible while
+          collapsed says the same thing without taking the decision away.
+        -->
+        <span class="fallback-dot" id="devices-fallback" hidden
+              data-tooltip="devices_fallback"></span>
         <span class="rule" aria-hidden="true"></span>
         <!-- Rotated 180° when open rather than swapped for a second glyph:
              one element, one transition, and no `hidden` juggling on an SVG. -->

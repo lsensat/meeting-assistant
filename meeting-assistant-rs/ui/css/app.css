@@ -636,6 +636,20 @@ html, body {
 }
 
 /* Fills whatever the label leaves, so the row reads as one ruled line. */
+/*
+ * Amber, like the readiness lamps, and for the same reason: something is not as
+ * configured. Small and inline so a collapsed panel can carry the warning
+ * without the panel having to open itself.
+ */
+.fallback-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--amber-dark);
+  border: 1px solid var(--steel-dark);
+}
+
 .devices-toggle .rule {
   flex: 1;
   border-top: 1px solid var(--steel);
@@ -796,7 +810,10 @@ input[type="password"] { cursor: text; }
 .switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .switch-row input { cursor: pointer; accent-color: var(--amber); }
 
-#refresh-devices { width: 175px; height: 28px; }
+/* Sized to its label, not to a number. "Update devices" fits 175px; the
+ * Spanish does not, so it wrapped to a second line inside a 28px-tall button
+ * and the second line was cut off. */
+#refresh-devices { min-width: 175px; height: 28px; white-space: nowrap; }
 #save-settings   { width: 190px; height: 34px; font-size: 13px; }
 
 .save-row { display: flex; justify-content: center; margin-top: 16px; }

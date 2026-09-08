@@ -39,6 +39,7 @@ const ui = {
   deviceSystem: el("device-system"),
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
+  devicesFallback: el("devices-fallback"),
 };
 
 /**
@@ -539,30 +540,26 @@ async function showResolvedDevices(config) {
 }
 
 /**
- * Whether the panel was last seen reporting a fallback.
+ * Show or hide the marker that says a device the user did not choose is in use.
  *
- * Only a change is worth acting on. This function is reached from a 1.5-second
- * poll as well as from the recorder's own events, and expanding on the *state*
- * rather than the *transition* meant the panel reopened a second after every
- * time the user closed it, for as long as the fallback lasted — which is
- * indefinitely, if the configured device is simply not plugged in.
- */
-let fallbackAnnounced = false;
-
-/**
- * Open the panel the first time a fallback appears, and not again.
+ * **The panel is never opened by the app.** It used to open itself here, then
+ * only on the transition into a fallback, and both fought the user: the events
+ * that drive this fire on a 1.5-second poll and again whenever the recorder
+ * opens a stream, so a panel closed during a meeting reopened moments later.
  *
- * Hiding the panel must not hide the one thing it exists to say — that the app
- * is not using the device you chose — but saying it once is enough. Closing it
- * afterwards is the user acknowledging the message, and reopening it then is
- * arguing with them. It never auto-collapses either: that would hide the notice
- * while it is still true.
+ * The warning still has to be reachable — a fallback means the recording is not
+ * coming from the device that was chosen, which is worth knowing before the
+ * meeting rather than after. A dot in the header carries that while collapsed,
+ * and the panel opens only when the user opens it.
  *
  * @param {boolean} active
  */
 function announceFallback(active) {
-  if (active && !fallbackAnnounced) setDevicesExpanded(true);
-  fallbackAnnounced = active;
+  if (active) {
+    ui.devicesFallback.removeAttribute("hidden");
+  } else {
+    ui.devicesFallback.setAttribute("hidden", "");
+  }
 }
 
 /** Must match `tauri.conf.json`'s window height. */
@@ -803,8 +800,7 @@ function wireEvents() {
 
   api.on(api.EVENTS.deviceMic, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name}`;
-    // Back on the configured device: a later fallback is news again.
-    fallbackAnnounced = false;
+    announceFallback(false);
   });
   api.on(api.EVENTS.micFallback, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${name} (${tr("automatic")})`;

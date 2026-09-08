@@ -538,17 +538,32 @@ pub fn set_main_height(app: AppHandle, height: f64) -> Result<f64, String> {
         .get_webview_window("main")
         .ok_or("main window is missing")?;
 
+    let target = height.clamp(MIN, MAX);
+
+    // Release the previous pin BEFORE resizing.
+    //
+    // The min and max set by the LAST call are still in force, and a window
+    // manager enforces them against `set_size` — on Windows strictly, through
+    // WM_GETMINMAXINFO. A window pinned to 275 could therefore never be made
+    // 340: the request was silently clamped back to 275 and the extra content
+    // was simply cut off at the bottom. That is the clipped toolbar, and it is
+    // why it only appeared once something made the layout taller than it was at
+    // the first resize.
+    let unpinned: Option<tauri::LogicalSize<f64>> = None;
+    let _ = window.set_min_size(unpinned);
+    let _ = window.set_max_size(unpinned);
+
     window
-        .set_size(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)))
+        .set_size(tauri::LogicalSize::new(WIDTH, target))
         .map_err(|e| e.to_string())?;
 
-    // Pinned so the window cannot be dragged to a size the fixed layout has no
-    // answer for. `resizable` must stay true in tauri.conf.json: with it false,
-    // programmatic resizing is unreliable on macOS.
-    let fixed = Some(tauri::LogicalSize::new(WIDTH, height.clamp(MIN, MAX)));
+    // Pinned again so the window cannot be dragged to a size the fixed layout
+    // has no answer for. `resizable` must stay true in tauri.conf.json: with it
+    // false, programmatic resizing is unreliable on macOS.
+    let fixed = Some(tauri::LogicalSize::new(WIDTH, target));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
-    Ok(height.clamp(MIN, MAX))
+    Ok(target)
 }
 
 /// Open, or focus, the settings window.
