@@ -151,14 +151,24 @@ Must be installed and running; the app starts it if it can find it. Looked up on
 HTTP on `127.0.0.1:11434` — the client has no TLS support compiled in, because
 nothing here should ever leave the machine.
 
-## Parity with the Python app
+## The Python app
 
-The port holds strict feature parity. Where behaviour deliberately differs, the
-reason is at the call site — the notable one is that silence for a device outage
-is measured from the last sample actually received to the first sample of the
-new stream, rather than written at open time as `app.py:1557-1562` does. On
-macOS the Python's simpler version loses roughly 0.14 s per device transition,
-because `stream.play()` returns long before a Core Audio tap starts delivering.
+`meeting-assistant-py/` was the blueprint. It is **no longer a target**: this app
+has since gained behaviour the Python never had — background processing with a
+pausable, resumable queue, single-instance enforcement, Whisper model management
+— so "does it still match" stopped being a useful question.
+
+It remains useful for one thing: explaining *why* something is the way it is.
+Where the port deliberately diverges, the reason is at the call site. The
+notable one is that silence for a device outage is measured from the last sample
+actually received to the first sample of the new stream, rather than written at
+open time as `app.py:1557-1562` does; on macOS the Python's simpler version
+loses roughly 0.14 s per device transition, because `stream.play()` returns long
+before a Core Audio tap starts delivering.
 
 Known issues carried over deliberately, rather than fixed during the port, are
 in the deferred-fixes register in the migration plan.
+
+What was given up in dropping parity is worth naming: the Python was a second,
+independent implementation to check a suspicious transcript against. Nothing
+replaces that, so a surprising result now has to be judged on its own.
