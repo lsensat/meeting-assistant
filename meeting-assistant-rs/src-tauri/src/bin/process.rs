@@ -128,10 +128,28 @@ fn main() {
         })
     };
 
+    // Seconds per stage, so transcription and summarisation can be told apart.
+    // A total alone cannot say which of them to make faster.
+    let mut stage_started: Option<Instant> = None;
+
     let result = pipeline::run(config, &control, |progress| match progress {
-        Progress::Stage(stage, state) => {
-            println!("\n[{}] {}", stage_name(stage), state_name(state));
-        }
+        Progress::Stage(stage, state) => match state {
+            StageState::Working => {
+                stage_started = Some(Instant::now());
+                println!("\n[{}] working", stage_name(stage));
+            }
+            _ => {
+                let seconds = stage_started
+                    .take()
+                    .map(|start| start.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                println!(
+                    "[{}] {} in {seconds:.1}s",
+                    stage_name(stage),
+                    state_name(state)
+                );
+            }
+        },
         Progress::Status(status) => {
             // Percent updates repeat constantly; only print real changes.
             if status != last_status {

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use meeting_core::convert::{resample_for_whisper, WHISPER_SAMPLE_RATE};
+use meeting_core::convert::{peak, resample_for_whisper, WHISPER_SAMPLE_RATE};
 use meeting_core::text::Segment;
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -517,6 +517,15 @@ impl TranscriptionControl {
     }
 }
 
+/// Below this peak amplitude a track is treated as having nothing in it.
+///
+/// −60 dBFS. Chosen far below any real microphone's noise floor, so a genuinely
+/// quiet recording is never mistaken for an empty one — quiet recordings are a
+/// real complaint, and discarding one would be a far worse bug than the wasted
+/// minutes this exists to save. It catches what it is aimed at: digital silence
+/// and a dead line.
+const SILENCE_PEAK: f32 = 0.001;
+
 /// Reads the shared abort flag for whisper.cpp.
 ///
 /// # Safety
@@ -610,6 +619,40 @@ impl Transcriber {
         control: &TranscriptionControl,
     ) -> Result<TranscriptionOutcome, WhisperError> {
         let samples = read_wav_as_16k_mono(audio_file)?;
+
+        // A silent track is skipped rather than transcribed.
+        //
+        // This was added to save time and turned out to be worth more for
+        // correctness. Whisper HALLUCINATES on silence: given a minute of
+        // digital silence it produced two segments reading "You", one per
+        // 30-second window. That is fabricated speech in the transcript, and
+        // worse, it is fed to the summariser as though someone had said it.
+        //
+        // The time saved is real but small — 2.6s to 2.1s over a silent minute,
+        // because whisper detects no-speech quickly and moves on. The reason to
+        // keep this is the two phantom segments it removes.
+        //
+        // Every meeting has two tracks, both running its full length, and one is
+        // often silent: system audio with nothing playing, or a muted
+        // microphone. So this is the common case, not an edge one.
+        //
+        // Checked here because this is where the samples already are: no second
+        // read of the file, and the pipeline needs no special case, since a
+        // silent track then contributes nothing either way.
+        if peak(&samples) < SILENCE_PEAK {
+            // Report the whole track as covered so a progress bar spanning the
+            // meeting moves past it rather than appearing to stall.
+            let seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            control
+                .progress_cs
+                .store((seconds * 100.0) as i64, Ordering::Relaxed);
+
+            return Ok(TranscriptionOutcome {
+                segments: Vec::new(),
+                last_end_seconds: resume_from_seconds + seconds,
+                aborted: false,
+            });
+        }
 
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             // Both match the Python's `model.transcribe(..., beam_size=5)`
