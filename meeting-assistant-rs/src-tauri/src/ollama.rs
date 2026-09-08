@@ -58,6 +58,9 @@ pub enum OllamaError {
     /// useful remedy is not merely "something smaller" — a text-only model of
     /// the same parameter count avoids the cost entirely.
     OutOfMemory(String),
+    /// The model answered with nothing at all. Its own doing, not a transport
+    /// failure — see the check in `chat`.
+    EmptyResponse(String),
     Http(String),
     /// A 2xx response whose body was not the shape we expect.
     Malformed(String),
@@ -81,6 +84,10 @@ impl std::fmt::Display for OllamaError {
             Self::OutOfMemory(model) => write!(
                 f,
                 "Ollama ran out of memory loading \"{model}\". Pick a smaller, text-only model in Settings and retry — this app only ever sends text."
+            ),
+            Self::EmptyResponse(model) => write!(
+                f,
+                "\"{model}\" returned an empty summary. Reasoning models spend their output on hidden thinking; choose a plain instruct model in Settings."
             ),
             Self::Http(e) => write!(f, "Ollama request failed: {e}"),
             Self::Malformed(e) => write!(f, "Unexpected response from Ollama: {e}"),
@@ -219,10 +226,22 @@ pub fn chat(model: &str, system: &str, user: &str) -> Result<String, OllamaError
         .json()
         .map_err(|e| OllamaError::Malformed(e.to_string()))?;
 
-    parsed
+    let content = parsed
         .message
         .map(|m| m.content)
-        .ok_or_else(|| OllamaError::Malformed("response had no message".into()))
+        .ok_or_else(|| OllamaError::Malformed("response had no message".into()))?;
+
+    // An empty answer is a failure, not a summary.
+    //
+    // A reasoning model spends its output inside a thinking block and can return
+    // `content: ""` having generated for minutes — measured at 120s and zero
+    // characters. Passed through, that wrote an empty `summary.md` and reported
+    // success, so the meeting looked processed and the file was blank.
+    if content.trim().is_empty() {
+        return Err(OllamaError::EmptyResponse(model.to_string()));
+    }
+
+    Ok(content)
 }
 
 /// Whether an Ollama error body is really "the model does not fit in memory".
