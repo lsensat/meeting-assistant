@@ -89,6 +89,31 @@ TRANSCRIPT:
 }
 
 /// The short reminder repeated in the final pass.
+/// Applied to every summary type, next to [`no_invent`].
+///
+/// Two instructions, both aimed at output length, because summary time is
+/// governed by how much the model chooses to write and not by how fast it
+/// writes: measured, a model generating at half the rate of another still
+/// finished sooner by saying less.
+///
+/// "Omit empty sections" is the larger of the two. Without it a model dutifully
+/// writes "No explicit decisions were recorded" under every heading it has
+/// nothing for — paragraphs of prose reporting the absence of content, which
+/// cost as much to generate as real content and tell the reader less than a
+/// missing heading would.
+pub fn brevity(language: Language) -> &'static str {
+    match language {
+        Language::Es => {
+            "Omite por completo cualquier sección sin contenido.
+Sé breve: viñetas cortas y como máximo cinco frases de prosa en total."
+        }
+        Language::En => {
+            "Omit entirely any section with nothing to report.
+Be brief: short bullets, and at most five sentences of prose in total."
+        }
+    }
+}
+
 pub fn no_invent(language: Language) -> &'static str {
     match language {
         Language::Es => "No inventes información.",
@@ -163,9 +188,7 @@ Para cada acción indica, solo si se conoce:
 - Acción
 - Responsable
 - Fecha límite
-# Temas pendientes
-# Riesgos o problemas
-# Otros puntos relevantes
+# Temas pendientes y riesgos
 "
         }
 
@@ -212,9 +235,7 @@ For each action include, only when known:
 - Action
 - Owner
 - Due date
-# Pending topics
-# Risks or issues
-# Other relevant points
+# Pending topics and risks
 "
         }
     };
@@ -240,9 +261,10 @@ pub fn final_message(
     combined: &str,
 ) -> String {
     format!(
-        "{}\n\n{}\n\n{}",
+        "{}\n\n{}\n{}\n\n{}",
         summary_instructions(language, summary_type, custom_prompt),
         no_invent(language),
+        brevity(language),
         combined
     )
 }
@@ -343,5 +365,42 @@ mod tests {
     #[test]
     fn single_partial_needs_no_separator() {
         assert_eq!(combine_partials(&["only".to_string()]), "only");
+    }
+
+    #[test]
+    fn every_summary_type_is_told_to_be_brief_and_to_skip_empty_sections() {
+        // The clause lives in `final_message` rather than in the five templates
+        // so it cannot be added to some and forgotten in others.
+        for language in [Language::En, Language::Es] {
+            for summary_type in [
+                SummaryType::MeetingMinutes,
+                SummaryType::Executive,
+                SummaryType::Actions,
+                SummaryType::Brief,
+                SummaryType::Custom,
+            ] {
+                let prompt = final_message(language, summary_type, "", "transcript");
+                assert!(
+                    prompt.contains(brevity(language)),
+                    "{language:?}/{summary_type:?} was not told to be brief"
+                );
+                assert!(prompt.contains(no_invent(language)));
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_summary_asks_for_four_sections() {
+        // Was six. `# Other relevant points` was a catch-all that invited
+        // padding from an app whose whole stance is not to invent, and pending
+        // topics and risks were near-duplicates in practice.
+        let prompt = summary_instructions(Language::En, SummaryType::MeetingMinutes, "");
+        assert_eq!(prompt.matches('#').count(), 4, "got: {prompt}");
+        assert!(!prompt.contains("Other relevant points"));
+        assert!(prompt.contains("# Pending topics and risks"));
+
+        let spanish = summary_instructions(Language::Es, SummaryType::MeetingMinutes, "");
+        assert_eq!(spanish.matches('#').count(), 4, "got: {spanish}");
+        assert!(spanish.contains("# Temas pendientes y riesgos"));
     }
 }
