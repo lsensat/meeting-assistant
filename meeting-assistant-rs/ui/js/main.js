@@ -58,8 +58,29 @@ let tick = null;
 
 // ---------------------------------------------------------------- helpers
 
+/**
+ * Longest status message that may reach the screen.
+ *
+ * A meeting whose summary failed put roughly 300 characters of Ollama allocator
+ * internals here. The line wrapped to ten of them, the window grew to fit, and
+ * the queue card below was squeezed to a sliver — one bad error took the whole
+ * layout with it. Nothing is lost: the full text goes to the tooltip and the
+ * console, which is where a message that long is useful anyway.
+ */
+const STATUS_MAX = 150;
+
 function setStatus(text) {
-  ui.status.textContent = text;
+  const full = String(text ?? "");
+  const clipped = full.length > STATUS_MAX ? `${full.slice(0, STATUS_MAX).trimEnd()}…` : full;
+
+  ui.status.textContent = clipped;
+  if (clipped !== full) {
+    ui.status.title = full;
+    console.log("[status]", full);
+  } else {
+    ui.status.removeAttribute("title");
+  }
+
   // The element carries a data-i18n default; once a live status replaces it,
   // a language switch must not clobber the message.
   ui.status.removeAttribute("data-i18n");

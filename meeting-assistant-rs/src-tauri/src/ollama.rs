@@ -43,6 +43,13 @@ pub enum OllamaError {
     /// The server is not reachable at all — almost always "Ollama is not
     /// running", which the UI reports differently from a request failure.
     Unreachable(String),
+    /// Ollama could not load the model because the machine ran out of memory.
+    ///
+    /// Its own report of this is a wall of JSON — allocation sizes, a failed
+    /// `GGML_ASSERT`, and often a second failure while terminating the process.
+    /// None of it tells the user the one thing they can act on, which is that
+    /// the model is too big for the memory available right now.
+    OutOfMemory(String),
     Http(String),
     /// A 2xx response whose body was not the shape we expect.
     Malformed(String),
@@ -62,6 +69,10 @@ impl std::fmt::Display for OllamaError {
             Self::Unreachable(e) => write!(
                 f,
                 "Ollama is not running. Start Ollama and try again. ({e})"
+            ),
+            Self::OutOfMemory(model) => write!(
+                f,
+                "Ollama ran out of memory loading \"{model}\". Choose a smaller model in Settings, or close other applications and retry the meeting."
             ),
             Self::Http(e) => write!(f, "Ollama request failed: {e}"),
             Self::Malformed(e) => write!(f, "Unexpected response from Ollama: {e}"),
@@ -183,7 +194,17 @@ pub fn chat(model: &str, system: &str, user: &str) -> Result<String, OllamaError
         if status.as_u16() == 404 {
             return Err(OllamaError::ModelNotFound(model.to_string()));
         }
-        return Err(OllamaError::Http(format!("status {status}: {detail}")));
+        if is_out_of_memory(&detail) {
+            return Err(OllamaError::OutOfMemory(model.to_string()));
+        }
+        // Truncated. Ollama's error bodies run to several hundred characters of
+        // allocator internals, and the whole thing used to reach the status
+        // line and wrap it over ten lines, pushing the rest of the window
+        // aside. The full body is still logged.
+        return Err(OllamaError::Http(format!(
+            "status {status}: {}",
+            truncate(&detail, 120)
+        )));
     }
 
     let parsed: ChatResponse = response
@@ -196,9 +217,63 @@ pub fn chat(model: &str, system: &str, user: &str) -> Result<String, OllamaError
         .ok_or_else(|| OllamaError::Malformed("response had no message".into()))
 }
 
+/// Whether an Ollama error body is really "the model does not fit in memory".
+///
+/// Matched on the phrases rather than the status code: Ollama reports this as a
+/// generic 500, and the same 500 covers unrelated faults. The three checked here
+/// are what a failed model load actually emits — its own summary, the
+/// allocator's, and the assertion that fires when the buffer comes back null.
+fn is_out_of_memory(detail: &str) -> bool {
+    let lower = detail.to_lowercase();
+    lower.contains("out of memory")
+        || lower.contains("out-of-memory")
+        || lower.contains("failed to allocate")
+}
+
+/// Cut to `max` characters on a char boundary, marking that it was cut.
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{}…", kept.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_out_of_memory_body_is_recognised() {
+        // Verbatim from the Windows machine that hit this.
+        let body = r#"{"error":"llama-server startup failed before projector CPU offload retry: llama-server reported out-of-memory during startup: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 851226048"}"#;
+        assert!(is_out_of_memory(body));
+    }
+
+    #[test]
+    fn an_unrelated_failure_is_not_called_out_of_memory() {
+        // Claiming the wrong cause would send the user to change a model that
+        // was never the problem.
+        assert!(!is_out_of_memory(r#"{"error":"model is required"}"#));
+        assert!(!is_out_of_memory("status 500: something else entirely"));
+    }
+
+    #[test]
+    fn a_long_error_body_is_cut_short() {
+        let long = "x".repeat(400);
+        let cut = truncate(&long, 120);
+        assert_eq!(cut.chars().count(), 121, "120 characters plus the ellipsis");
+        assert!(cut.ends_with('…'));
+        // Short ones are left exactly as they are.
+        assert_eq!(truncate("brief", 120), "brief");
+    }
+
+    #[test]
+    fn truncation_does_not_split_a_character() {
+        // Ollama's messages can carry non-ASCII; cutting by bytes would panic.
+        let text = "é".repeat(200);
+        assert_eq!(truncate(&text, 10).chars().count(), 11);
+    }
 
     /// The three response shapes the Python tolerated. A server upgrade that
     /// renames this field must not silently yield "no models installed".
