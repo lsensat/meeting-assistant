@@ -472,7 +472,14 @@ pub struct TranscriptionControl {
     abort: Arc<AtomicBool>,
     /// Centiseconds, whisper.cpp's own unit, kept as an integer so it fits an
     /// atomic. Converted only at the boundary.
+    ///
+    /// Position within the track being transcribed, which is not what a caller
+    /// wants: a meeting has two, and reporting each from zero made a progress
+    /// bar climb through the first and then fall back to nothing at the start of
+    /// the second. `base_cs` is what the earlier tracks already covered, so
+    /// `seconds_done` can answer for the meeting rather than the file.
     progress_cs: Arc<AtomicI64>,
+    base_cs: Arc<AtomicI64>,
 }
 
 impl TranscriptionControl {
@@ -490,12 +497,23 @@ impl TranscriptionControl {
         self.abort.load(Ordering::SeqCst)
     }
 
-    /// How far into the file the transcription has reached, in seconds.
+    /// How far into the MEETING the transcription has reached, in seconds.
     ///
     /// Safe to call from another thread while `transcribe` is running; that is
     /// the point of it.
     pub fn seconds_done(&self) -> f64 {
-        self.progress_cs.load(Ordering::Relaxed) as f64 / 100.0
+        let base = self.base_cs.load(Ordering::Relaxed);
+        (base + self.progress_cs.load(Ordering::Relaxed)) as f64 / 100.0
+    }
+
+    /// Declare how much of the meeting earlier tracks already covered.
+    ///
+    /// Called by the pipeline before each track. Without it every track reports
+    /// from zero and a bar spanning the whole meeting jumps backwards each time
+    /// one finishes.
+    pub fn set_base_seconds(&self, seconds: f64) {
+        self.base_cs.store((seconds * 100.0) as i64, Ordering::Relaxed);
+        self.progress_cs.store(0, Ordering::Relaxed);
     }
 }
 

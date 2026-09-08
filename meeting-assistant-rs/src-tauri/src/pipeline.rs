@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 
 use meeting_core::config::{Language, SummaryType};
-use meeting_core::progress::transcription_percent;
 use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
 
@@ -210,9 +209,10 @@ pub fn run(
         config.transcription_language.as_deref(),
     )?;
 
+    // Only the microphone's length is needed here: it is where the system
+    // track's share of the meeting's timeline begins. The queue worker measures
+    // both itself, to size the bar.
     let mic_duration = wav_duration(&mic_file).unwrap_or(0.0);
-    let system_duration = wav_duration(&system_file).unwrap_or(0.0);
-    let total_duration = mic_duration + system_duration;
 
     // Both tracks already share one origin: `RecordingSession::start` stamps a
     // single `Instant` and hands it to both recorders, and each track's
@@ -227,16 +227,21 @@ pub fn run(
     let mut segments: Vec<Segment> = read_partial(&partial_segments_file);
     let mut resume = config.resume;
 
-    // Reported once per track rather than continuously: `full()` blocks this
-    // thread for the whole file, so nobody here can observe its progress. Live
-    // percentages come from `control.seconds_done()`, which the queue worker
-    // polls from another thread — see `TranscriptionControl`.
+    // No percentage here, deliberately.
+    //
+    // `full()` blocks this thread for the whole file, so this line is written
+    // once and cannot be updated. It used to carry a number, which meant it
+    // announced "0%" and sat there for the length of the track — a progress
+    // report that never progresses is worse than none, because it reads as a
+    // stall. The live figure is `control.seconds_done()`, which the queue worker
+    // polls from another thread and shows on the meeting's card.
     on_progress(Progress::Status(format!(
-        "Transcribing {}... {}%",
-        config.speaker_me,
-        transcription_percent(resume.mic_offset_seconds, mic_duration, 0.0, total_duration)
+        "Transcribing {}...",
+        config.speaker_me
     )));
 
+    // The microphone track opens the meeting's timeline.
+    control.set_base_seconds(0.0);
     let mic = transcriber.transcribe(
         &mic_file,
         &config.speaker_me,
@@ -254,16 +259,13 @@ pub fn run(
     }
 
     on_progress(Progress::Status(format!(
-        "Transcribing {}... {}%",
-        config.speaker_meeting,
-        transcription_percent(
-            resume.system_offset_seconds,
-            system_duration,
-            mic_duration,
-            total_duration
-        )
+        "Transcribing {}...",
+        config.speaker_meeting
     )));
 
+    // The system track continues it, so progress keeps climbing instead of
+    // restarting when the first track finishes.
+    control.set_base_seconds(mic_duration);
     let system = transcriber.transcribe(
         &system_file,
         &config.speaker_meeting,
