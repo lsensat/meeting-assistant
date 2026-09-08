@@ -381,7 +381,10 @@ fn summarize(
         )));
 
         let user = prompts::extraction_message(config.language, chunk);
-        partials.push(summary::chat(&config.provider, system, &user)?);
+        let started = std::time::Instant::now();
+        let extracted = summary::chat(&config.provider, system, &user)?;
+        debug_timing("extract", chunk.len(), extracted.len(), started);
+        partials.push(extracted);
         write_partial(partial_file, &partials);
     }
 
@@ -400,7 +403,23 @@ fn summarize(
         &combined,
     );
 
-    Ok(Some(summary::chat(&config.provider, system, &user)?))
+    let started = std::time::Instant::now();
+    let final_summary = summary::chat(&config.provider, system, &user)?;
+    debug_timing("final", user.len(), final_summary.len(), started);
+    Ok(Some(final_summary))
+}
+
+/// Per-request timing for the summary stage, under `MA_DEBUG=1`.
+///
+/// A stage total cannot say whether the time went into one long request or
+/// several, which is the difference between a slow model and too many calls.
+fn debug_timing(label: &str, sent: usize, received: usize, started: std::time::Instant) {
+    if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+        eprintln!(
+            "[llm] {label}: {:.1}s  sent {sent} chars, got {received}",
+            started.elapsed().as_secs_f64()
+        );
+    }
 }
 
 /// Append the user's meeting title to the folder name, if they gave one.
