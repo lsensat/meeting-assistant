@@ -47,8 +47,16 @@ pub enum OllamaError {
     ///
     /// Its own report of this is a wall of JSON — allocation sizes, a failed
     /// `GGML_ASSERT`, and often a second failure while terminating the process.
-    /// None of it tells the user the one thing they can act on, which is that
-    /// the model is too big for the memory available right now.
+    /// None of it tells the user the one thing they can act on.
+    ///
+    /// # Why the advice names text-only models specifically
+    ///
+    /// The report that prompted this said "failed **before projector CPU
+    /// offload retry**", and a projector is a vision encoder: the model was
+    /// multimodal, and a large share of what it was trying to allocate was a
+    /// component this app can never use. Nothing here sends an image. So the
+    /// useful remedy is not merely "something smaller" — a text-only model of
+    /// the same parameter count avoids the cost entirely.
     OutOfMemory(String),
     Http(String),
     /// A 2xx response whose body was not the shape we expect.
@@ -72,7 +80,7 @@ impl std::fmt::Display for OllamaError {
             ),
             Self::OutOfMemory(model) => write!(
                 f,
-                "Ollama ran out of memory loading \"{model}\". Choose a smaller model in Settings, or close other applications and retry the meeting."
+                "Ollama ran out of memory loading \"{model}\". Pick a smaller, text-only model in Settings and retry — this app only ever sends text."
             ),
             Self::Http(e) => write!(f, "Ollama request failed: {e}"),
             Self::Malformed(e) => write!(f, "Unexpected response from Ollama: {e}"),
