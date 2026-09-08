@@ -368,7 +368,21 @@ fn summarize(
     partials.truncate(start_chunk.min(chunks.len()));
     let total = chunks.len();
 
-    for (index, chunk) in chunks.iter().enumerate().skip(partials.len()) {
+    // A transcript that fits in one chunk needs no map step.
+    //
+    // The extraction exists to compress many chunks into something the final
+    // prompt can hold. With one chunk there is nothing to compress: it turned a
+    // 1,248-character transcript into 939 characters and then summarised those.
+    // That is the same work twice, and the second pass sees a compression of the
+    // meeting rather than the meeting — measured at 39.7s of a 66.1s summary
+    // stage, for a step that made the result worse.
+    //
+    // The final prompt never names its input, so a transcript reads there at
+    // least as naturally as a set of extracted notes.
+    let single_chunk = total <= 1;
+    let to_extract: &[String] = if single_chunk { &[] } else { &chunks };
+
+    for (index, chunk) in to_extract.iter().enumerate().skip(partials.len()) {
         if control.is_aborted() {
             write_partial(partial_file, &partials);
             return Ok(None);
@@ -395,7 +409,11 @@ fn summarize(
 
     on_progress(Progress::Status("Generating the final summary...".into()));
 
-    let combined = prompts::combine_partials(&partials);
+    let combined = if single_chunk {
+        transcript.to_string()
+    } else {
+        prompts::combine_partials(&partials)
+    };
     let user = prompts::final_message(
         config.language,
         config.summary_type,
