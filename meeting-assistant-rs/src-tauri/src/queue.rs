@@ -62,6 +62,56 @@ impl Stage {
     }
 }
 
+/// How long each stage of the pipeline took.
+///
+/// Written into `meeting.json` so the cost of a real meeting can be read off a
+/// real run, rather than inferred from a synthetic one. The first measurements
+/// taken by hand were a surprise — the summary was 66s against transcription's
+/// 2.2s, which is the opposite of where the effort had been going — and that is
+/// exactly the kind of thing that should not need a special build to discover.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Timings {
+    pub audio: StageTiming,
+    pub whisper: StageTiming,
+    pub summary: StageTiming,
+}
+
+/// One stage's clock.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct StageTiming {
+    /// When the stage was first entered, `YYYY-MM-DDTHH:MM:SS`, UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// When it last finished. Absent while it is running, or if it never did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    /// Seconds spent in this stage, **totalled across every attempt**.
+    ///
+    /// The one to compare stages by. A meeting that was paused and resumed has
+    /// a wall-clock span between `started_at` and `ended_at` that includes the
+    /// time the app was closed, so the difference between those two is not the
+    /// work done — this is.
+    #[serde(default)]
+    pub seconds: f64,
+}
+
+impl StageTiming {
+    /// Note that the stage has been entered. Only the first entry sets the
+    /// start, so a resume does not erase when the meeting really began.
+    pub fn begin(&mut self, now: String) {
+        if self.started_at.is_none() {
+            self.started_at = Some(now);
+        }
+        self.ended_at = None;
+    }
+
+    /// Note that the stage has left off, having run for `seconds`.
+    pub fn end(&mut self, now: String, seconds: f64) {
+        self.seconds += seconds;
+        self.ended_at = Some(now);
+    }
+}
+
 /// What `meeting.json` holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingState {
@@ -93,6 +143,9 @@ pub struct MeetingState {
     /// queue lock, and file I/O does not belong there.
     #[serde(default)]
     pub duration_seconds: Option<f64>,
+    /// How long each stage took. See [`Timings`].
+    #[serde(default)]
+    pub timings: Timings,
     /// The failure from the last attempt, when `stage` is `Failed`.
     #[serde(default)]
     pub error: Option<String>,
@@ -116,6 +169,7 @@ impl MeetingState {
             system_offset_seconds: 0.0,
             summary_chunk: 0,
             duration_seconds: None,
+            timings: Timings::default(),
             error: None,
             config,
         }
@@ -194,6 +248,57 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resumed_stage_keeps_its_original_start_and_totals_the_work() {
+        let mut clock = StageTiming::default();
+
+        clock.begin("2026-09-09T10:00:00".into());
+        clock.end("2026-09-09T10:00:30".into(), 30.0);
+
+        // Paused, the app closed, reopened an hour later, and resumed.
+        clock.begin("2026-09-09T11:00:00".into());
+        clock.end("2026-09-09T11:00:20".into(), 20.0);
+
+        assert_eq!(
+            clock.started_at.as_deref(),
+            Some("2026-09-09T10:00:00"),
+            "the second attempt must not overwrite when the meeting began"
+        );
+        assert_eq!(clock.ended_at.as_deref(), Some("2026-09-09T11:00:20"));
+        // The wall-clock span is over an hour; the work was 50 seconds. This is
+        // the whole reason `seconds` exists rather than subtracting the two.
+        assert_eq!(clock.seconds, 50.0);
+    }
+
+    #[test]
+    fn a_running_stage_has_no_end() {
+        let mut clock = StageTiming::default();
+        clock.begin("2026-09-09T10:00:00".into());
+        clock.end("2026-09-09T10:00:30".into(), 30.0);
+        clock.begin("2026-09-09T11:00:00".into());
+
+        assert!(
+            clock.ended_at.is_none(),
+            "re-entering a stage must clear the previous end, or a running \
+             stage reads as finished"
+        );
+    }
+
+    #[test]
+    fn meeting_state_without_timings_still_loads() {
+        // Every meeting.json written before this field existed.
+        let json = r#"{
+            "version": 1,
+            "id": "2026-09-09_10-00-00",
+            "title": "Standup",
+            "stage": "queued",
+            "config": {}
+        }"#;
+        let state: MeetingState = serde_json::from_str(json).expect("legacy state parses");
+        assert_eq!(state.timings, Timings::default());
+        assert_eq!(state.duration_seconds, None);
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -757,3 +862,4 @@ mod queue_tests {
         assert!(control.is_aborted());
     }
 }
+

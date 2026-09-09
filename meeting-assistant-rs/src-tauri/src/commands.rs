@@ -1187,11 +1187,50 @@ fn run_job(
     let stage_app = app.clone();
     let stage_transcribing = Arc::clone(&transcribing);
 
+    // Filled by the progress callback, read once the run is over. An `Arc`
+    // because the callback outlives this scope on the pipeline's thread.
+    let timings: Arc<std::sync::Mutex<queue::Timings>> =
+        Arc::new(std::sync::Mutex::new(meeting.timings.clone()));
+    let timings_sink = Arc::clone(&timings);
+    // When the current stage was entered, so its duration can be added on exit.
+    let stage_started = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+
     let result = pipeline::run(pipeline_config, &control, move |progress| match progress {
         Progress::Stage(stage, stage_state) => {
-            // Only on entry. `Done` for one stage arrives immediately before
-            // `Working` for the next, and acting on both would briefly show the
-            // finished stage as if it were the current one.
+            // Both edges are timed, even though only entry drives the UI: a
+            // stage's cost is the thing being measured, and `Done` is the only
+            // event that knows when it stopped.
+            if let Ok(mut clocks) = timings_sink.lock() {
+                let clock = match stage {
+                    Stage::Audio => &mut clocks.audio,
+                    Stage::Whisper => &mut clocks.whisper,
+                    Stage::Summary => &mut clocks.summary,
+                };
+                match stage_state {
+                    StageState::Working => {
+                        clock.begin(timestamp_iso());
+                        if let Ok(mut started) = stage_started.lock() {
+                            *started = Some(std::time::Instant::now());
+                        }
+                    }
+                    _ => {
+                        // `Instant`, not the wall clock: the elapsed time must
+                        // not move if the system clock is adjusted mid-run.
+                        let elapsed = stage_started
+                            .lock()
+                            .ok()
+                            .and_then(|started| *started)
+                            .map(|started| started.elapsed().as_secs_f64())
+                            .unwrap_or(0.0);
+                        clock.end(timestamp_iso(), elapsed);
+                    }
+                }
+            }
+
+            // Only on entry from here down. `Done` for one stage arrives
+            // immediately before `Working` for the next, and acting on both
+            // would briefly show the finished stage as if it were the current
+            // one.
             if stage_state != StageState::Working {
                 return;
             }
@@ -1241,6 +1280,12 @@ fn run_job(
         .ok()
         .and_then(|slot| slot.clone())
         .unwrap_or_else(|| job.folder.clone());
+
+    // Whatever happened — finished, paused or failed — the stages that did run
+    // are worth recording. A failure's timings are the most interesting of all.
+    if let Ok(clocks) = timings.lock() {
+        meeting.timings = clocks.clone();
+    }
 
     match result {
         Ok(pipeline::RunOutcome::Finished(output)) => {
@@ -1376,6 +1421,21 @@ fn timestamp_folder_name() -> String {
 
     let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
     format!("{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}")
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, UTC, for the stage timings in `meeting.json`.
+///
+/// UTC rather than local: these are durations to compare, and a meeting that
+/// spans a daylight-saving change would otherwise record a stage that took an
+/// hour less than it did.
+fn timestamp_iso() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 /// Days-from-civil, inverted. From Howard Hinnant's `civil_from_days`.
