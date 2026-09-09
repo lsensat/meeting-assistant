@@ -83,9 +83,18 @@ to trust this repository.
 
 - **Windows** — SmartScreen shows *"Windows protected your PC"*. Click **More
   info → Run anyway**.
-- **macOS** — Gatekeeper says the app *"is damaged"* or cannot be opened. Open
-  **System Settings → Privacy & Security**, find the message about Meeting
-  Assistant, and choose **Open Anyway**.
+- **macOS** — Gatekeeper says *"Meeting Assistant.app is damaged and can't be
+  opened."* The download is fine; the message is what macOS says about an
+  unsigned app that a browser has quarantined. **Open Anyway** does not appear
+  for this one, so clear the quarantine flag instead — drag the app to
+  Applications first, then:
+
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/Meeting Assistant.app"
+  ```
+
+  Each new build looks like a different app to macOS, so the microphone and
+  screen-recording permissions have to be granted again after an update.
 
 ### First run
 
