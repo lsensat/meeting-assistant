@@ -4,9 +4,16 @@
 //! `/api/chat` to summarize — so this talks HTTP directly rather than taking a
 //! wrapper crate that may lag behind the server.
 //!
-//! Blocking on purpose: the pipeline already runs on its own worker thread, and
-//! a blocking client keeps tokio out of the dependency tree entirely.
+//! Blocking on purpose: the pipeline already runs on its own worker thread, so
+//! it has no use for futures.
+//!
+//! This does **not** keep tokio out — an earlier version of this comment claimed
+//! it did, and that claim cost an evening. `reqwest::blocking` hides a tokio
+//! runtime inside the client, on a thread of its own, and dropping the client
+//! joins that thread and drops that runtime. Both are illegal inside the async
+//! runtime every Tauri command runs in. See `CLIENT` below.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -134,11 +141,60 @@ struct ChatResponse {
     message: Option<ChatMessage>,
 }
 
-fn client(timeout: Duration) -> Result<reqwest::blocking::Client, OllamaError> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| OllamaError::Http(e.to_string()))
+/// The one HTTP client, built on first use and never dropped.
+///
+/// # Why it must never be dropped
+///
+/// `reqwest::blocking::Client` is not a plain struct: it owns a thread running
+/// a private tokio runtime. Its `Drop` does two things that are illegal inside
+/// an async runtime, and Tauri commands all execute inside one
+/// (`#[tauri::command(async)]` puts them on tokio's blocking pool):
+///
+/// * `ClientHandle::drop` calls `self.thread.take().map(|h| h.join())` — it
+///   **blocks** the dropping thread.
+/// * The thread it waits on finishes with `drop(rt)` — **dropping a tokio
+///   runtime**.
+///
+/// Building one per call therefore dropped one per call, and the result was
+///
+/// ```text
+/// thread 'tokio-rt-worker' panicked:
+/// Cannot drop a runtime in a context where blocking is not allowed.
+/// ```
+///
+/// The visible symptom was worse than a panic: the Settings window hung
+/// forever on `populateOllama`, so `populateDevices`, `populateFiles` and
+/// `wire()` never ran and every control in that window was inert — empty
+/// device lists and dead buttons, with nothing on screen to say why.
+///
+/// A single client never dropped removes the hazard entirely, and it keeps the
+/// connection pool between the probe and the summary instead of rebuilding it.
+///
+/// The header of this module used to claim a blocking client "keeps tokio out
+/// of the dependency tree entirely". It does not; it hides tokio inside the
+/// client. That belief is what made this invisible for so long.
+/// Holds the *result*, so a client is constructed exactly once.
+///
+/// Building outside the cell and passing it to `get_or_init` would be a subtle
+/// reintroduction of the same bug: two threads racing would each build one, and
+/// the loser's would be **dropped** — the one operation this whole design
+/// exists to avoid. Constructing inside the cell means at most one is ever
+/// built, so none is ever dropped.
+static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+
+/// The shared client.
+///
+/// No timeout is set here: it belongs on the request, because the probe and the
+/// summary want wildly different ones and they now share a client.
+fn client() -> Result<&'static reqwest::blocking::Client, OllamaError> {
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| OllamaError::Http(e.clone()))
 }
 
 /// Installed model names, sorted and deduplicated.
@@ -147,8 +203,11 @@ fn client(timeout: Duration) -> Result<reqwest::blocking::Client, OllamaError> {
 /// Ollama is running but has no models — a different UI state from unreachable,
 /// so the distinction must survive.
 pub fn list_models() -> Result<Vec<String>, OllamaError> {
-    let response = client(PROBE_TIMEOUT)?
+    let response = client()?
         .get(format!("{BASE_URL}/api/tags"))
+        // On the request, not the client: the client is shared with `chat`,
+        // whose timeout is measured in minutes rather than seconds.
+        .timeout(PROBE_TIMEOUT)
         .send()
         .map_err(|e| OllamaError::Unreachable(e.to_string()))?;
 
@@ -194,9 +253,10 @@ pub fn chat(model: &str, system: &str, user: &str) -> Result<String, OllamaError
         "options": {"temperature": TEMPERATURE},
     });
 
-    let response = client(CHAT_TIMEOUT)?
+    let response = client()?
         .post(format!("{BASE_URL}/api/chat"))
         .json(&body)
+        .timeout(CHAT_TIMEOUT)
         .send()
         .map_err(|e| OllamaError::Unreachable(e.to_string()))?;
 

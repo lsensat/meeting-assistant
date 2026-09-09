@@ -16,7 +16,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -362,6 +362,34 @@ pub fn is_installed(id: &str) -> bool {
     }
 }
 
+/// The client used to fetch models, built once and never dropped.
+///
+/// Two reasons, and the second was a live bug:
+///
+/// 1. Dropping a `reqwest::blocking::Client` joins a thread and drops a tokio
+///    runtime, both illegal inside the async runtime a Tauri command runs in.
+///    See `ollama::CLIENT` for the full account.
+/// 2. The client here was a **temporary**, dropped at the end of the statement
+///    that built it — which is before the response body is streamed to disk.
+///    A blocking `Response` reads through the client's internal runtime, so the
+///    thing doing the reading was being torn down first.
+///
+/// No timeout: a 3.1 GB model over a slow link is a legitimately long request,
+/// and the previous code was explicit about that with `.timeout(None)`.
+static DOWNLOAD_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+
+fn download_client() -> Result<&'static reqwest::blocking::Client, WhisperError> {
+    DOWNLOAD_CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(None)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| WhisperError::Download(e.clone()))
+}
+
 /// Download a model, reporting progress as a percentage.
 ///
 /// Downloads to a temporary file and renames on success, so an interrupted
@@ -378,10 +406,7 @@ pub fn download_model(
     }
 
     let url = format!("{BASE_URL}/ggml-{}.bin", spec.id);
-    let mut response = reqwest::blocking::Client::builder()
-        .timeout(None)
-        .build()
-        .map_err(|e| WhisperError::Download(e.to_string()))?
+    let mut response = download_client()?
         .get(&url)
         .send()
         .map_err(|e| WhisperError::Download(e.to_string()))?;

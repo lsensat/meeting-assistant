@@ -665,15 +665,6 @@ function askMeetingTitle() {
 }
 
 /**
- * Show which devices a recording would use, before one has started.
- *
- * The panel is otherwise only written by `device_mic`/`device_system`, which
- * the recorder emits when it opens a stream — so at rest it sat on its "—"
- * placeholders and told the user nothing. This resolves the same way the
- * recorder will: the configured device if it is still present, otherwise the
- * OS default.
- *
-/**
  * Raw device name → short display label, from the last `listDevices`.
  *
  * Shortening needs the whole list to spot collisions, and Rust already does
@@ -687,6 +678,15 @@ function deviceLabel(name) {
   return deviceLabels.get(name) ?? name;
 }
 
+/**
+ * Show which devices a recording would use, before one has started.
+ *
+ * The panel is otherwise only written by `device_mic`/`device_system`, which
+ * the recorder emits when it opens a stream — so at rest it sat on its "—"
+ * placeholders and told the user nothing. This resolves the same way the
+ * recorder will: the configured device if it is still present, otherwise the
+ * OS default.
+ *
  * @param {Record<string, unknown>} config
  */
 async function showResolvedDevices(config) {

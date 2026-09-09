@@ -608,8 +608,10 @@ html, body {
   background: var(--panel);
   border: var(--border);
   border-radius: var(--radius-panel);
-  /* 4px, pairing with the session card's 4px for an 8px gutter. */
-  margin: 4px 12px;
+  /* 4px above, pairing with the session card's 4px for an 8px gutter. 6px
+     below: the last panel sits directly above the toolbar, and 4px there put it
+     tight against the buttons. */
+  margin: 4px 12px 6px;
   /* Roomier, and matching the session card's generosity. */
   padding: 9px 10px 11px;
   transition: padding-bottom 120ms ease;
@@ -1201,3 +1203,24 @@ input[type="password"] { cursor: text; }
  */
 [data-recorder-state="recording"] .session-card { border-color: var(--red); }
 [data-recorder-state="idle"]      .session-card { border-color: var(--steel); }
+
+/* ------------------------------------------------------- fatal errors */
+
+/*
+ * The banner `errors.js` raises when a module fails to load or a promise
+ * rejects unhandled. Styled here rather than inline because the CSP forbids
+ * `style` attributes, and an unstyled banner on a dark page is no banner.
+ */
+.fatal-error {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 99999;
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: #7A241D;
+  color: #fff;
+  font: 12px/1.45 ui-monospace, monospace;
+  white-space: pre-wrap;
+}

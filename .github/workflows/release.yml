@@ -25,12 +25,33 @@ on:
         default: all
         type: choice
         options: [all, windows, macos]
+  # Check every pull request, on both platforms, WITHOUT bundling — see the `if`
+  # on the "Build and bundle" step.
+  #
+  # Nothing checked a change before it reached `main` until now, and it showed:
+  # a syntax error in `main.js` was merged and shipped in two release builds,
+  # leaving an app that started to a blank window on both platforms. Tests and
+  # clippy would not have caught it either, which is what the frontend check
+  # below is for — but neither ran on the pull request at all.
+  #
+  # This was previously a cost decision: at 1830 of 2000 included minutes, a
+  # 35-minute run per push was not affordable. Public repositories get unlimited
+  # Actions minutes, so that constraint is gone.
+  pull_request:
+    branches: [main]
   # Weekly dependency audit. New advisories are published against code that has
   # not changed, so a scan that only runs on push goes stale the moment you stop
   # pushing. The build matrix is skipped on this trigger — see the `if` on the
   # build job — so this costs one cheap Linux run, not two expensive ones.
   schedule:
     - cron: '0 6 * * 1'
+
+# One run per branch. Pushing three times to a pull request should leave one
+# run standing, not three racing to tell you about code you have already
+# replaced. Never cancels a tag build: that one produces the release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 
 jobs:
@@ -147,6 +168,21 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: git config --system core.longpaths true
 
+      # The frontend, which nothing in this workflow used to look at.
+      #
+      # First, because it takes about a second and it guards the failure with
+      # the worst blast radius in this project: a module that does not parse
+      # takes the entire window down and leaves the static HTML on screen, which
+      # looks like an app that is merely still loading. That shipped to `main`
+      # and to two release builds.
+      #
+      # `node --check` is NOT a substitute and was the reason it got through —
+      # it validates a file as a script, and the failure only appears on module
+      # parse. Node is preinstalled on every runner, so this needs no setup.
+      - name: Check the UI modules
+        working-directory: meeting-assistant-rs
+        run: node ui/check.mjs
+
       # Cheap, and it catches a Windows-only compile break in meeting-core
       # before the much slower bundling step runs.
       - name: Test
@@ -171,7 +207,11 @@ jobs:
         working-directory: meeting-assistant-rs
         run: cargo clippy --all-targets -- -D warnings
 
+      # Skipped on a pull request. The checks above are what catch a broken
+      # change; bundling adds ~20 minutes and produces a .dmg and an .msi that
+      # nobody downloads to review a diff. A tag still builds them.
       - name: Build and bundle
+        if: github.event_name != 'pull_request'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -195,8 +235,11 @@ jobs:
             --bundles ${{ matrix.bundles }}
 
       # workflow_dispatch creates no release, so keep the installers reachable.
+      # Not on a pull request: nothing was bundled, and `if-no-files-found:
+      # error` below would fail the job for the absence of files the step above
+      # deliberately did not produce.
       - name: Upload installers
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v5
         with:
           name: meeting-assistant-${{ matrix.platform }}
