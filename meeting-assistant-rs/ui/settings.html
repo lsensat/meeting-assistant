@@ -110,7 +110,17 @@
         <select id="system-audio"></select>
       </div>
 
-      <button class="btn btn--secondary" id="refresh-devices" data-i18n="update_devices">Update devices</button>
+      <!--
+        Two actions on one row: re-read the device list, and go and change it.
+        The second is the answer to "the app says my microphone is quiet" —
+        the levels are an OS setting and this is the shortest route to them.
+      -->
+      <div class="row-actions">
+        <button class="btn btn--secondary" id="refresh-devices" data-i18n="update_devices">Update devices</button>
+        <button class="btn btn--secondary" id="sound-settings" data-tooltip="tooltip_sound_settings" aria-label="Sound settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"/></svg>
+        </button>
+      </div>
     </section>
 
     <section class="section">

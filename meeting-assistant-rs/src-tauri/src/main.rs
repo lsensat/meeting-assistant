@@ -64,6 +64,7 @@ fn main() {
             commands::set_api_key,
             commands::has_api_key,
             commands::open_path,
+            commands::open_sound_settings,
             commands::nudge_main_height,
             commands::open_settings,
             commands::close_settings,

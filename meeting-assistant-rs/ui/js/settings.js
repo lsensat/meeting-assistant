@@ -339,6 +339,19 @@ function wire() {
     await populateOllama();
   });
 
+  el("sound-settings").addEventListener("click", () => {
+    // Failure is worth showing: on a locked-down Windows the Settings app can
+    // be blocked by policy, and a button that silently does nothing reads as
+    // the app being broken.
+    // Rethrown, not swallowed: `errors.js` turns an unhandled rejection into an
+    // on-screen banner, which is this window's only way of reporting anything.
+    // A locked-down Windows can block the Settings app by policy, and a button
+    // that silently does nothing reads as the app being broken.
+    api.openSoundSettings().catch((error) => {
+      throw error;
+    });
+  });
+
   el("refresh-devices").addEventListener("click", async () => {
     config = collect();
     await api.refreshDevices();
