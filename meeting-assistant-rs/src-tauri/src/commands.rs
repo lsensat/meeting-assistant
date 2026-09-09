@@ -112,6 +112,10 @@ pub struct OllamaStatusDto {
 
 #[derive(Serialize, Clone)]
 pub struct CompleteDto {
+    /// The microphone track was very quiet. The UI says so, because "the
+    /// transcript is wrong" and "your input level is low" look identical from
+    /// the outside and only one of them is actionable.
+    pub quiet_recording: bool,
     pub folder: String,
     pub transcript_file: String,
     pub summary_file: String,
@@ -1195,6 +1199,7 @@ fn run_job(
             let _ = app.emit(
                 EV_COMPLETE,
                 CompleteDto {
+                    quiet_recording: output.quiet_recording,
                     folder: output.folder.to_string_lossy().into_owned(),
                     transcript_file: output.transcript_file.to_string_lossy().into_owned(),
                     summary_file: output.summary_file.to_string_lossy().into_owned(),

@@ -843,7 +843,7 @@ function wireEvents() {
     // clickable while `results` still pointed at the previous meeting.
     setAvailable(ui.transcript, true);
     setAvailable(ui.summary, true);
-    setStatus(tr("processed_ok"));
+    setStatus(tr(payload.quiet_recording ? "processed_ok_quiet" : "processed_ok"));
   });
 }
 

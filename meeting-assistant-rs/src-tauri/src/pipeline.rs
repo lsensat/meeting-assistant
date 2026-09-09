@@ -162,6 +162,10 @@ pub enum RunOutcome {
 
 #[derive(Debug)]
 pub struct PipelineOutput {
+    /// True when a transcribed track was quiet enough that the input level is
+    /// the likely explanation for a poor transcript. Reported rather than acted
+    /// on: amplifying a quiet track mostly amplifies the noise beside it.
+    pub quiet_recording: bool,
     pub folder: PathBuf,
     pub transcript_file: PathBuf,
     pub summary_file: PathBuf,
@@ -276,6 +280,7 @@ pub fn run(
         resume.mic_offset_seconds,
         control,
     )?;
+    let quiet_recording = mic.peak > 0.0 && mic.peak < whisper::QUIET_PEAK;
     segments.extend(mic.segments);
     resume.mic_offset_seconds = mic.last_end_seconds;
 
@@ -364,6 +369,7 @@ pub fn run(
     }
 
     Ok(RunOutcome::Finished(PipelineOutput {
+        quiet_recording,
         folder,
         transcript_file,
         summary_file,
