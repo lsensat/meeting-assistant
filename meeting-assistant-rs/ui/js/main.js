@@ -12,6 +12,7 @@ import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
 import { collapsible } from "./collapsible.js";
+import { Smoother } from "./progress.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -284,6 +285,23 @@ const STAGE_STEP = { audio: 1, whisper: 2, summary: 3 };
  * summary still to come, which is the difference between a card that informs
  * and a card that just moves.
  */
+/**
+ * One estimate per running job, so a percentage that arrives in 30-second
+ * jumps is drawn as something that moves. See `progress.js`.
+ */
+const smoothers = new Map();
+
+function percentFor(job) {
+  if (!job.running) return 0;
+  let smoother = smoothers.get(job.id);
+  if (!smoother) {
+    smoother = new Smoother();
+    smoothers.set(job.id, smoother);
+  }
+  smoother.observe(job.percent);
+  return smoother.value();
+}
+
 function stageLabel(job) {
   if (job.stage === "failed") return tr("queue_stage_failed");
   // Paused work is not "waiting its turn"; say which it is.
@@ -297,7 +315,7 @@ function stageLabel(job) {
   // of audio, so on a slow machine a 44px bar can sit still for a long time and
   // is indistinguishable from a frozen app — which is how it was read.
   return job.running
-    ? `${name} ${step}/3 · ${job.percent}%`
+    ? `${name} ${step}/3 · ${percentFor(job)}%`
     : `${name} ${step}/3`;
 }
 
@@ -333,7 +351,7 @@ function queueCard(job) {
   fill.className = "queue-bar-fill";
   // Through the CSSOM, not a `style` attribute: the CSP has no
   // `unsafe-inline` in `style-src`, which would block the attribute form.
-  fill.style.width = `${job.running ? job.percent : 0}%`;
+  fill.style.width = `${percentFor(job)}%`;
   bar.append(fill);
 
   line.append(time, title, stage, bar);
@@ -346,6 +364,7 @@ function queueCard(job) {
   // on top of the toggle's own resize.
   card.dataset.id = job.id;
   card._parts = { time, title, stage, fill };
+  card._job = job;
 
   if (job.stage === "failed") {
     card.append(
@@ -434,6 +453,12 @@ async function renderQueue() {
   // browser's layout for the whole list and forces a re-measure of the window.
   const ids = jobs.map((job) => job.id).join("\u0000");
   if (ids !== renderedIds) {
+    // A finished or discarded job keeps no estimate. Left in place they would
+    // accumulate for the life of the window, and a retried id would inherit
+    // the slope of its previous run.
+    const live = new Set(jobs.map((job) => job.id));
+    for (const id of smoothers.keys()) if (!live.has(id)) smoothers.delete(id);
+
     renderedIds = ids;
     ui.queueList.replaceChildren(...jobs.map(queueCard));
     resizeToContent();
@@ -448,7 +473,9 @@ async function renderQueue() {
     card.dataset.state = job.stage;
     parts.title.textContent = job.title || tr("queue_untitled");
     parts.stage.textContent = stageLabel(job);
-    parts.fill.style.width = `${job.running ? job.percent : 0}%`;
+    parts.fill.style.width = `${percentFor(job)}%`;
+    // Kept so the animation frame below can advance this card between polls.
+    card._job = job;
     if (job.error) card.title = job.error;
   }
 }
@@ -460,6 +487,27 @@ async function renderQueue() {
  * climbing inside one — the worker emits that on a timer and this reads it. It
  * stops as soon as nothing is running, so an idle app does no work.
  */
+/**
+ * Advance the predicted percentage between polls.
+ *
+ * Four times a second, not once per frame: the bar carries a 200ms CSS
+ * transition, so this is already more often than the eye can distinguish, and a
+ * 60fps loop to move a number by a fraction of a percent is work for nothing.
+ * Writes text and a width only — never a measurement, so it cannot resize the
+ * window.
+ */
+function startProgressAnimation() {
+  setInterval(() => {
+    if (ui.queue.hidden || !queueIsOpen()) return;
+    for (const card of ui.queueList.children) {
+      const job = card._job;
+      if (!job?.running || !card._parts) continue;
+      card._parts.stage.textContent = stageLabel(job);
+      card._parts.fill.style.width = `${percentFor(job)}%`;
+    }
+  }, 250);
+}
+
 function startQueuePolling() {
   setInterval(async () => {
     // Nothing to draw into: the panel is gone, or its list is collapsed. The
@@ -558,10 +606,35 @@ function askMeetingTitle() {
  * recorder will: the configured device if it is still present, otherwise the
  * OS default.
  *
+/**
+ * Raw device name → short display label, from the last `listDevices`.
+ *
+ * Shortening needs the whole list to spot collisions, and Rust already does
+ * that in `display_labels`. This keeps its answer rather than reimplementing
+ * the rule in JavaScript, where it would drift.
+ */
+const deviceLabels = new Map();
+
+/** The short label for a raw device name, or the raw name if it is unknown. */
+function deviceLabel(name) {
+  return deviceLabels.get(name) ?? name;
+}
+
  * @param {Record<string, unknown>} config
  */
 async function showResolvedDevices(config) {
   const devices = await api.listDevices();
+
+  // The recorder's events carry the raw OS device name, because that is the
+  // identity it opened. Showing it verbatim meant the panel read
+  // "Plantronics Blackwire 3225 Series" while idle and
+  // "Micrófono de los auriculares con micrófono (Plantronics Blackwire 3225
+  // Series)" the moment recording started — the same device, named two ways,
+  // and the long form wrapped to three lines. This remembers the short label
+  // for each raw name so an event can be displayed the same way as the list.
+  for (const device of [...devices.microphones, ...devices.system]) {
+    deviceLabels.set(device.name, device.label ?? device.name);
+  }
 
   const resolve = (list, configured) => {
     if (!list.length) return null;
@@ -872,20 +945,20 @@ function wireEvents() {
   api.on(api.EVENTS.requestCancel, cancelFlow);
 
   api.on(api.EVENTS.deviceMic, (name) => {
-    ui.deviceMic.textContent = `${tr("microphone")}: ${name}`;
+    ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)}`;
     announceFallback(false);
   });
   api.on(api.EVENTS.micFallback, (name) => {
-    ui.deviceMic.textContent = `${tr("microphone")}: ${name} (${tr("automatic")})`;
+    ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)} (${tr("automatic")})`;
     // Mid-recording is when this matters most — the device changed under you.
     // Once, though: the recorder re-reports its device on every stream open.
     announceFallback(true);
   });
   api.on(api.EVENTS.deviceSystem, (name) => {
-    ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name}`;
+    ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)}`;
   });
   api.on(api.EVENTS.systemFallback, (name) => {
-    ui.deviceSystem.textContent = `${tr("computer_audio")}: ${name} (${tr("automatic")})`;
+    ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)} (${tr("automatic")})`;
     announceFallback(true);
   });
 
@@ -1041,6 +1114,7 @@ async function main() {
   setQueueExpanded(config.queue_expanded !== false, false);
   await renderQueue();
   startQueuePolling();
+  startProgressAnimation();
 
   ui.queuePause.addEventListener("click", async () => {
     ui.queuePause.disabled = true;

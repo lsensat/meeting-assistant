@@ -256,9 +256,16 @@ async function populateDevices() {
 
   fillSelect(
     el("microphone"),
+    // `label` on screen, `name` as the value. The raw name is the identity the
+    // recorder resolves against and must stay the stored value, but showing it
+    // put "Micrófono de los auriculares con micrófono (Plantronics Blackwire
+    // 3225 Series)" in a 375px window while the main window showed the short
+    // form for the same device. One rule, everywhere.
     devices.microphones.map((device) => ({
       value: device.name,
-      label: device.is_default ? `${device.name} (${tr("automatic")})` : device.name,
+      label: device.is_default
+        ? `${device.label ?? device.name} (${tr("automatic")})`
+        : (device.label ?? device.name),
     })),
     String(config.microphone_name ?? ""),
   );
@@ -267,7 +274,9 @@ async function populateDevices() {
     el("system-audio"),
     devices.system.map((device) => ({
       value: device.name,
-      label: device.is_default ? `${device.name} (${tr("automatic")})` : device.name,
+      label: device.is_default
+        ? `${device.label ?? device.name} (${tr("automatic")})`
+        : (device.label ?? device.name),
     })),
     String(config.system_audio_name ?? ""),
   );
