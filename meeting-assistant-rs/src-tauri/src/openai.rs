@@ -14,10 +14,30 @@
 //! Only the **transcript text** is ever sent. Audio never leaves the machine
 //! under any configuration.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
+
+/// One client, built once and never dropped — for the reason spelled out on
+/// `ollama::CLIENT`: dropping a `reqwest::blocking::Client` joins a thread and
+/// drops a tokio runtime, and every Tauri command runs inside one.
+///
+/// Unlike Ollama's, this one talks to the open internet, so it is the client
+/// whose connection reuse is actually worth something.
+static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+
+fn client() -> Result<&'static reqwest::blocking::Client, OpenAiError> {
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| OpenAiError::Http(e.clone()))
+}
 
 /// Matches the Ollama path's temperature so switching provider does not also
 /// silently change the character of the summaries.
@@ -128,15 +148,11 @@ pub fn chat(
         ],
     });
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(CHAT_TIMEOUT)
-        .build()
-        .map_err(|e| OpenAiError::Http(e.to_string()))?;
-
-    let response = client
+    let response = client()?
         .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
         .bearer_auth(api_key)
         .json(&body)
+        .timeout(CHAT_TIMEOUT)
         .send()
         .map_err(|e| OpenAiError::Unreachable(e.to_string()))?;
 

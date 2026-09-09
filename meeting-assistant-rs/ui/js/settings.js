@@ -407,6 +407,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  // Surfaced by errors.js as an on-screen banner.
+  // Surfaced by errors.js — as a banner, and now also to the terminal.
+  window.__TAURI__?.core?.invoke("ui_log", {
+    message: `settings main(): ${error?.stack ?? String(error)}`,
+  });
   throw error;
 });

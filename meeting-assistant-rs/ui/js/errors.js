@@ -25,16 +25,29 @@ function show(message) {
   if (!banner) {
     banner = document.createElement("div");
     banner.id = "fatal-error";
-    banner.setAttribute(
-      "style",
-      "position:fixed;inset:0 0 auto 0;z-index:99999;max-height:60vh;overflow:auto;" +
-        "margin:0;padding:10px 12px;background:#7A241D;color:#fff;" +
-        "font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap;",
-    );
+    // A class, not a `style` attribute. The CSP here is `style-src 'self'`
+    // with no `unsafe-inline`, which blocks the attribute form outright — so
+    // this banner rendered as unstyled black text at the top of a dark
+    // document and was, in practice, invisible. That is how a syntax error in
+    // `main.js` reached `main` and two release builds: the one mechanism built
+    // to make such a failure visible had been silently disabled by the app's
+    // own security policy.
+    banner.className = "fatal-error";
     // `document.body` is null if this fires while the head is still parsing.
     (document.body ?? document.documentElement).append(banner);
   }
   banner.append(banner.childNodes.length ? `\n\n${message}` : message);
+
+  // Also to the terminal. The banner above is styled with a `style` attribute,
+  // which this app's own CSP (`style-src 'self'`, no `unsafe-inline`) blocks —
+  // so it renders as unstyled text at the top of the document and is easy to
+  // miss entirely. A frontend error that nobody can see is how a syntax error
+  // in main.js survived into main and two release builds.
+  try {
+    window.__TAURI__?.core?.invoke("ui_log", { message });
+  } catch {
+    // Nothing else to try.
+  }
 }
 
 window.addEventListener("error", (event) => {

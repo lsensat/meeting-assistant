@@ -187,6 +187,11 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
 /// The whole i18n catalogue, so the frontend can localize without a round trip
 /// per string. Shared source of truth with the Rust side.
 #[tauri::command]
+pub fn ui_log(message: String) {
+    eprintln!("[ui] {message}");
+}
+
+#[tauri::command]
 pub fn get_i18n() -> Result<serde_json::Value, String> {
     serde_json::from_str(i18n::catalog_json()).map_err(|e| e.to_string())
 }
@@ -772,7 +777,6 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         let emit_status = |key: &str| {
             let _ = app.emit(EV_STARTUP_STATUS, i18n::tr(language, key));
         };
-
         emit_status("checking_environment");
 
         emit_status("checking_folder");
@@ -788,7 +792,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         let ollama_installed = uses_ollama && platform::find_ollama().is_some();
 
         let ollama_status = if uses_ollama {
-            emit_status("checking_ollama");
+        emit_status("checking_ollama");
             let status = list_ollama_models();
 
             // The Python auto-started Ollama when it was installed but not
@@ -807,7 +811,6 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
                 error: None,
             }
         };
-
         emit_status("searching_models");
         let whisper_installed = whisper::installed_models();
 
