@@ -16,9 +16,15 @@ name: release
 on:
   push:
     tags: ['v*']
-  # Runs the whole matrix without cutting a release. This is how the Windows
-  # build should be iterated on — expect several rounds before it passes.
+  # Runs the matrix without cutting a release. This is how the Windows build
+  # should be iterated on — expect several rounds before it passes.
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Which platforms to build'
+        default: all
+        type: choice
+        options: [all, windows, macos]
   # Weekly dependency audit. New advisories are published against code that has
   # not changed, so a scan that only runs on push goes stale the moment you stop
   # pushing. The build matrix is skipped on this trigger — see the `if` on the
@@ -28,6 +34,40 @@ on:
 
 
 jobs:
+  # Which platforms this run builds.
+  #
+  # A separate job because the matrix has to be decided BEFORE the build job
+  # starts, and `jobs.<id>.if` cannot see the `matrix` context — only github,
+  # needs, vars and inputs — so a per-entry filter there silently matches
+  # nothing. Emitting the matrix as JSON is the way that actually works.
+  #
+  # It exists because of what a run costs. GitHub bills macOS at 10x and Windows
+  # at 2x, so macOS is the most expensive part of every run despite finishing
+  # three times faster, and it builds a .dmg that can be produced locally on the
+  # Mac this is developed on. Iterating on a Windows problem should not pay for
+  # a macOS build nobody downloads.
+  #
+  # A tag push carries no inputs, so a real release still builds everything.
+  choose:
+    name: Choose platforms
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          mac='{"platform":"macos-latest","target":"aarch64-apple-darwin","bundles":"app,dmg"}'
+          win='{"platform":"windows-latest","target":"","bundles":"msi,nsis"}'
+          case "${{ inputs.platforms }}" in
+            windows) include="[$win]" ;;
+            macos)   include="[$mac]" ;;
+            *)       include="[$mac,$win]" ;;
+          esac
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+          echo "building: $include"
+
   # Reads Cargo.lock, which is platform-independent, so this runs once on the
   # cheapest runner rather than inside the matrix. Windows bills at a higher
   # multiplier than Linux and macOS higher still; there is nothing to learn from
@@ -55,7 +95,7 @@ jobs:
         run: cargo audit
 
   build:
-    # Skipped on the weekly schedule: that trigger exists for the audit alone.
+    needs: choose
     if: github.event_name != 'schedule'
     permissions:
       # Needed to create the draft release and upload the installers.
@@ -66,17 +106,7 @@ jobs:
       # the expected outcome, and the macOS artifact is still wanted.
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            # macos-latest is Apple Silicon. Intel Macs are not covered; a
-            # universal build is deferred (see deferred fix M3). Tauri puts the
-            # architecture in the .dmg filename, so the artifact is at least
-            # not mistakable for a universal one.
-            bundles: app,dmg
-          - platform: windows-latest
-            target: ''
-            bundles: msi,nsis
+        include: ${{ fromJSON(needs.choose.outputs.include) }}
 
     runs-on: ${{ matrix.platform }}
 
