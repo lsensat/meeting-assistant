@@ -179,6 +179,38 @@ fn which(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// The URI that opens the OS sound settings.
+///
+/// Both are URI schemes rather than executables, so opening one goes through
+/// the same OS handler a link would and needs no shell — see `open_path` in
+/// `commands.rs` for why that matters here.
+///
+/// **Windows**: `ms-settings:sound` is the Sound page, which carries both
+/// Output and Input. `ms-settings:sound-devices` exists but lands on "Manage
+/// sound devices", which is one level away from the volume sliders a user
+/// looking for a quiet microphone actually wants.
+///
+/// **macOS**: verified against `Sound.appex`, whose `Info.plist` declares
+/// `allowsXAppleSystemPreferencesURLScheme` and the bundle identifier below.
+/// Pre-Ventura the pane was `com.apple.preference.sound`, still recorded there
+/// as `legacyBundleIdentifier`; this app requires a newer macOS than that.
+pub fn sound_settings_uri() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "ms-settings:sound"
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        "x-apple.systempreferences:com.apple.Sound-Settings.extension"
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        ""
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,3 +250,4 @@ mod tests {
         assert!(which("definitely-not-a-real-binary-xyzzy").is_none());
     }
 }
+

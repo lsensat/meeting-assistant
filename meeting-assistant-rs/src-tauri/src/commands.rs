@@ -730,6 +730,32 @@ pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Open the OS sound settings, where the input and output levels live.
+///
+/// # Why a command and not `openUrl`
+///
+/// The frontend already has `opener.openUrl`, but the ACL scopes it to
+/// `https://ollama.com/*` on purpose: unscoped, any string the frontend could
+/// produce would become a URL the OS opens. Widening that to admit
+/// `ms-settings:` would give away considerably more than one button needs —
+/// the scheme reaches every page in Windows Settings.
+///
+/// This takes no arguments. The URI is a compile-time constant chosen by
+/// `cfg`, so there is no string for the frontend to influence at all.
+#[tauri::command(async)]
+pub fn open_sound_settings(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let uri = crate::platform::sound_settings_uri();
+    if uri.is_empty() {
+        return Err("no sound settings on this platform".into());
+    }
+
+    app.opener()
+        .open_url(uri, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 // --- startup -----------------------------------------------------------
 
 /// The startup probe. Port of the checks around `app.py:894-911`.

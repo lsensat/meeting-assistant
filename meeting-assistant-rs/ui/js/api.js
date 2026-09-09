@@ -91,6 +91,8 @@ export const elapsedSeconds = () => invoke("elapsed_seconds");
 
 /** @param {string} path */
 export const openPath = (path) => invoke("open_path", { path });
+/** Open the OS sound settings. No argument: the URI is fixed in Rust. */
+export const openSoundSettings = () => invoke("open_sound_settings");
 
 export const startupCheck = () => invoke("startup_check");
 

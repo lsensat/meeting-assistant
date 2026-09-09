@@ -814,6 +814,13 @@ input[type="password"] { cursor: text; }
 .with-button input[type="password"] { flex: 1; min-width: 0; }
 .with-button .btn { width: 36px; height: 30px; padding: 0; }
 
+/* A full-width action and an icon beside it. The icon keeps the square shape
+   `.with-button` gives its buttons, so the two rows read as the same kind of
+   control. */
+.row-actions { display: flex; gap: 6px; align-items: center; }
+.row-actions .btn:not(:last-child) { flex: 1; }
+.row-actions .btn:last-child { width: 36px; height: 30px; padding: 0; flex: none; }
+
 .switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .switch-row input { cursor: pointer; accent-color: var(--amber); }
 
