@@ -536,9 +536,9 @@ async function renderQueue() {
  * **Moved to a second monitor.** The window is set in *logical* pixels, so the
  * OS re-renders it at the new scale and it stays the same physical size on the
  * glass — that part is correct, and a screenshot taken on a 150% display is
- * simply 1.5× as many pixels. But Windows resizes the window itself on
- * WM_DPICHANGED, and the min/max pins from `nudge_main_height` were computed
- * against the old scale. Re-fitting settles it.
+ * simply 1.5× as many pixels. The stale size *pin* that came with it is fixed
+ * on the Rust side, in `reapply_main_size_pin`; this re-measures the content
+ * afterwards, since a scale change can also alter how text wraps.
  *
  * Deliberately NOT a plain `resize` listener: this function resizes the window,
  * so reacting to every resize is a loop. `devicePixelRatio` changing is the

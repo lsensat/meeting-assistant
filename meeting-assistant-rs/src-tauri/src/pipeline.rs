@@ -271,12 +271,13 @@ pub fn run(
     // report that never progresses is worse than none, because it reads as a
     // stall. The live figure is `control.seconds_done()`, which the queue worker
     // polls from another thread and shows on the meeting's card.
-    // Not "Transcribing YO...". That string was English glued to a *localised*
-    // speaker label, so a Spanish user got half a sentence in each language —
-    // and "YO" is the tag this app writes into the transcript, not a word that
-    // means anything on a status line. Name the track instead.
+    // Just "Transcribing...". This used to be `format!("Transcribing {}...",
+    // config.speaker_me)` — English glued to a *localised* label, so a Spanish
+    // user got half a sentence in each language. "YO" is the tag written into
+    // the transcript to mark the microphone track, and which of the two files
+    // is being read is the app's business, not something to report.
     on_progress(Progress::Status(
-        i18n::tr(config.language, "transcribing_me").to_string(),
+        i18n::tr(config.language, "transcribing").to_string(),
     ));
 
     // The microphone track opens the meeting's timeline.
@@ -297,10 +298,6 @@ pub fn run(
         write_partial(&partial_segments_file, &segments);
         return Ok(RunOutcome::Paused(resume));
     }
-
-    on_progress(Progress::Status(
-        i18n::tr(config.language, "transcribing_meeting").to_string(),
-    ));
 
     // The system track continues it, so progress keeps climbing instead of
     // restarting when the first track finishes.

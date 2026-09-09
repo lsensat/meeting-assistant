@@ -506,6 +506,49 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+/// The main window's fixed logical width.
+const MAIN_WIDTH: f64 = 375.0;
+
+/// The logical height the main window is currently pinned to, as `f64` bits.
+///
+/// Zero means "never pinned". Needed because the pin has to be re-applied from
+/// outside this command — see `reapply_main_size_pin`.
+static PINNED_HEIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Re-apply the size pin after the display's scale factor changes.
+///
+/// `set_min_size`/`set_max_size` take a *logical* size, which the runtime
+/// resolves to physical pixels against the scale factor in force **at the time
+/// of the call**. Those physical numbers are what the window manager then
+/// enforces, and nothing recomputes them when the scale changes.
+///
+/// So a window pinned to 375x430 on a 100% display carries a 375x430 *physical*
+/// clamp onto a 150% display, where the same window must be 562x645 physical to
+/// look the same size. The clamp is now smaller than the window, and Windows
+/// enforces it through `WM_GETMINMAXINFO` — the window is squeezed, and the
+/// layout inside it has nowhere to go.
+///
+/// Re-stating the same logical size at the new scale produces the right
+/// physical numbers. The size itself does not change; only the constraint does.
+pub fn reapply_main_size_pin(window: &tauri::Window) {
+    let bits = PINNED_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    if bits == 0 {
+        return;
+    }
+    let height = f64::from_bits(bits);
+
+    // Released first, for the same reason as in `nudge_main_height`: the old
+    // pin is enforced against the new one.
+    let unpinned: Option<tauri::LogicalSize<f64>> = None;
+    let _ = window.set_min_size(unpinned);
+    let _ = window.set_max_size(unpinned);
+
+    let size = tauri::LogicalSize::new(MAIN_WIDTH, height);
+    let _ = window.set_size(size);
+    let _ = window.set_min_size(Some(size));
+    let _ = window.set_max_size(Some(size));
+}
+
 
 /// Grow or shrink the main window by `delta` logical pixels.
 ///
@@ -531,7 +574,6 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     // three cards. The queue list scrolls past that, so this is a ceiling on
     // the window rather than on how many meetings can be waiting.
     const MAX: f64 = 640.0;
-    const WIDTH: f64 = 375.0;
 
     let window = app
         .get_webview_window("main")
@@ -574,13 +616,14 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     let _ = window.set_max_size(unpinned);
 
     window
-        .set_size(tauri::LogicalSize::new(WIDTH, target))
+        .set_size(tauri::LogicalSize::new(MAIN_WIDTH, target))
         .map_err(|e| e.to_string())?;
 
     // Pinned again so the window cannot be dragged to a size the fixed layout
     // has no answer for. `resizable` must stay true in tauri.conf.json: with it
     // false, programmatic resizing is unreliable on macOS.
-    let fixed = Some(tauri::LogicalSize::new(WIDTH, target));
+    PINNED_HEIGHT.store(target.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let fixed = Some(tauri::LogicalSize::new(MAIN_WIDTH, target));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
 
