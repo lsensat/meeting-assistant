@@ -286,7 +286,14 @@ function stageLabel(job) {
 
   const name = tr(`queue_stage_${job.stage}`);
   const step = STAGE_STEP[job.stage];
-  return step ? `${name} ${step}/3` : name;
+  if (!step) return name;
+
+  // The number as well as the bar. Transcription advances once per 30 seconds
+  // of audio, so on a slow machine a 44px bar can sit still for a long time and
+  // is indistinguishable from a frozen app — which is how it was read.
+  return job.running
+    ? `${name} ${step}/3 · ${job.percent}%`
+    : `${name} ${step}/3`;
 }
 
 function queueCard(job) {
@@ -892,11 +899,6 @@ function wireControls() {
   ui.cancel.addEventListener("click", cancelFlow);
 
   ui.mute.addEventListener("click", () => api.toggleMute());
-
-
-
-
-
 
   ui.transcript.addEventListener("click", () => {
     if (isAvailable(ui.transcript)) api.openPath(results.transcript_file);

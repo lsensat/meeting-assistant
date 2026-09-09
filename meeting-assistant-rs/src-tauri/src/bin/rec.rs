@@ -1,6 +1,9 @@
-//! Temporary CLI driver for Phase M2. No UI, no transcription — just the two
-//! recorders, so the audio layer can be exercised and diffed against the Python
-//! app's output before any Tauri code exists.
+//! Record from both sources without the UI or transcription — just the two
+//! recorders, so the audio layer can be exercised on its own.
+//!
+//! Not scaffolding, despite what this comment used to say: the Windows
+//! verification steps rely on `rec --list` and `rec --seconds 60`, because a
+//! loopback problem is far easier to see here than through the app.
 //!
 //! ```text
 //! cargo run --bin rec -- --list

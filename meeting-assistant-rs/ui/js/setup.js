@@ -16,6 +16,7 @@
 // below is reported on screen instead of leaving a blank or half-built window.
 import "./errors.js";
 import * as api from "./api.js";
+import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 
 const el = (id) => document.getElementById(id);
@@ -120,17 +121,6 @@ function applyProviderVisibility() {
   el("setup-api").hidden = !remote;
 }
 
-function fillSelect(select, options, selected) {
-  select.replaceChildren();
-  for (const option of options) {
-    const node = document.createElement("option");
-    node.value = option.value;
-    node.textContent = option.label;
-    node.selected = option.value === selected;
-    select.append(node);
-  }
-}
-
 async function renderSummaryStep() {
   fillSelect(
     el("setup-provider"),
@@ -185,9 +175,12 @@ async function commitStep() {
       const key = el("setup-api-key").value;
 
       if (key) await api.setApiKey(key);
-      const haveKey = key || (await api.hasApiKey());
+      const complete = isRemoteProviderConfigured(config, {
+        typedKey: key,
+        hasStoredKey: await api.hasApiKey(),
+      });
 
-      if (!config.api_base_url || !config.api_model || !haveKey) {
+      if (!complete) {
         el("setup-api-status").textContent = tr("api_incomplete");
         return false;
       }

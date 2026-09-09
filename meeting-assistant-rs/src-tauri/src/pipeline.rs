@@ -36,6 +36,16 @@ pub enum StageState {
 pub enum Progress {
     Stage(Stage, StageState),
     Status(String),
+    /// Where the meeting now lives.
+    ///
+    /// The audio stage renames the folder to append the title, so the path the
+    /// caller started with stops existing. Reported through the progress channel
+    /// because that reaches the caller on **every** outcome — finished, paused,
+    /// and failed — whereas `RunOutcome` only describes the first two and
+    /// `PipelineError` describes none. A caller that keeps the old path hands it
+    /// back on the next attempt and gets "the system cannot find the file
+    /// specified", which is exactly how this was found.
+    Folder(PathBuf),
 }
 
 #[derive(Debug)]
@@ -176,6 +186,11 @@ pub fn run(
     // explicit comment about this at `app.py:2221-2237`; preserve the ordering.
     let folder = rename_folder(&config.folder, &config.meeting_title, &config.output_folder)?;
 
+    // Immediately, and before anything can fail: whoever is tracking this
+    // meeting needs the new path more urgently when the run goes wrong than
+    // when it goes right.
+    on_progress(Progress::Folder(folder.clone()));
+
     let mic_file = folder.join(MIC_FILENAME);
     let system_file = folder.join(SYSTEM_FILENAME);
     let transcript_file = folder.join("transcript.txt");
@@ -224,7 +239,20 @@ pub fn run(
 
     // Anything a previous, paused attempt already transcribed. Empty for a new
     // meeting, which is why resuming needs no special case below.
-    let mut segments: Vec<Segment> = read_partial(&partial_segments_file);
+    //
+    // Dropped when the resume point is zero. A pause that failed to record its
+    // offset leaves a partial full of segments the next run will transcribe
+    // again, and `build_transcript` sorts but never dedups — so the transcript
+    // gains a duplicate of everything already in it. If we are starting both
+    // tracks from the beginning, whatever is in the partial is about to be
+    // produced again and keeping it can only duplicate.
+    let mut segments: Vec<Segment> = if config.resume.mic_offset_seconds > 0.0
+        || config.resume.system_offset_seconds > 0.0
+    {
+        read_partial(&partial_segments_file)
+    } else {
+        Vec::new()
+    };
     let mut resume = config.resume;
 
     // No percentage here, deliberately.

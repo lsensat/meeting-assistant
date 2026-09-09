@@ -110,10 +110,18 @@ fn a_paused_meeting_survives_a_restart_and_finishes() {
     let control = TranscriptionControl::new();
     let watching = abort_after(&control, 20.0);
 
+    let reported_folder: Arc<std::sync::Mutex<Option<PathBuf>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let sink = Arc::clone(&reported_folder);
+
     let outcome = pipeline::run(
         config_for(&folder, &output, "Standup", ResumePoint::default()),
         &control,
-        |_: Progress| {},
+        move |progress: Progress| {
+            if let Progress::Folder(path) = progress {
+                *sink.lock().expect("poisoned") = Some(path);
+            }
+        },
     )
     .expect("first pass");
     watching.store(false, Ordering::Relaxed);
@@ -128,8 +136,23 @@ fn a_paused_meeting_survives_a_restart_and_finishes() {
 
     // The folder is renamed during the audio stage, so the state file has to be
     // written where the meeting IS now, not where it started.
-    let folder = output.join(format!("{id}_Standup"));
+    //
+    // **Reported, not computed.** The first version of this test built the
+    // expected name by hand — `output.join(format!("{id}_Standup"))` — which
+    // quietly replaced the one piece of bookkeeping that was broken with a
+    // correct assumption. The queue kept the pre-rename path, every second
+    // attempt failed with "the system cannot find the file specified", and this
+    // test passed throughout. Take the path from the pipeline, as the worker
+    // does, or this proves nothing about the bug it is here to catch.
+    let folder = reported_folder.lock().expect("poisoned").clone().expect(
+        "the pipeline must report where it moved the meeting, on every outcome",
+    );
     assert!(folder.is_dir(), "the audio stage should have renamed the folder");
+    assert_ne!(
+        folder,
+        output.join(id),
+        "the folder should have been renamed away from its original path"
+    );
 
     let mut paused = queue::load(&folder).expect("state travelled with the rename");
     paused.stage = Stage::Whisper;
