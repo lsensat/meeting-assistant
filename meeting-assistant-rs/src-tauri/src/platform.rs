@@ -4,7 +4,7 @@
 //! is needed anywhere other than this file or `audio/devices.rs`, it is in the
 //! wrong place.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Per-user application data directory.
 ///
@@ -130,6 +130,11 @@ pub fn find_ollama() -> Option<PathBuf> {
 pub fn start_ollama() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
+        // Imported here rather than at the top of the file: `Path` is used only
+        // by this macOS-only block, and a top-level import is dead weight on
+        // Windows — which the compiler says so, every build.
+        use std::path::Path;
+
         if Path::new("/Applications/Ollama.app").exists() {
             std::process::Command::new("open")
                 .args(["-a", "Ollama"])

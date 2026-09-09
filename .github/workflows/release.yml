@@ -91,6 +91,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          # `stable` alone installs the minimal profile on some runners, and the
+          # Lint step below needs clippy to exist.
+          components: clippy
 
       # whisper.cpp is a large C++ build. Without this every run pays it again.
       # Verify it is actually effective: if whisper.cpp builds outside target/,
@@ -119,6 +122,24 @@ jobs:
       - name: Test
         working-directory: meeting-assistant-rs
         run: cargo test
+
+      # Runs on BOTH platforms because that is the whole point: a `#[cfg]` block
+      # can only be linted on the OS that compiles it. Everything behind
+      # `cfg(target_os = "windows")` — the loopback capture, CREATE_NO_WINDOW,
+      # the tray icon — is invisible to a lint run on a Mac, and vice versa.
+      #
+      # `cargo test` already compiled these and printed their warnings, so this
+      # is not about visibility. It is about consequence: a warning scrolls past
+      # in a 300-line log, and `-D warnings` turns it into a failed run. An
+      # unused import behind a macOS-only cfg sat in `platform.rs` for exactly
+      # that reason, and a black-on-black tray icon shipped for want of anyone
+      # looking at the Windows branch at all.
+      #
+      # Cheap after `Test`: same profile, same cache, so most of the compilation
+      # is already done.
+      - name: Lint
+        working-directory: meeting-assistant-rs
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build and bundle
         uses: tauri-apps/tauri-action@v1
