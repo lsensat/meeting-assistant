@@ -115,6 +115,14 @@ fn main() {
                 api.prevent_close();
                 let _ = window.hide();
             }
+
+            // Moving the window to a display with a different scale factor
+            // leaves its size pin resolved against the OLD scale — see
+            // `reapply_main_size_pin`. Windows then enforces a clamp that no
+            // longer matches the window, and the layout is squeezed.
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = event {
+                meeting_assistant::commands::reapply_main_size_pin(window);
+            }
         })
         .build(tauri::generate_context!())
         .expect("failed to start Meeting Assistant")

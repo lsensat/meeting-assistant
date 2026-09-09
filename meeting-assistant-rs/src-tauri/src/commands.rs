@@ -506,6 +506,49 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+/// The main window's fixed logical width.
+const MAIN_WIDTH: f64 = 375.0;
+
+/// The logical height the main window is currently pinned to, as `f64` bits.
+///
+/// Zero means "never pinned". Needed because the pin has to be re-applied from
+/// outside this command — see `reapply_main_size_pin`.
+static PINNED_HEIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Re-apply the size pin after the display's scale factor changes.
+///
+/// `set_min_size`/`set_max_size` take a *logical* size, which the runtime
+/// resolves to physical pixels against the scale factor in force **at the time
+/// of the call**. Those physical numbers are what the window manager then
+/// enforces, and nothing recomputes them when the scale changes.
+///
+/// So a window pinned to 375x430 on a 100% display carries a 375x430 *physical*
+/// clamp onto a 150% display, where the same window must be 562x645 physical to
+/// look the same size. The clamp is now smaller than the window, and Windows
+/// enforces it through `WM_GETMINMAXINFO` — the window is squeezed, and the
+/// layout inside it has nowhere to go.
+///
+/// Re-stating the same logical size at the new scale produces the right
+/// physical numbers. The size itself does not change; only the constraint does.
+pub fn reapply_main_size_pin(window: &tauri::Window) {
+    let bits = PINNED_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    if bits == 0 {
+        return;
+    }
+    let height = f64::from_bits(bits);
+
+    // Released first, for the same reason as in `nudge_main_height`: the old
+    // pin is enforced against the new one.
+    let unpinned: Option<tauri::LogicalSize<f64>> = None;
+    let _ = window.set_min_size(unpinned);
+    let _ = window.set_max_size(unpinned);
+
+    let size = tauri::LogicalSize::new(MAIN_WIDTH, height);
+    let _ = window.set_size(size);
+    let _ = window.set_min_size(Some(size));
+    let _ = window.set_max_size(Some(size));
+}
+
 
 /// Grow or shrink the main window by `delta` logical pixels.
 ///
@@ -531,7 +574,6 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     // three cards. The queue list scrolls past that, so this is a ceiling on
     // the window rather than on how many meetings can be waiting.
     const MAX: f64 = 640.0;
-    const WIDTH: f64 = 375.0;
 
     let window = app
         .get_webview_window("main")
@@ -574,13 +616,14 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     let _ = window.set_max_size(unpinned);
 
     window
-        .set_size(tauri::LogicalSize::new(WIDTH, target))
+        .set_size(tauri::LogicalSize::new(MAIN_WIDTH, target))
         .map_err(|e| e.to_string())?;
 
     // Pinned again so the window cannot be dragged to a size the fixed layout
     // has no answer for. `resizable` must stay true in tauri.conf.json: with it
     // false, programmatic resizing is unreliable on macOS.
-    let fixed = Some(tauri::LogicalSize::new(WIDTH, target));
+    PINNED_HEIGHT.store(target.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let fixed = Some(tauri::LogicalSize::new(MAIN_WIDTH, target));
     let _ = window.set_min_size(fixed);
     let _ = window.set_max_size(fixed);
 
@@ -987,11 +1030,16 @@ pub fn finalize_meeting(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "meeting".to_string());
 
-    let meeting = queue::MeetingState::new(
+    let mut meeting = queue::MeetingState::new(
         id,
         text::sanitize_name(&meeting_title),
         serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
     );
+    // The WAVs are final by now, so this is the cheapest moment to learn how
+    // long the meeting was — and it is written with the rest of the state, so
+    // the length survives a restart without re-reading the audio.
+    meeting.duration_seconds =
+        pipeline::wav_duration(&summary.folder.join(crate::session::MIC_FILENAME));
 
     // Written before the job is visible to the worker, so a crash in between
     // leaves a meeting the startup scan will find rather than one it will not.
@@ -1139,11 +1187,50 @@ fn run_job(
     let stage_app = app.clone();
     let stage_transcribing = Arc::clone(&transcribing);
 
+    // Filled by the progress callback, read once the run is over. An `Arc`
+    // because the callback outlives this scope on the pipeline's thread.
+    let timings: Arc<std::sync::Mutex<queue::Timings>> =
+        Arc::new(std::sync::Mutex::new(meeting.timings.clone()));
+    let timings_sink = Arc::clone(&timings);
+    // When the current stage was entered, so its duration can be added on exit.
+    let stage_started = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+
     let result = pipeline::run(pipeline_config, &control, move |progress| match progress {
         Progress::Stage(stage, stage_state) => {
-            // Only on entry. `Done` for one stage arrives immediately before
-            // `Working` for the next, and acting on both would briefly show the
-            // finished stage as if it were the current one.
+            // Both edges are timed, even though only entry drives the UI: a
+            // stage's cost is the thing being measured, and `Done` is the only
+            // event that knows when it stopped.
+            if let Ok(mut clocks) = timings_sink.lock() {
+                let clock = match stage {
+                    Stage::Audio => &mut clocks.audio,
+                    Stage::Whisper => &mut clocks.whisper,
+                    Stage::Summary => &mut clocks.summary,
+                };
+                match stage_state {
+                    StageState::Working => {
+                        clock.begin(timestamp_iso());
+                        if let Ok(mut started) = stage_started.lock() {
+                            *started = Some(std::time::Instant::now());
+                        }
+                    }
+                    _ => {
+                        // `Instant`, not the wall clock: the elapsed time must
+                        // not move if the system clock is adjusted mid-run.
+                        let elapsed = stage_started
+                            .lock()
+                            .ok()
+                            .and_then(|started| *started)
+                            .map(|started| started.elapsed().as_secs_f64())
+                            .unwrap_or(0.0);
+                        clock.end(timestamp_iso(), elapsed);
+                    }
+                }
+            }
+
+            // Only on entry from here down. `Done` for one stage arrives
+            // immediately before `Working` for the next, and acting on both
+            // would briefly show the finished stage as if it were the current
+            // one.
             if stage_state != StageState::Working {
                 return;
             }
@@ -1193,6 +1280,12 @@ fn run_job(
         .ok()
         .and_then(|slot| slot.clone())
         .unwrap_or_else(|| job.folder.clone());
+
+    // Whatever happened — finished, paused or failed — the stages that did run
+    // are worth recording. A failure's timings are the most interesting of all.
+    if let Ok(clocks) = timings.lock() {
+        meeting.timings = clocks.clone();
+    }
 
     match result {
         Ok(pipeline::RunOutcome::Finished(output)) => {
@@ -1328,6 +1421,21 @@ fn timestamp_folder_name() -> String {
 
     let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
     format!("{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}")
+}
+
+/// `YYYY-MM-DDTHH:MM:SS`, UTC, for the stage timings in `meeting.json`.
+///
+/// UTC rather than local: these are durations to compare, and a meeting that
+/// spans a daylight-saving change would otherwise record a stage that took an
+/// hour less than it did.
+fn timestamp_iso() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 /// Days-from-civil, inverted. From Howard Hinnant's `civil_from_days`.

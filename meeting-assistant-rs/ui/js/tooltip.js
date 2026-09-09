@@ -22,11 +22,22 @@ export function initTooltips(tooltip) {
     tooltip.classList.remove("visible");
   };
 
-  for (const trigger of document.querySelectorAll("[data-tooltip]")) {
-    trigger.addEventListener("mouseenter", () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        tooltip.textContent = tr(trigger.getAttribute("data-tooltip"));
+  /**
+   * Delegated, not bound per element.
+   *
+   * The queue's cards are created and replaced as meetings come and go, so
+   * anything bound at startup would miss every one of them. Listening on the
+   * document means an element becomes a tooltip trigger simply by carrying the
+   * attribute, whenever it appears.
+   */
+  const show = (trigger) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+        // `data-tooltip` is a catalog key; `data-tooltip-text` is text already
+        // built by the caller, for the things a static catalog cannot express —
+        // a meeting's own title, length and stage.
+        const literal = trigger.getAttribute("data-tooltip-text");
+        tooltip.textContent = literal ?? tr(trigger.getAttribute("data-tooltip"));
 
         const box = trigger.getBoundingClientRect();
         tooltip.classList.add("visible");
@@ -48,10 +59,15 @@ export function initTooltips(tooltip) {
         const centred = box.left + box.width / 2 - width / 2;
         const maxLeft = window.innerWidth - width - EDGE_PX;
         tooltip.style.left = `${Math.min(Math.max(EDGE_PX, centred), Math.max(EDGE_PX, maxLeft))}px`;
-      }, DELAY_MS);
-    });
+    }, DELAY_MS);
+  };
 
-    trigger.addEventListener("mouseleave", hide);
-    trigger.addEventListener("mousedown", hide);
-  }
+  document.addEventListener("mouseover", (event) => {
+    const trigger = event.target.closest?.("[data-tooltip], [data-tooltip-text]");
+    if (trigger) show(trigger);
+  });
+  document.addEventListener("mouseout", (event) => {
+    if (event.target.closest?.("[data-tooltip], [data-tooltip-text]")) hide();
+  });
+  document.addEventListener("mousedown", hide);
 }

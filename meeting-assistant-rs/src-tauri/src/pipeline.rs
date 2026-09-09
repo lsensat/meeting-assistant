@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use meeting_core::config::{Language, SummaryType};
+use meeting_core::i18n;
 use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
 
@@ -206,20 +207,23 @@ pub fn run(
     on_progress(Progress::Stage(Stage::Whisper, StageState::Working));
 
     if !whisper::is_installed(&config.whisper_model) {
-        on_progress(Progress::Status(format!(
-            "Downloading Whisper model {}...",
-            config.whisper_model
+        on_progress(Progress::Status(i18n::tr_args(
+            config.language,
+            "downloading_model",
+            &[("model", &config.whisper_model)],
         )));
         whisper::download_model(&config.whisper_model, |percent| {
-            on_progress(Progress::Status(format!(
-                "Downloading Whisper model {} ({percent}%)...",
-                config.whisper_model
+            on_progress(Progress::Status(i18n::tr_args(
+                config.language,
+                "downloading_model_percent",
+                &[("model", &config.whisper_model), ("percent", &percent.to_string())],
             )));
         })?;
     } else {
-        on_progress(Progress::Status(format!(
-            "Loading Whisper model {}...",
-            config.whisper_model
+        on_progress(Progress::Status(i18n::tr_args(
+            config.language,
+            "loading_model",
+            &[("model", &config.whisper_model)],
         )));
     }
 
@@ -267,10 +271,14 @@ pub fn run(
     // report that never progresses is worse than none, because it reads as a
     // stall. The live figure is `control.seconds_done()`, which the queue worker
     // polls from another thread and shows on the meeting's card.
-    on_progress(Progress::Status(format!(
-        "Transcribing {}...",
-        config.speaker_me
-    )));
+    // Just "Transcribing...". This used to be `format!("Transcribing {}...",
+    // config.speaker_me)` — English glued to a *localised* label, so a Spanish
+    // user got half a sentence in each language. "YO" is the tag written into
+    // the transcript to mark the microphone track, and which of the two files
+    // is being read is the app's business, not something to report.
+    on_progress(Progress::Status(
+        i18n::tr(config.language, "transcribing").to_string(),
+    ));
 
     // The microphone track opens the meeting's timeline.
     control.set_base_seconds(0.0);
@@ -290,11 +298,6 @@ pub fn run(
         write_partial(&partial_segments_file, &segments);
         return Ok(RunOutcome::Paused(resume));
     }
-
-    on_progress(Progress::Status(format!(
-        "Transcribing {}...",
-        config.speaker_meeting
-    )));
 
     // The system track continues it, so progress keeps climbing instead of
     // restarting when the first track finishes.

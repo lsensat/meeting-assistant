@@ -14,4 +14,4 @@ exclude = ["spikes/loopback-probe", "spikes/tap-probe"]
 [workspace.package]
 edition = "2021"
 rust-version = "1.77"
-license = "MIT"
+license-file = "../LICENSE"

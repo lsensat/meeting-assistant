@@ -288,7 +288,13 @@ html, body {
   background: var(--panel);
   border: var(--border);
   border-radius: var(--radius-card);
-  margin: 10px 12px 8px;
+  /*
+   * 4px below, not 8. Margins do not collapse in a flex column, so this and the
+   * panel's own 4px make an 8px gutter between cards — half what it was. The
+   * cards already read as separate: they have a border and sit on a darker
+   * chrome, so the space was doing the same job twice.
+   */
+  margin: 10px 12px 4px;
   /* 9px, not 12: a 25% tighter gutter, which is the space to the left of the
      timer well. Also returns 6px of width to the transport row. */
   padding: 8px 9px 10px;
@@ -602,7 +608,8 @@ html, body {
   background: var(--panel);
   border: var(--border);
   border-radius: var(--radius-panel);
-  margin: 8px 12px;
+  /* 4px, pairing with the session card's 4px for an 8px gutter. */
+  margin: 4px 12px;
   /* Roomier, and matching the session card's generosity. */
   padding: 9px 10px 11px;
   transition: padding-bottom 120ms ease;
