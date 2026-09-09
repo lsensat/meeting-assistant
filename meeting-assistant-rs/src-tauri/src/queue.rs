@@ -86,6 +86,13 @@ pub struct MeetingState {
     /// over chunks, so this costs at most one chunk of repeated work.
     #[serde(default)]
     pub summary_chunk: usize,
+    /// How long the meeting was, in seconds.
+    ///
+    /// Read from the microphone WAV's header once and kept, rather than
+    /// measured whenever the UI asks: `view()` builds its snapshot under the
+    /// queue lock, and file I/O does not belong there.
+    #[serde(default)]
+    pub duration_seconds: Option<f64>,
     /// The failure from the last attempt, when `stage` is `Failed`.
     #[serde(default)]
     pub error: Option<String>,
@@ -108,6 +115,7 @@ impl MeetingState {
             mic_offset_seconds: 0.0,
             system_offset_seconds: 0.0,
             summary_chunk: 0,
+            duration_seconds: None,
             error: None,
             config,
         }
@@ -164,8 +172,18 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .filter_map(|path| {
-            let state = load(&path)?;
-            state.stage.is_outstanding().then_some((path, state))
+            let mut state = load(&path)?;
+            if !state.stage.is_outstanding() {
+                return None;
+            }
+            // Meetings recorded before this field existed have no length
+            // stored. Reading the WAV header here costs one seek per meeting,
+            // once at startup, and off the queue lock.
+            if state.duration_seconds.is_none() {
+                state.duration_seconds =
+                    crate::pipeline::wav_duration(&path.join(crate::session::MIC_FILENAME));
+            }
+            Some((path, state))
         })
         .collect();
 
@@ -337,6 +355,7 @@ pub struct JobView {
     pub percent: u8,
     pub error: Option<String>,
     pub running: bool,
+    pub duration_seconds: Option<f64>,
 }
 
 #[derive(Default)]
@@ -509,6 +528,7 @@ impl Queue {
                     percent: if running { inner.percent } else { 0 },
                     error: job.state.error.clone(),
                     running,
+                    duration_seconds: job.state.duration_seconds,
                 }
             })
             .collect()

@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use meeting_core::config::{Language, SummaryType};
+use meeting_core::i18n;
 use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
 
@@ -206,20 +207,23 @@ pub fn run(
     on_progress(Progress::Stage(Stage::Whisper, StageState::Working));
 
     if !whisper::is_installed(&config.whisper_model) {
-        on_progress(Progress::Status(format!(
-            "Downloading Whisper model {}...",
-            config.whisper_model
+        on_progress(Progress::Status(i18n::tr_args(
+            config.language,
+            "downloading_model",
+            &[("model", &config.whisper_model)],
         )));
         whisper::download_model(&config.whisper_model, |percent| {
-            on_progress(Progress::Status(format!(
-                "Downloading Whisper model {} ({percent}%)...",
-                config.whisper_model
+            on_progress(Progress::Status(i18n::tr_args(
+                config.language,
+                "downloading_model_percent",
+                &[("model", &config.whisper_model), ("percent", &percent.to_string())],
             )));
         })?;
     } else {
-        on_progress(Progress::Status(format!(
-            "Loading Whisper model {}...",
-            config.whisper_model
+        on_progress(Progress::Status(i18n::tr_args(
+            config.language,
+            "loading_model",
+            &[("model", &config.whisper_model)],
         )));
     }
 
@@ -267,10 +271,13 @@ pub fn run(
     // report that never progresses is worse than none, because it reads as a
     // stall. The live figure is `control.seconds_done()`, which the queue worker
     // polls from another thread and shows on the meeting's card.
-    on_progress(Progress::Status(format!(
-        "Transcribing {}...",
-        config.speaker_me
-    )));
+    // Not "Transcribing YO...". That string was English glued to a *localised*
+    // speaker label, so a Spanish user got half a sentence in each language —
+    // and "YO" is the tag this app writes into the transcript, not a word that
+    // means anything on a status line. Name the track instead.
+    on_progress(Progress::Status(
+        i18n::tr(config.language, "transcribing_me").to_string(),
+    ));
 
     // The microphone track opens the meeting's timeline.
     control.set_base_seconds(0.0);
@@ -291,10 +298,9 @@ pub fn run(
         return Ok(RunOutcome::Paused(resume));
     }
 
-    on_progress(Progress::Status(format!(
-        "Transcribing {}...",
-        config.speaker_meeting
-    )));
+    on_progress(Progress::Status(
+        i18n::tr(config.language, "transcribing_meeting").to_string(),
+    ));
 
     // The system track continues it, so progress keeps climbing instead of
     // restarting when the first track finishes.

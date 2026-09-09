@@ -987,11 +987,16 @@ pub fn finalize_meeting(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "meeting".to_string());
 
-    let meeting = queue::MeetingState::new(
+    let mut meeting = queue::MeetingState::new(
         id,
         text::sanitize_name(&meeting_title),
         serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
     );
+    // The WAVs are final by now, so this is the cheapest moment to learn how
+    // long the meeting was — and it is written with the rest of the state, so
+    // the length survives a restart without re-reading the audio.
+    meeting.duration_seconds =
+        pipeline::wav_duration(&summary.folder.join(crate::session::MIC_FILENAME));
 
     // Written before the job is visible to the worker, so a crash in between
     // leaves a meeting the startup scan will find rather than one it will not.

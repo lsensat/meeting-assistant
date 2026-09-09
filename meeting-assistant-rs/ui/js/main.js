@@ -319,6 +319,34 @@ function stageLabel(job) {
     : `${name} ${step}/3`;
 }
 
+/**
+ * Everything about a meeting that the card itself has no room for.
+ *
+ * The card shows a clipped title and a stage; this is where the whole title,
+ * the start time, the length and the stage go, for a window 375px wide that
+ * cannot show them inline.
+ */
+function jobTooltip(job) {
+  const lines = [job.title || tr("queue_untitled")];
+  lines.push(`${tr("queue_tip_started")}: ${jobTime(job.id)}`);
+  if (job.duration_seconds) {
+    lines.push(`${tr("queue_tip_length")}: ${formatDuration(job.duration_seconds)}`);
+  }
+  lines.push(`${tr("queue_tip_stage")}: ${stageLabel(job)}`);
+  // The failure, last: it is the longest and the least predictable.
+  if (job.error) lines.push(job.error);
+  return lines.join("\n");
+}
+
+/** Seconds as `1:49` or `1:02:30`. */
+function formatDuration(seconds) {
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
 function queueCard(job) {
   const card = document.createElement("div");
   card.className = "queue-card";
@@ -375,9 +403,7 @@ function queueCard(job) {
     iconButton("trash-button", ICON_TRASH, "queue_discard", () => confirmDiscard(job)),
   );
 
-  // A failure is otherwise invisible: the error itself only reaches the status
-  // line, which the next meeting overwrites.
-  if (job.error) card.title = job.error;
+  card.setAttribute("data-tooltip-text", jobTooltip(job));
 
   return card;
 }
@@ -474,9 +500,9 @@ async function renderQueue() {
     parts.title.textContent = job.title || tr("queue_untitled");
     parts.stage.textContent = stageLabel(job);
     parts.fill.style.width = `${percentFor(job)}%`;
+    card.setAttribute("data-tooltip-text", jobTooltip(job));
     // Kept so the animation frame below can advance this card between polls.
     card._job = job;
-    if (job.error) card.title = job.error;
   }
 }
 
@@ -496,6 +522,47 @@ async function renderQueue() {
  * Writes text and a width only — never a measurement, so it cannot resize the
  * window.
  */
+/**
+ * Re-fit after the things that change the window without changing the content.
+ *
+ * Two situations, both reported from Windows and neither of which the existing
+ * code noticed:
+ *
+ * **Restored from the tray.** A hidden window still answers `innerHeight` with
+ * whatever it was, and the queue panel can appear while it is out of sight. The
+ * meeting that finished in the background left the window a panel taller than
+ * its content, and nothing re-measured on the way back.
+ *
+ * **Moved to a second monitor.** The window is set in *logical* pixels, so the
+ * OS re-renders it at the new scale and it stays the same physical size on the
+ * glass — that part is correct, and a screenshot taken on a 150% display is
+ * simply 1.5× as many pixels. But Windows resizes the window itself on
+ * WM_DPICHANGED, and the min/max pins from `nudge_main_height` were computed
+ * against the old scale. Re-fitting settles it.
+ *
+ * Deliberately NOT a plain `resize` listener: this function resizes the window,
+ * so reacting to every resize is a loop. `devicePixelRatio` changing is the
+ * specific signal, and it is checked rather than assumed.
+ */
+function watchForWindowChanges() {
+  let ratio = window.devicePixelRatio;
+
+  window.addEventListener("resize", () => {
+    if (window.devicePixelRatio === ratio) return;
+    ratio = window.devicePixelRatio;
+    resizeToContent();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) resizeToContent();
+  });
+
+  // `visibilitychange` does not fire on every platform when a window is merely
+  // raised from the tray, and a focus that follows a background meeting is
+  // exactly when the layout is most likely to be stale.
+  window.addEventListener("focus", () => resizeToContent());
+}
+
 function startProgressAnimation() {
   setInterval(() => {
     if (ui.queue.hidden || !queueIsOpen()) return;
@@ -1115,6 +1182,7 @@ async function main() {
   await renderQueue();
   startQueuePolling();
   startProgressAnimation();
+  watchForWindowChanges();
 
   ui.queuePause.addEventListener("click", async () => {
     ui.queuePause.disabled = true;
