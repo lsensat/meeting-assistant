@@ -444,7 +444,7 @@ const MIN_PREFIX_MATCH_LEN: usize = 8;
 /// Remove PyAudioWPatch's `" [Loopback]"` decoration.
 ///
 /// Names saved by the Python app look like
-/// `"Audífono ... (Plantronics Blackwire 3225 Series) [Loopback]"`, while the
+/// `"Audífono ... (Acme Headset 3225 Series) [Loopback]"`, while the
 /// same endpoint through WASAPI has no suffix. Without stripping it, every
 /// upgraded config silently fails to match and falls back to a different
 /// device on first launch.
@@ -562,7 +562,7 @@ mod tests {
         let defaults = Config::defaults(&app_folder());
 
         for path in [
-            r"C:\Users\luisfsf\Documents\meeting-assistant\meetings",
+            r"C:\Users\example\Documents\meeting-assistant\meetings",
             r"D:/recordings",
             r"\\server\share\meetings",
             r"relative\with\backslashes",
@@ -580,7 +580,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn unix_output_paths_are_kept() {
-        for path in ["/Users/luis/Documents/meetings", "/tmp/x", "/a b/c-d_e"] {
+        for path in ["/Users/example/Documents/meetings", "/tmp/x", "/a b/c-d_e"] {
             let json = format!(r#"{{"output_folder": "{path}"}}"#);
             let c = Config::from_json(&json, &app_folder());
             assert_eq!(c.output_folder, PathBuf::from(path));
@@ -777,10 +777,10 @@ mod tests {
   "whisper_model": "small",
   "ollama_model": "gemma3:4b",
   "summary_type": "meeting_minutes",
-  "output_folder": "C:\\Users\\luisfsf\\Documents\\meeting-assistant\\meetings",
+  "output_folder": "C:\\Users\\example\\Documents\\meeting-assistant\\meetings",
   "keep_audio": true,
   "microphone_name": "Micrófono de los auriculares co",
-  "system_audio_name": "Audífono de los auriculares con micrófono (Plantronics Blackwire 3225 Series) [Loopback]",
+  "system_audio_name": "Audífono de los auriculares con micrófono (Acme Headset 3225 Series) [Loopback]",
   "custom_summary_prompt": "Summarize the meeting clearly."
 }"#;
 
@@ -797,7 +797,7 @@ mod tests {
         // The loopback decoration is gone, so this can match a WASAPI endpoint.
         assert_eq!(
             c.system_audio_name,
-            "Audífono de los auriculares con micrófono (Plantronics Blackwire 3225 Series)"
+            "Audífono de los auriculares con micrófono (Acme Headset 3225 Series)"
         );
     }
 
@@ -806,12 +806,12 @@ mod tests {
     #[test]
     fn strips_the_loopback_suffix() {
         assert_eq!(
-            strip_loopback_suffix("Speakers (Realtek) [Loopback]"),
-            "Speakers (Realtek)"
+            strip_loopback_suffix("Speakers (Onboard) [Loopback]"),
+            "Speakers (Onboard)"
         );
         assert_eq!(
-            strip_loopback_suffix("Speakers (Realtek)"),
-            "Speakers (Realtek)"
+            strip_loopback_suffix("Speakers (Onboard)"),
+            "Speakers (Onboard)"
         );
     }
 
@@ -823,9 +823,9 @@ mod tests {
 
     #[test]
     fn decorated_saved_name_matches_undecorated_endpoint() {
-        let available = vec!["Speakers (Realtek)".to_string()];
+        let available = vec!["Speakers (Onboard)".to_string()];
         assert_eq!(
-            match_saved_device_name("Speakers (Realtek) [Loopback]", &available),
+            match_saved_device_name("Speakers (Onboard) [Loopback]", &available),
             Some(0)
         );
     }
@@ -835,7 +835,7 @@ mod tests {
         // Exactly the case in the repo's config.json: PortAudio truncated the
         // capture device name, WASAPI reports it in full.
         let available =
-            vec!["Micrófono de los auriculares con micrófono (Plantronics)".to_string()];
+            vec!["Micrófono de los auriculares con micrófono (Acme)".to_string()];
         assert_eq!(
             match_saved_device_name("Micrófono de los auriculares co", &available),
             Some(0)
@@ -844,9 +844,9 @@ mod tests {
 
     #[test]
     fn matching_is_case_insensitive() {
-        let available = vec!["SPEAKERS (Realtek)".to_string()];
+        let available = vec!["SPEAKERS (Onboard)".to_string()];
         assert_eq!(
-            match_saved_device_name("Speakers (realtek)", &available),
+            match_saved_device_name("Speakers (onboard)", &available),
             Some(0)
         );
     }
@@ -855,7 +855,7 @@ mod tests {
     fn unrelated_name_does_not_match() {
         let available = vec!["Microphone Array (Intel)".to_string()];
         assert_eq!(
-            match_saved_device_name("Plantronics Blackwire", &available),
+            match_saved_device_name("Acme Headset", &available),
             None
         );
     }
@@ -877,11 +877,11 @@ mod tests {
     #[test]
     fn exact_match_wins_over_a_prefix_match() {
         let available = vec![
-            "Plantronics Blackwire 3225 Series Extra".to_string(),
-            "Plantronics Blackwire".to_string(),
+            "Acme Headset 3225 Series Extra".to_string(),
+            "Acme Headset".to_string(),
         ];
         assert_eq!(
-            match_saved_device_name("Plantronics Blackwire", &available),
+            match_saved_device_name("Acme Headset", &available),
             Some(1)
         );
     }

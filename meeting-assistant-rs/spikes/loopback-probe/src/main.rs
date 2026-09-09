@@ -19,8 +19,8 @@
 //!
 //! ```text
 //! cargo run --release -- --list            # show loopback candidates
-//! cargo run --release -- --device "Plantronics"   # probe one, 60s
-//! cargo run --release -- --device "Plantronics" --seconds 90
+//! cargo run --release -- --device "Headset"   # probe one, 60s
+//! cargo run --release -- --device "Headset" --seconds 90
 //! cargo run --release -- --mic             # probe an input device instead
 //! ```
 //!
