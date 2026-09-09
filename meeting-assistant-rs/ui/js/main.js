@@ -11,6 +11,7 @@ import "./errors.js";
 import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
+import { collapsible } from "./collapsible.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -70,14 +71,18 @@ let tick = null;
  */
 const STATUS_MAX = 150;
 
-function setStatus(text) {
+function setStatus(text, detail) {
   const full = String(text ?? "");
   const clipped = full.length > STATUS_MAX ? `${full.slice(0, STATUS_MAX).trimEnd()}…` : full;
 
   ui.status.textContent = clipped;
-  if (clipped !== full) {
-    ui.status.title = full;
-    console.log("[status]", full);
+  // `detail` is the long form of a message deliberately kept short on screen:
+  // three wrapped lines pushed the toolbar off the bottom of the window, and a
+  // sentence of advice is worth reading once, not on every successful meeting.
+  const hover = detail ?? (clipped !== full ? full : null);
+  if (hover) {
+    ui.status.title = hover;
+    if (clipped !== full) console.log("[status]", full);
   } else {
     ui.status.removeAttribute("title");
   }
@@ -335,6 +340,13 @@ function queueCard(job) {
   body.append(line);
   card.append(body);
 
+  // The parts a poll changes, kept on the element. A tick then writes three
+  // strings and a width instead of discarding and rebuilding every card, which
+  // is what made opening and closing this panel feel heavy: the rebuild landed
+  // on top of the toggle's own resize.
+  card.dataset.id = job.id;
+  card._parts = { time, title, stage, fill };
+
   if (job.stage === "failed") {
     card.append(
       iconButton("retry-button", ICON_RETRY, "queue_retry", () => retryJob(job.id)),
@@ -392,6 +404,9 @@ function confirmDiscard(job) {
   el("discard-no").focus();
 }
 
+/** The job ids currently on screen, so a tick knows whether to rebuild. */
+let renderedIds = "";
+
 /** Redraw the queue from Rust's snapshot. */
 async function renderQueue() {
   let jobs = [];
@@ -413,8 +428,29 @@ async function renderQueue() {
   ui.queuePause.setAttribute("data-tooltip", pauseKey);
   ui.queuePause.setAttribute("aria-label", tr(pauseKey));
 
-  ui.queueList.replaceChildren(...jobs.map(queueCard));
-  resizeToContent();
+  // Rebuild only when the set of meetings changes. Between those moments a
+  // meeting's percentage and stage move, and both are text on an element that
+  // already exists — replacing the DOM to change "5%" to "17%" throws away the
+  // browser's layout for the whole list and forces a re-measure of the window.
+  const ids = jobs.map((job) => job.id).join("\u0000");
+  if (ids !== renderedIds) {
+    renderedIds = ids;
+    ui.queueList.replaceChildren(...jobs.map(queueCard));
+    resizeToContent();
+    return;
+  }
+
+  for (const job of jobs) {
+    const card = ui.queueList.querySelector(`[data-id="${CSS.escape(job.id)}"]`);
+    const parts = card?._parts;
+    if (!parts) continue;
+
+    card.dataset.state = job.stage;
+    parts.title.textContent = job.title || tr("queue_untitled");
+    parts.stage.textContent = stageLabel(job);
+    parts.fill.style.width = `${job.running ? job.percent : 0}%`;
+    if (job.error) card.title = job.error;
+  }
 }
 
 /**
@@ -426,25 +462,40 @@ async function renderQueue() {
  */
 function startQueuePolling() {
   setInterval(async () => {
-    if (ui.queue.hidden) return;
+    // Nothing to draw into: the panel is gone, or its list is collapsed. The
+    // header's count and pause icon are redrawn by `queue_changed` anyway, and
+    // those are the only parts visible while closed.
+    if (ui.queue.hidden || !queueIsOpen()) return;
     const jobs = await api.listJobs().catch(() => []);
     if (jobs.some((job) => job.running)) await renderQueue();
   }, 700);
 }
 
-function setQueueExpanded(expanded, persist = true) {
-  if (expanded) {
-    ui.queueList.removeAttribute("hidden");
-  } else {
-    ui.queueList.setAttribute("hidden", "");
-  }
-  ui.queueToggle.setAttribute("aria-expanded", String(expanded));
-  ui.queue.classList.toggle("is-collapsed", !expanded);
-  requestAnimationFrame(resizeToContent);
+/**
+ * The two panels, built from one implementation.
+ *
+ * Constructed lazily on first use rather than at module scope, because
+ * `resizeToContent` is declared below them and the panels must not capture it
+ * before it exists.
+ */
+let queuePanel;
+let devicesPanel;
 
-  if (persist) {
-    api.getConfig().then((config) => api.saveConfig({ ...config, queue_expanded: expanded }));
-  }
+function setQueueExpanded(expanded, persist = true) {
+  queuePanel ??= collapsible({
+    panel: ui.queue,
+    toggle: ui.queueToggle,
+    detail: ui.queueList,
+    refit: resizeToContent,
+    persist: (open) =>
+      api.getConfig().then((config) => api.saveConfig({ ...config, queue_expanded: open })),
+  });
+  queuePanel.set(expanded, persist);
+}
+
+/** Whether the queue detail is on screen; the poll skips work when it is not. */
+function queueIsOpen() {
+  return ui.queueToggle.getAttribute("aria-expanded") === "true";
 }
 
 function setRecording(active) {
@@ -626,7 +677,27 @@ let resizePasses = 0;
  * How much more room the content needs than it has is something this side can
  * measure exactly, and it is all the other side needs to know.
  */
+let resizeQueued = false;
+
+/**
+ * Fold every resize request made in one frame into a single measurement.
+ *
+ * Several things ask for a refit at once — a status line changing, the queue
+ * panel appearing, a panel being toggled — and each used to start its own
+ * measure/IPC/re-measure loop against the same shared `resizePasses` budget.
+ * They exhausted it between them and gave up early, which left the window a
+ * few lines short of its content and the toolbar clipped off the bottom.
+ */
 function resizeToContent() {
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => {
+    resizeQueued = false;
+    measureAndResize();
+  });
+}
+
+function measureAndResize() {
   const delta = Math.round(contentHeight() - window.innerHeight);
 
   if (delta === 0) {
@@ -639,7 +710,7 @@ function resizeToContent() {
   }
   resizePasses += 1;
 
-  api.nudgeMainHeight(delta).then(() => requestAnimationFrame(resizeToContent));
+  api.nudgeMainHeight(delta).then(() => requestAnimationFrame(measureAndResize));
 }
 
 /**
@@ -653,22 +724,15 @@ function resizeToContent() {
  * @param {boolean} [persist] write it to config; false during startup
  */
 function setDevicesExpanded(expanded, persist = true) {
-  if (expanded) {
-    ui.devicesDetail.removeAttribute("hidden");
-  } else {
-    ui.devicesDetail.setAttribute("hidden", "");
-  }
-  ui.devicesToggle.setAttribute("aria-expanded", String(expanded));
-  ui.devicesToggle.closest(".audio-panel").classList.toggle("is-collapsed", !expanded);
-
-  // Next frame, so layout has settled with the detail shown or hidden.
-  requestAnimationFrame(resizeToContent);
-
-  if (persist) {
-    api.getConfig().then((config) =>
-      api.saveConfig({ ...config, devices_expanded: expanded }),
-    );
-  }
+  devicesPanel ??= collapsible({
+    panel: ui.devicesToggle.closest(".audio-panel"),
+    toggle: ui.devicesToggle,
+    detail: ui.devicesDetail,
+    refit: resizeToContent,
+    persist: (open) =>
+      api.getConfig().then((config) => api.saveConfig({ ...config, devices_expanded: open })),
+  });
+  devicesPanel.set(expanded, persist);
 }
 
 /**
@@ -843,7 +907,10 @@ function wireEvents() {
     // clickable while `results` still pointed at the previous meeting.
     setAvailable(ui.transcript, true);
     setAvailable(ui.summary, true);
-    setStatus(tr(payload.quiet_recording ? "processed_ok_quiet" : "processed_ok"));
+    setStatus(
+      tr(payload.quiet_recording ? "processed_ok_quiet" : "processed_ok"),
+      payload.quiet_recording ? tr("processed_ok_quiet_detail") : undefined,
+    );
   });
 }
 
@@ -919,11 +986,6 @@ function wireControls() {
     }
   });
 
-  ui.devicesToggle.addEventListener("click", () => {
-    const open = ui.devicesToggle.getAttribute("aria-expanded") === "true";
-    setDevicesExpanded(!open);
-  });
-
   ui.settings.addEventListener("click", () => api.openSettings());
 }
 
@@ -979,10 +1041,6 @@ async function main() {
   setQueueExpanded(config.queue_expanded !== false, false);
   await renderQueue();
   startQueuePolling();
-
-  ui.queueToggle.addEventListener("click", () =>
-    setQueueExpanded(ui.queueToggle.getAttribute("aria-expanded") !== "true"),
-  );
 
   ui.queuePause.addEventListener("click", async () => {
     ui.queuePause.disabled = true;

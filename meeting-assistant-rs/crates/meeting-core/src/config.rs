@@ -270,7 +270,10 @@ impl Config {
             system_audio_name: String::new(),
             custom_summary_prompt: DEFAULT_CUSTOM_PROMPT.to_string(),
             devices_expanded: false,
-            queue_expanded: true,
+            // Closed. The panel appears on its own when a meeting finishes,
+            // and appearing *and* unfolding at once is the app deciding to
+            // take space the user did not ask for.
+            queue_expanded: false,
             processing_paused: false,
             summary_provider: SummaryProvider::Ollama,
             api_base_url: String::new(),
