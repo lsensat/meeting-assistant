@@ -7,7 +7,7 @@ time**, so you get both halves of a call — not just your own side. The audio i
 transcribed locally with [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 and summarised by a local [Ollama](https://ollama.com) model.
 
-Windows and macOS, from one codebase. Free and open source.
+Windows and macOS, from one codebase. Free, and the source is public.
 
 ---
 
@@ -121,6 +121,12 @@ development setup, project layout, and platform notes.
 
 ## Licence
 
-MIT, as declared in `Cargo.toml`. A `LICENSE` file still needs adding at the
-repository root — without one, GitHub shows no licence and the terms are not
-actually granted to anyone reading this.
+[O'Saasy](https://osaasy.dev) — see [LICENSE](LICENSE).
+
+It is the MIT licence plus one condition: you may not offer this software to
+third parties as a hosted or SaaS product competing with the original author.
+Everything else MIT allows, this allows — use it, change it, self-host it,
+redistribute it, sell it.
+
+It is not an OSI-approved licence, so "source available" is the accurate term
+rather than "open source".

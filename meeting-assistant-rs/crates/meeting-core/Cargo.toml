@@ -3,7 +3,7 @@ name = "meeting-core"
 version = "0.2.3"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Hardware-independent logic for Meeting Assistant: device-selection policy, audio conversion, progress math."
 
 # Pure, portable dependencies only — nothing platform-specific, so the whole

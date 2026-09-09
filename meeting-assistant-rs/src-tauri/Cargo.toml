@@ -3,7 +3,7 @@ name = "meeting-assistant"
 version = "0.2.3"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Meeting Assistant: dual-source recording, transcription and summary."
 
 [build-dependencies]
