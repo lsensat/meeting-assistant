@@ -1,5 +1,10 @@
-//! Temporary CLI driver for Phase M3: run the post-recording pipeline over an
-//! existing meeting folder. Pairs with the `rec` binary from Phase M2.
+//! Run the post-recording pipeline over an existing meeting folder, without the
+//! UI. Pairs with `rec`, and documented in the README as the way to debug the
+//! pipeline.
+//!
+//! Not scaffolding, despite what this comment used to say. It reports seconds
+//! per stage and per LLM request under `MA_DEBUG=1`, which is how the summary
+//! stage was measured at 94% of a run and found to be doing its work twice.
 //!
 //! ```text
 //! cargo run --release --bin process -- --folder /tmp/ma-test1
@@ -150,6 +155,9 @@ fn main() {
                 );
             }
         },
+        Progress::Folder(folder) => {
+            println!("  folder is now {}", folder.display());
+        }
         Progress::Status(status) => {
             // Percent updates repeat constantly; only print real changes.
             if status != last_status {

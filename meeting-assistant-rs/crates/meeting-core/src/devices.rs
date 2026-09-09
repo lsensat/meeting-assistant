@@ -1,7 +1,7 @@
 //! Turning raw OS device names into something worth showing a person.
 //!
 //! Windows names a device by its role first and the hardware second:
-//! `"Micrófono de los auriculares con micrófono (Plantronics Blackwire 3225
+//! `"Micrófono de los auriculares con micrófono (Acme Headset 3225
 //! Series)"`. The part anyone recognises is in the parentheses, and the prefix
 //! is both long enough to wrap the panel and localised by Windows, so it cannot
 //! be matched against a fixed list.
@@ -49,8 +49,8 @@ pub fn display_labels(names: &[String]) -> Vec<String> {
 /// The parenthesised tail of a name, or the whole name when there isn't one.
 ///
 /// Anchored on the **last** `)` rather than the first, because the hardware name
-/// can itself contain parentheses — `"Micrófono (Realtek(R) Audio)"` has to
-/// yield `"Realtek(R) Audio"`, not `"Realtek(R"`.
+/// can itself contain parentheses — `"Micrófono (Onboard(R) Audio)"` has to
+/// yield `"Onboard(R) Audio"`, not `"Onboard(R"`.
 fn shorten(name: &str) -> &str {
     let trimmed = name.trim_end();
     if !trimmed.ends_with(')') {
@@ -84,14 +84,14 @@ mod tests {
     fn a_windows_name_reduces_to_the_hardware() {
         // Verbatim from the Windows machine that reported this.
         assert_eq!(
-            labels(&["Micrófono de los auriculares con micrófono (Plantronics Blackwire 3225 Series)"]),
-            vec!["Plantronics Blackwire 3225 Series"],
+            labels(&["Micrófono de los auriculares con micrófono (Acme Headset 3225 Series)"]),
+            vec!["Acme Headset 3225 Series"],
         );
     }
 
     #[test]
     fn nested_parentheses_anchor_on_the_last_one() {
-        assert_eq!(labels(&["Micrófono (Realtek(R) Audio)"]), vec!["Realtek(R) Audio"]);
+        assert_eq!(labels(&["Micrófono (Onboard(R) Audio)"]), vec!["Onboard(R) Audio"]);
     }
 
     #[test]
@@ -112,14 +112,14 @@ mod tests {
         let out = labels(&[
             "Microphone (USB Audio)",
             "Line In (USB Audio)",
-            "Micrófono (Plantronics Blackwire 3225 Series)",
+            "Micrófono (Acme Headset 3225 Series)",
         ]);
-        assert_eq!(out[2], "Plantronics Blackwire 3225 Series");
+        assert_eq!(out[2], "Acme Headset 3225 Series");
     }
 
     #[test]
     fn a_name_that_is_only_parentheses_is_left_alone() {
-        assert_eq!(labels(&["(Realtek Audio)"]), vec!["(Realtek Audio)"]);
+        assert_eq!(labels(&["(Onboard Audio)"]), vec!["(Onboard Audio)"]);
         assert_eq!(labels(&["Microphone ()"]), vec!["Microphone ()"]);
     }
 }

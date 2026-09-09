@@ -517,6 +517,15 @@ impl TranscriptionControl {
     }
 }
 
+/// Below this peak amplitude a track is quiet enough to be worth mentioning.
+///
+/// Roughly -26 dBFS. Speech recorded at a sensible input level peaks far above
+/// this; a built-in microphone across a desk at default gain does not. Quiet
+/// audio is where Whisper starts inventing — a real meeting came back as one
+/// sentence repeated five times and then "Okay." three times — so saying the
+/// recording was quiet names the cause instead of leaving the app looking broken.
+pub const QUIET_PEAK: f32 = 0.05;
+
 /// Below this peak amplitude a track is treated as having nothing in it.
 ///
 /// −60 dBFS. Chosen far below any real microphone's noise floor, so a genuinely
@@ -549,6 +558,10 @@ pub struct TranscriptionOutcome {
     /// True when the run stopped early because the control asked it to. The
     /// segments are still valid, they are simply not the whole file.
     pub aborted: bool,
+    /// Loudest sample in the track, 0.0..=1.0. Reported so the caller can tell
+    /// the user their input level was low rather than leaving them to guess why
+    /// the transcript is poor.
+    pub peak: f32,
 }
 
 impl Transcriber {
@@ -639,7 +652,8 @@ impl Transcriber {
         // Checked here because this is where the samples already are: no second
         // read of the file, and the pipeline needs no special case, since a
         // silent track then contributes nothing either way.
-        if peak(&samples) < SILENCE_PEAK {
+        let level = peak(&samples);
+        if level < SILENCE_PEAK {
             // Report the whole track as covered so a progress bar spanning the
             // meeting moves past it rather than appearing to stall.
             let seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
@@ -651,6 +665,7 @@ impl Transcriber {
                 segments: Vec::new(),
                 last_end_seconds: resume_from_seconds + seconds,
                 aborted: false,
+                peak: level,
             });
         }
 
@@ -660,6 +675,12 @@ impl Transcriber {
             beam_size: 5,
             patience: 0.0,
         });
+
+        // A note for anyone tempted by whisper.cpp's temperature fallback: once
+        // it engages it decodes with `greedy.best_of`, which whisper-rs only
+        // lets you set through `SamplingStrategy::Greedy`. Reaching it would
+        // mean giving up beam search for every transcript in order to improve a
+        // path taken only when a window fails its checks. Not worth it.
 
         if let Some(language) = &self.language {
             params.set_language(Some(language));
@@ -785,6 +806,7 @@ impl Transcriber {
             segments,
             last_end_seconds,
             aborted,
+            peak: level,
         })
     }
 }

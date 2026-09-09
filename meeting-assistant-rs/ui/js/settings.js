@@ -10,6 +10,7 @@
 // below is reported on screen instead of leaving a blank or half-built window.
 import "./errors.js";
 import * as api from "./api.js";
+import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
 
@@ -23,19 +24,8 @@ let config = {};
  * @param {{value: string, label: string}[]} options
  * @param {string} selected
  */
-function fill(select, options, selected) {
-  select.replaceChildren();
-  for (const option of options) {
-    const node = document.createElement("option");
-    node.value = option.value;
-    node.textContent = option.label;
-    node.selected = option.value === selected;
-    select.append(node);
-  }
-}
-
 async function populateLanguages() {
-  fill(
+  fillSelect(
     el("app-language"),
     [
       { value: "en", label: tr("app_language.en") },
@@ -44,7 +34,7 @@ async function populateLanguages() {
     String(config.language ?? "en"),
   );
 
-  fill(
+  fillSelect(
     el("transcription-language"),
     [
       { value: "auto", label: tr("transcription_language.auto") },
@@ -54,7 +44,7 @@ async function populateLanguages() {
     String(config.transcription_language ?? "auto"),
   );
 
-  fill(
+  fillSelect(
     el("summary-type"),
     [
       { value: "meeting_minutes", label: tr("summary_type.meeting_minutes") },
@@ -74,7 +64,7 @@ async function populateWhisper() {
   // the display string and re-parsed it with `parse_whisper_value`, splitting
   // on whitespace to strip the suffix (`app.py:731`) — which breaks the moment
   // a label contains a space.
-  fill(
+  fillSelect(
     el("whisper-model"),
     models.map((model) => ({
       value: model.id,
@@ -215,7 +205,7 @@ function applyProviderVisibility() {
 }
 
 async function populateProvider() {
-  fill(
+  fillSelect(
     el("summary-provider"),
     [
       { value: "ollama", label: tr("summary_provider.ollama") },
@@ -243,18 +233,18 @@ async function populateOllama() {
     // No sentinel option. The Python put "No models installed" into the select
     // and `write_config` then persisted that string verbatim as the model name
     // (deferred fix #7); an empty select cannot do that.
-    fill(el("ollama-model"), [], "");
+    fillSelect(el("ollama-model"), [], "");
     return;
   }
 
   if (status.models.length === 0) {
     note.textContent = tr("ollama_no_models");
-    fill(el("ollama-model"), [], "");
+    fillSelect(el("ollama-model"), [], "");
     return;
   }
 
   note.textContent = tr("ollama_active_models", { count: status.models.length });
-  fill(
+  fillSelect(
     el("ollama-model"),
     status.models.map((model) => ({ value: model, label: model })),
     String(config.ollama_model ?? ""),
@@ -264,7 +254,7 @@ async function populateOllama() {
 async function populateDevices() {
   const devices = await api.listDevices();
 
-  fill(
+  fillSelect(
     el("microphone"),
     devices.microphones.map((device) => ({
       value: device.name,
@@ -273,7 +263,7 @@ async function populateDevices() {
     String(config.microphone_name ?? ""),
   );
 
-  fill(
+  fillSelect(
     el("system-audio"),
     devices.system.map((device) => ({
       value: device.name,
@@ -367,8 +357,11 @@ function wire() {
     if (typedKey) await api.setApiKey(typedKey);
 
     if (next.summary_provider === "openai_compatible") {
-      const haveKey = typedKey || (await api.hasApiKey());
-      if (!next.api_base_url || !next.api_model || !haveKey) {
+      const complete = isRemoteProviderConfigured(next, {
+        typedKey,
+        hasStoredKey: await api.hasApiKey(),
+      });
+      if (!complete) {
         el("api-key-status").textContent = tr("api_incomplete");
         return;
       }

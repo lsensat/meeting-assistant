@@ -25,7 +25,7 @@ pub const INTERNAL_MIC_TERMS: &[&str] = &[
     "microphone array",
     "matriz de micrófonos",
     "matriz de microfonos",
-    "realtek",
+    "onboard",
     "intel smart sound",
     "intel",
     "internal",
@@ -41,7 +41,7 @@ pub const INTERNAL_MIC_TERMS: &[&str] = &[
 /// Loopback devices preferred when nothing is configured.
 ///
 /// Hardcodes one specific headset — see deferred fix #8. Kept as-is for parity.
-pub const DEFAULT_SYSTEM_PREFERRED_TERMS: &[&str] = &["plantronics blackwire 3225 series"];
+pub const DEFAULT_SYSTEM_PREFERRED_TERMS: &[&str] = &["acme headset 3225 series"];
 
 /// An audio endpoint, either a capture device or a loopback-capable render device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,10 +255,10 @@ mod tests {
     fn selected_microphone_wins() {
         let devices = vec![
             dev(1, "Microphone Array (Intel)"),
-            dev(2, "Plantronics Blackwire 3225 Series"),
+            dev(2, "Acme Headset 3225 Series"),
         ];
         let result =
-            ordered_microphone_candidates(&devices, "Plantronics Blackwire 3225 Series", Some("1"));
+            ordered_microphone_candidates(&devices, "Acme Headset 3225 Series", Some("1"));
         assert_eq!(result[0].id, "2");
     }
 
@@ -310,28 +310,28 @@ mod tests {
     fn microphone_candidates_are_unique() {
         let devices = vec![
             dev(1, "Microphone Array (Intel)"),
-            dev(2, "Plantronics Blackwire 3225 Series"),
+            dev(2, "Acme Headset 3225 Series"),
         ];
         let result =
-            ordered_microphone_candidates(&devices, "Plantronics Blackwire 3225 Series", Some("2"));
+            ordered_microphone_candidates(&devices, "Acme Headset 3225 Series", Some("2"));
         assert_eq!(result.iter().filter(|d| d.id == "2").count(), 1);
     }
 
     #[test]
     fn selected_loopback_wins() {
         let devices = vec![
-            dev(19, "Plantronics Blackwire 3225 Series [Loopback]"),
-            dev(20, "Speakers (Realtek) [Loopback]"),
+            dev(19, "Acme Headset 3225 Series [Loopback]"),
+            dev(20, "Speakers (Onboard) [Loopback]"),
         ];
-        let result = ordered_system_candidates(&devices, "Speakers (Realtek) [Loopback]", None);
+        let result = ordered_system_candidates(&devices, "Speakers (Onboard) [Loopback]", None);
         assert_eq!(result[0].id, "20");
     }
 
     #[test]
-    fn plantronics_is_default_preference_without_saved_loopback() {
+    fn acme_is_default_preference_without_saved_loopback() {
         let devices = vec![
-            dev(20, "Speakers (Realtek) [Loopback]"),
-            dev(19, "Plantronics Blackwire 3225 Series [Loopback]"),
+            dev(20, "Speakers (Onboard) [Loopback]"),
+            dev(19, "Acme Headset 3225 Series [Loopback]"),
         ];
         let result = ordered_system_candidates(&devices, "", None);
         assert_eq!(result[0].id, "19");
@@ -340,8 +340,8 @@ mod tests {
     #[test]
     fn supplied_default_loopback_can_win() {
         let devices = vec![
-            dev(19, "Plantronics Blackwire 3225 Series [Loopback]"),
-            dev(20, "Speakers (Realtek) [Loopback]"),
+            dev(19, "Acme Headset 3225 Series [Loopback]"),
+            dev(20, "Speakers (Onboard) [Loopback]"),
         ];
         let result = ordered_system_candidates(&devices, "Missing", Some("20"));
         assert_eq!(result[0].id, "20");
@@ -351,12 +351,12 @@ mod tests {
     fn runtime_mic_keeps_current_fallback_after_headset_returns() {
         let devices = vec![
             dev(1, "Microphone Array (Intel)"),
-            dev(2, "Plantronics Blackwire 3225 Series"),
+            dev(2, "Acme Headset 3225 Series"),
         ];
         let result = choose_microphone_failover(
             &devices,
             "Microphone Array (Intel)",
-            "Plantronics Blackwire 3225 Series",
+            "Acme Headset 3225 Series",
             Some("1"),
         );
         assert_eq!(result.device.unwrap().id, "1");
@@ -368,8 +368,8 @@ mod tests {
         let devices = vec![dev(1, "Microphone Array (Intel)"), dev(3, "USB Microphone")];
         let result = choose_microphone_failover(
             &devices,
-            "Plantronics Blackwire 3225 Series",
-            "Plantronics Blackwire 3225 Series",
+            "Acme Headset 3225 Series",
+            "Acme Headset 3225 Series",
             Some("1"),
         );
         assert_eq!(result.device.unwrap().id, "1");
@@ -377,12 +377,12 @@ mod tests {
     }
 
     #[test]
-    fn runtime_system_switches_to_realtek() {
-        let devices = vec![dev(20, "Speakers (Realtek) [Loopback]")];
+    fn runtime_system_switches_to_onboard() {
+        let devices = vec![dev(20, "Speakers (Onboard) [Loopback]")];
         let result = choose_system_failover(
             &devices,
-            "Plantronics Blackwire 3225 Series [Loopback]",
-            "Plantronics Blackwire 3225 Series [Loopback]",
+            "Acme Headset 3225 Series [Loopback]",
+            "Acme Headset 3225 Series [Loopback]",
             Some("20"),
         );
         assert_eq!(result.device.unwrap().id, "20");
@@ -393,7 +393,7 @@ mod tests {
     fn runtime_failover_handles_no_device() {
         let result = choose_system_failover(
             &[],
-            "Plantronics Blackwire 3225 Series [Loopback]",
+            "Acme Headset 3225 Series [Loopback]",
             "",
             None,
         );

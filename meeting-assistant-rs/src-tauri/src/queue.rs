@@ -441,9 +441,27 @@ impl Queue {
         if inner.running.as_deref() == Some(id) {
             drop(inner);
             self.control.lock().expect("control poisoned").abort();
-            // The worker clears `running` when it unwinds; the caller waits for
-            // that before touching the folder.
             inner = self.lock();
+
+            // Actually wait. This used to abort and return immediately while
+            // claiming in a comment that it waited, so a discard raced the
+            // pipeline's own writes into the directory it was about to remove.
+            //
+            // Bounded, because a worker wedged in a C++ call must not freeze the
+            // command that is trying to get rid of it. Whoever proceeds after
+            // the timeout is no worse off than before this check existed.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while inner.running.as_deref() == Some(id) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let (guard, _) = self
+                    .wake
+                    .wait_timeout(inner, remaining.min(std::time::Duration::from_millis(200)))
+                    .expect("queue poisoned");
+                inner = guard;
+            }
         }
 
         let index = inner.jobs.iter().position(|job| job.state.id == id)?;
@@ -546,15 +564,22 @@ impl Queue {
 
     /// Record where a job got to and release the worker.
     ///
+    /// Takes the **folder as it now stands**, because the pipeline renames it
+    /// during its first stage. Keeping only the state and leaving `job.folder`
+    /// at the path the job was created with meant every later attempt — a resume
+    /// after a pause, a retry, a discard — used a directory that no longer
+    /// existed, and reported "the system cannot find the file specified".
+    ///
     /// Finished meetings leave the queue — they are done, and the main window's
     /// result buttons point at them. Failed ones stay, because they need a
     /// decision the user has not made yet.
-    pub fn finish(&self, id: &str, updated: MeetingState) {
+    pub fn finish(&self, id: &str, updated: MeetingState, folder: PathBuf) {
         let mut inner = self.lock();
         inner.running = None;
         inner.percent = 0;
         if let Some(job) = inner.jobs.iter_mut().find(|j| j.state.id == id) {
             job.state = updated;
+            job.folder = folder;
         }
         inner.jobs.retain(|j| j.state.stage != Stage::Done);
         drop(inner);
@@ -640,6 +665,46 @@ mod queue_tests {
         let ids: Vec<String> = queue.view().into_iter().map(|v| v.id).collect();
         assert_eq!(ids, ["b"]);
         assert_eq!(queue.take("gone"), None);
+    }
+
+    #[test]
+    fn finishing_a_job_records_where_the_pipeline_moved_it() {
+        // The bug that cost a real meeting. `pipeline::run` renames the folder
+        // in its first stage to append the title, so the path a job was created
+        // with stops existing. The queue kept the old one, and the next attempt
+        // — a resume after a pause, a retry, a discard — handed it back and got
+        // "the system cannot find the file specified".
+        let queue = Queue::new();
+        queue.enqueue(job("2026-09-09_08-16-22", Stage::Queued));
+
+        let renamed = PathBuf::from("/tmp/2026-09-09_08-16-22_standup");
+        let mut state = job("2026-09-09_08-16-22", Stage::Whisper).state;
+        state.mic_offset_seconds = 42.0;
+        queue.finish("2026-09-09_08-16-22", state, renamed.clone());
+
+        // The job is still queued — paused, not done — so the worker will pick
+        // it up again, and it must find it where the pipeline left it.
+        let next = queue.next().expect("a paused job is still outstanding");
+        assert_eq!(
+            next.folder, renamed,
+            "the second attempt would look in a directory that no longer exists"
+        );
+        assert_eq!(next.state.mic_offset_seconds, 42.0);
+    }
+
+    #[test]
+    fn discarding_reports_the_current_folder_not_the_original() {
+        // Same bug, different victim: `discard_job` deletes what this returns.
+        // Against the stale path it removed nothing, reported an error, dropped
+        // the job, and left the real folder orphaned on disk.
+        let queue = Queue::new();
+        queue.enqueue(job("2026-09-09_08-16-22", Stage::Queued));
+
+        let renamed = PathBuf::from("/tmp/2026-09-09_08-16-22_standup");
+        let state = job("2026-09-09_08-16-22", Stage::Whisper).state;
+        queue.finish("2026-09-09_08-16-22", state, renamed.clone());
+
+        assert_eq!(queue.take("2026-09-09_08-16-22"), Some(renamed));
     }
 
     #[test]

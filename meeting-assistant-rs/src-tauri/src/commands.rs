@@ -112,6 +112,10 @@ pub struct OllamaStatusDto {
 
 #[derive(Serialize, Clone)]
 pub struct CompleteDto {
+    /// The microphone track was very quiet. The UI says so, because "the
+    /// transcript is wrong" and "your input level is low" look identical from
+    /// the outside and only one of them is actionable.
+    pub quiet_recording: bool,
     pub folder: String,
     pub transcript_file: String,
     pub summary_file: String,
@@ -533,9 +537,23 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or("main window is missing")?;
 
+    // INNER, not outer.
+    //
+    // `set_size` below sets the **inner** size — `WindowMessage::SetSize` maps to
+    // `set_inner_size` in tauri-runtime-wry — while `outer_size` includes the
+    // title bar and borders. Reading one and writing the other adds their
+    // difference to the window on every pass, so it can never converge: asking
+    // for `(inner + chrome) + delta` and getting it as an inner size leaves the
+    // window exactly `chrome` pixels too tall, forever, and `main { height:
+    // 100vh }` hands the surplus to the spacer as blank space above the toolbar.
+    //
+    // It never showed on macOS because Tauri reports outer and inner as equal
+    // there — measured, both 242 — so the difference was zero. On Windows it is
+    // the title bar, and the resize gave up after four passes with the gap still
+    // there.
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let current = window
-        .outer_size()
+        .inner_size()
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale)
         .height;
@@ -700,7 +718,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // filesystem search for a binary they have no use for.
         let ollama_installed = uses_ollama && platform::find_ollama().is_some();
 
-        let mut ollama_status = if uses_ollama {
+        let ollama_status = if uses_ollama {
             emit_status("checking_ollama");
             let status = list_ollama_models();
 
@@ -720,7 +738,6 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
                 error: None,
             }
         };
-        let _ = &mut ollama_status;
 
         emit_status("searching_models");
         let whisper_installed = whisper::installed_models();
@@ -1017,8 +1034,18 @@ pub fn spawn_worker(app: AppHandle) {
 
             // Persisted before the queue is told, so a crash in between leaves
             // the truth on disk rather than only in memory.
-            let _ = queue::save(&folder, &updated);
-            queue.finish(&id, updated);
+            //
+            // NOT ignored. This write failing is how a pause silently lost its
+            // resume point and a failure silently stayed marked `Queued`: it was
+            // going to a directory the rename had moved, returning ENOENT into a
+            // `let _ =`. If it fails now, it is visible.
+            if let Err(e) = queue::save(&folder, &updated) {
+                let _ = app.emit(
+                    EV_LOG,
+                    format!("could not record {} state at {}: {e}", id, folder.display()),
+                );
+            }
+            queue.finish(&id, updated, folder);
             emit_queue_changed(&app);
             emit_recording_state(&app, state.is_recording(), state.is_processing());
         }
@@ -1099,6 +1126,13 @@ fn run_job(
         done
     };
 
+    // Where the meeting ends up, learned from the pipeline rather than assumed.
+    // Shared because the closure below is moved into `run` and this is read
+    // after it returns — on every outcome, including a failure.
+    let renamed: Arc<std::sync::Mutex<Option<std::path::PathBuf>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let renamed_sink = Arc::clone(&renamed);
+
     let emitter = app.clone();
     let queue_for_stage = Arc::clone(queue);
     let stage_id = meeting.id.clone();
@@ -1136,6 +1170,11 @@ fn run_job(
             // redrawn here — there is no longer a stage event doing it.
             emit_queue_changed(&stage_app);
         }
+        Progress::Folder(folder) => {
+            if let Ok(mut slot) = renamed_sink.lock() {
+                *slot = Some(folder);
+            }
+        }
         Progress::Status(status) => {
             let _ = emitter.emit(EV_STATUS, status);
         }
@@ -1143,17 +1182,24 @@ fn run_job(
 
     ticker.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // The folder as it stands now: the audio stage renames it.
-    let folder = match &result {
-        Ok(pipeline::RunOutcome::Finished(output)) => output.folder.clone(),
-        _ => job.folder.clone(),
-    };
+    // The folder as it stands now.
+    //
+    // Taken from what the pipeline reported, not from the outcome: `Paused` and
+    // the error path both used to fall back to `job.folder`, which the rename
+    // had already invalidated. Everything downstream then wrote to a directory
+    // that no longer existed — the state file included, silently.
+    let folder = renamed
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| job.folder.clone());
 
     match result {
         Ok(pipeline::RunOutcome::Finished(output)) => {
             let _ = app.emit(
                 EV_COMPLETE,
                 CompleteDto {
+                    quiet_recording: output.quiet_recording,
                     folder: output.folder.to_string_lossy().into_owned(),
                     transcript_file: output.transcript_file.to_string_lossy().into_owned(),
                     summary_file: output.summary_file.to_string_lossy().into_owned(),
