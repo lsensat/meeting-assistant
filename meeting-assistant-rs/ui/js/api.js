@@ -128,6 +128,7 @@ export const browseFolder = () => open({ directory: true, multiple: false });
  * be diffed against the original.
  */
 export const EVENTS = {
+  configChanged: "config_changed",
   startupStatus: "startup_status",
   startupResult: "startup_result",
   status: "status",

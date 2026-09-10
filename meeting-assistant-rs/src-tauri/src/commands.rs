@@ -55,6 +55,16 @@ pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
 /// The queue changed: a job was added, finished, failed or was removed, or the
 /// pause switch moved. Carries no payload — the frontend asks for a snapshot.
 pub const EV_QUEUE_CHANGED: &str = "queue_changed";
+/// Settings were saved. Every window re-reads the config and re-applies
+/// anything derived from it — the language above all.
+///
+/// The main window used to learn this only from its own `focus` handler, so
+/// changing the language with Settings still open left it in the old one: Rust
+/// emitted the new language on the status line while every label the frontend
+/// draws stayed as it was. `save_config` already rebuilds the tray for exactly
+/// this reason — the tray cannot re-read either. The other windows were simply
+/// left out.
+pub const EV_CONFIG_CHANGED: &str = "config_changed";
 
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
@@ -181,6 +191,7 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
     // the DOM it has no way to re-read them. Nothing else tells Rust that the
     // language changed.
     crate::tray::rebuild(&app);
+    let _ = app.emit(EV_CONFIG_CHANGED, ());
     Ok(())
 }
 
@@ -1079,6 +1090,19 @@ pub fn finalize_meeting(
         state: meeting,
     });
 
+    // The status line still says "Finishing recording..." from `stop_recording`,
+    // and by now that is finished: the WAVs were flushed and closed before this
+    // command was reached. Left alone it sat there while the meeting waited in
+    // the queue, describing work that was already done.
+    //
+    // Deliberately not "waiting to be processed": the meeting's own card says
+    // "Waiting", and the status line should not narrate what is already on
+    // screen a few pixels below it.
+    let _ = app.emit(
+        EV_STATUS,
+        i18n::tr(state.config_snapshot().language, "meeting_saved"),
+    );
+
     emit_queue_changed(&app);
     emit_recording_state(&app, false, state.is_processing());
     Ok(())
@@ -1437,60 +1461,37 @@ pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(
 }
 
 
-/// `YYYY-MM-DD_HH-MM-SS`, matching the Python's folder naming.
+/// `YYYY-MM-DD_HH-MM-SS` in **local** time, matching the Python's folder naming.
 ///
-/// Hand-rolled from the Unix timestamp rather than pulling in `chrono` for one
-/// format string. Civil-time conversion is the standard days-from-epoch
-/// algorithm; it is correct for all dates this app will ever see.
+/// # Why this is local and the timings below are not
+///
+/// This is the name a person reads. It is the meeting's identity in Finder and
+/// Explorer, and the time the queue card shows. It has to match the clock on the
+/// wall when the meeting happened.
+///
+/// It did not. This was hand-rolled from raw Unix seconds with no timezone
+/// applied, which is UTC — so a meeting recorded at 10:07 in Spain was filed as
+/// `08-07`, two hours adrift, and every folder ever created carries the error.
+/// A previous version of this comment justified avoiding `chrono` "for one
+/// format string"; the format string was never the problem, and correct local
+/// time is not something to hand-roll — it needs the OS's current UTC offset and
+/// its DST rules.
+///
+/// **Folders already on disk keep their old names.** Renaming them would be a
+/// destructive migration over the user's own files, and the timestamp is also
+/// the meeting id recorded inside `meeting.json`.
 fn timestamp_folder_name() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
-    format!("{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}")
+    chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
-/// `YYYY-MM-DDTHH:MM:SS`, UTC, for the stage timings in `meeting.json`.
+/// `YYYY-MM-DDTHH:MM:SS`, **UTC**, for the stage timings in `meeting.json`.
 ///
-/// UTC rather than local: these are durations to compare, and a meeting that
-/// spans a daylight-saving change would otherwise record a stage that took an
-/// hour less than it did.
+/// Deliberately not local, and the opposite choice from the folder name above.
+/// These are instants to subtract, not times to read: a meeting spanning a
+/// daylight-saving change would otherwise record a stage as an hour shorter or
+/// longer than it was.
 fn timestamp_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let (year, month, day, hour, minute, second) = civil_from_unix(now as i64);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
-}
-
-/// Days-from-civil, inverted. From Howard Hinnant's `civil_from_days`.
-fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = seconds.div_euclid(86_400);
-    let secs_of_day = seconds.rem_euclid(86_400);
-
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-
-    (
-        year,
-        m as u32,
-        d as u32,
-        (secs_of_day / 3600) as u32,
-        ((secs_of_day % 3600) / 60) as u32,
-        (secs_of_day % 60) as u32,
-    )
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 /// Re-exported so `main.rs` can register it without importing `policy`.
@@ -1500,18 +1501,6 @@ pub use policy::Device as PolicyDevice;
 mod tests {
     use super::*;
 
-    /// Folder names are user-visible and sort chronologically only if this is
-    /// right. A wrong epoch conversion is easy to miss and permanent in the
-    /// filesystem.
-    #[test]
-    fn unix_epoch_converts_to_the_right_civil_date() {
-        assert_eq!(civil_from_unix(0), (1970, 1, 1, 0, 0, 0));
-        // 2026-09-03T07:00:00Z
-        assert_eq!(civil_from_unix(1_788_418_800), (2026, 9, 3, 7, 0, 0));
-        // A leap day, which the naive "365 days a year" version gets wrong.
-        assert_eq!(civil_from_unix(1_709_164_800), (2024, 2, 29, 0, 0, 0));
-    }
-
     #[test]
     fn folder_names_have_the_expected_shape() {
         let name = timestamp_folder_name();
@@ -1519,5 +1508,31 @@ mod tests {
         assert_eq!(name.as_bytes()[4], b'-');
         assert_eq!(name.as_bytes()[10], b'_');
         assert_eq!(name.as_bytes()[13], b'-');
+    }
+
+    /// The bug this replaced: folder names were raw Unix seconds with no
+    /// timezone applied, so a meeting recorded at 10:07 in Spain was filed as
+    /// `08-07`. Shape tests could not see it — both are well-formed names.
+    ///
+    /// Asserted as a *difference from UTC*, because the test has to pass in CI
+    /// too, where the runner's clock is UTC and there is no offset to find.
+    #[test]
+    fn the_folder_name_is_local_time_and_the_timings_are_utc() {
+        let offset = chrono::Local::now().offset().local_minus_utc();
+
+        let folder = timestamp_folder_name();
+        let iso = timestamp_iso();
+
+        // Same instant, formatted two ways: `YYYY-MM-DD_HH-MM-SS` and
+        // `YYYY-MM-DDTHH:MM:SS`. Compare the hour field of each.
+        let folder_hour: i32 = folder[11..13].parse().expect("hour");
+        let utc_hour: i32 = iso[11..13].parse().expect("hour");
+
+        let expected = (utc_hour + offset / 3600).rem_euclid(24);
+        assert_eq!(
+            folder_hour, expected,
+            "folder name {folder} should be local time; timings {iso} should be UTC \
+             (offset {offset}s)"
+        );
     }
 }
