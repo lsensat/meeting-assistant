@@ -320,7 +320,8 @@ fn keep_engine_running(endpoint: &Endpoint, kind: SourceKind) -> Option<Stream> 
 
     #[cfg(target_os = "windows")]
     {
-        let config: StreamConfig = endpoint.config.clone().into();
+        // `SupportedStreamConfig` is `Copy`; cloning it trips `clone_on_copy`.
+        let config: StreamConfig = endpoint.config.into();
         let stream = endpoint
             .device
             .build_output_stream(
