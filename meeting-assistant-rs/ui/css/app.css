@@ -645,20 +645,6 @@ html, body {
 }
 
 /* Fills whatever the label leaves, so the row reads as one ruled line. */
-/*
- * Amber, like the readiness lamps, and for the same reason: something is not as
- * configured. Small and inline so a collapsed panel can carry the warning
- * without the panel having to open itself.
- */
-.fallback-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--amber-dark);
-  border: 1px solid var(--steel-dark);
-}
-
 .devices-toggle .rule {
   flex: 1;
   border-top: 1px solid var(--steel);
@@ -860,6 +846,16 @@ input[type="password"] { cursor: text; }
    * has somewhere to put it.
    */
   max-width: 250px;
+  /*
+   * `jobTooltip` builds one field per line and joins with "\n". The default
+   * `normal` collapses those into a single run of text, so the fields ran
+   * together mid-line — "Title Started at:" then "20.01 Length: 1:31 Stage:"
+   * — which reads as garbled rather than as a list.
+   *
+   * `pre-line`, not `pre`: newlines are kept, but a line longer than the
+   * max-width above still wraps instead of overflowing the window.
+   */
+  white-space: pre-line;
 }
 #tooltip.visible { opacity: 1; }
 

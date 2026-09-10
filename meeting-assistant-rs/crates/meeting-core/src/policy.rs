@@ -271,6 +271,45 @@ pub fn silence_frames_for_gap(gap_seconds: f64, sample_rate: u32) -> usize {
     (gap_seconds * sample_rate).round_ties_even() as usize
 }
 
+/// How long a stream may take to deliver its first sample once it is open.
+///
+/// `play()` returns before the device starts producing, and how long that takes
+/// differs per device. This is the only part of the opening silence that is not
+/// already accounted for by the measured open.
+const FIRST_SAMPLE_SLACK_SECONDS: f64 = 1.0;
+
+/// Split an opening silence into the part that is device-open latency and the
+/// part that is a genuine hole in the recording.
+///
+/// `open_seconds` is the **measured** duration of the open that preceded this
+/// silence, which the recorder already times for its log line.
+///
+/// # Why this is not simply all lead-in
+///
+/// It used to be: the first silence a track wrote was classified as lead-in
+/// whatever its length, and `assess_track` never sees lead-in. On macOS an
+/// idle-gated system-audio tap delivered nothing for its first 11.728 seconds,
+/// all of which was booked as lead-in — so a meeting missing its first twelve
+/// seconds was reported to the user as **"capture looks intact"**.
+///
+/// # Why the allowance is measured rather than a constant
+///
+/// The first attempt at this was a flat 2s cap, and it misfired the same day.
+/// The macOS TCC permission prompt on an app's first run blocks inside the open
+/// for as long as the user takes to click Allow — a measured 3.384s for the
+/// system audio, 2.382s for the microphone, and the M0 spike once saw ~2.5
+/// minutes. Every second past the cap was booked as a hole, so a perfectly
+/// intact recording was reported as damaged.
+///
+/// A constant cannot separate "slow to open" from "opened and then delivered
+/// nothing"; the measured open time can, because it is exactly the difference.
+pub fn split_lead_in(frames: usize, sample_rate: u32, open_seconds: f64) -> (u64, u64) {
+    let allowance = open_seconds.max(0.0) + FIRST_SAMPLE_SLACK_SECONDS;
+    let lead_in = frames.min(silence_frames_for_gap(allowance, sample_rate));
+
+    (lead_in as u64, (frames - lead_in) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +508,47 @@ mod tests {
         assert_eq!(silence_frames_for_gap(0.7, 48_000), 33_600);
         assert_eq!(silence_frames_for_gap(-1.0, 48_000), 0);
     }
+
+    #[test]
+    fn an_ordinary_device_open_is_all_lead_in() {
+        // 0.489s of silence after a 0.083s open — a real measured tap open.
+        let (lead_in, gap) = split_lead_in(23_488, 48_000, 0.083);
+        assert_eq!(gap, 0, "a normal open must not be reported as damage");
+        assert_eq!(lead_in, 23_488);
+    }
+
+    #[test]
+    fn a_slow_permission_prompt_is_all_lead_in() {
+        // Recording A verbatim: the TCC prompt held the open for 3.384s, and a
+        // flat 2s cap reported the 1.384s remainder as a hole in the meeting.
+        let (lead_in, gap) = split_lead_in(162_432, 48_000, 3.384);
+        assert_eq!(gap, 0, "waiting for the user to click Allow is not damage");
+        assert_eq!(lead_in, 162_432);
+    }
+
+    #[test]
+    fn an_idle_gated_tap_is_not_lead_in() {
+        // The macOS failure verbatim: 11.728s before the first sample arrived,
+        // after an open that took only 83ms.
+        let (lead_in, gap) = split_lead_in(562_948, 48_000, 0.083);
+        assert_eq!(lead_in, 51_984, "the open, plus first-sample slack");
+        assert_eq!(gap, 510_964);
+
+        // And the part that is not lead-in must be loud enough to report.
+        let facts = TrackFacts {
+            overflows: 0,
+            gap_frames: gap,
+            sample_rate: 48_000,
+            duration_seconds: 40.763,
+        };
+        assert!(
+            matches!(
+                assess_track(40.748, facts),
+                Some(TrackDamage::Silence { .. })
+            ),
+            "a meeting missing its first twelve seconds must not pass as intact"
+        );
+    }
 }
 
 // --- was the recording actually captured? -------------------------------
@@ -541,8 +621,9 @@ const LENGTH_FLOOR_SECONDS: f64 = 0.5;
 
 /// How much outage silence is worth telling the user about.
 ///
-/// `gap_frames` counts only genuine outages — the opening device-open silence
-/// is `lead_in_frames` and never reaches here. Even so, a device switch
+/// `gap_frames` counts only genuine outages. The opening device-open silence is
+/// `lead_in_frames` and never reaches here — but only up to what an open can
+/// account for; see [`split_lead_in`]. Even so, a device switch
 /// mid-meeting (headphones going in) is handled gracefully and costs a fraction
 /// of a second, which is not the kind of thing to interrupt someone about.
 ///

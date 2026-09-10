@@ -41,7 +41,6 @@ const ui = {
   deviceSystem: el("device-system"),
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
-  devicesFallback: el("devices-fallback"),
   captureNotice: el("capture-notice"),
 };
 
@@ -718,74 +717,21 @@ async function showResolvedDevices(config) {
       list.find((device) => device.name === configured) ??
       list.find((device) => device.is_default) ??
       list[0];
-    // `configured !== ""` matters: with nothing configured — the default —
-    // comparing against "" made this always true, so every launch claimed both
-    // devices had fallen back. That is why "(automatic)" appeared permanently.
-    // It also matters here specifically, because the panel auto-expands on a
-    // fallback and would otherwise never stay collapsed.
-    return {
-      // `label` is for the panel; `name` stays the identity that `configured`
-      // is compared against. Comparing labels would report a fallback whenever
-      // two devices collided and kept their full names.
-      label: chosen.label ?? chosen.name,
-      automatic: configured !== "" && chosen.name !== configured,
-    };
+    // `label` is for the panel; `name` stays the identity elsewhere. Comparing
+    // labels would confuse two devices that collided and kept their full names.
+    return { label: chosen.label ?? chosen.name };
   };
 
   const mic = resolve(devices.microphones, String(config.microphone_name ?? ""));
   const system = resolve(devices.system, String(config.system_audio_name ?? ""));
 
   ui.deviceMic.textContent = mic
-    ? `${tr("microphone")}: ${mic.label}${mic.automatic ? ` (${tr("automatic")})` : ""}`
+    ? `${tr("microphone")}: ${mic.label}`
     : `${tr("microphone")}: ${tr("microphone_missing")}`;
 
   ui.deviceSystem.textContent = system
-    ? `${tr("computer_audio")}: ${system.label}${system.automatic ? ` (${tr("automatic")})` : ""}`
+    ? `${tr("computer_audio")}: ${system.label}`
     : `${tr("computer_audio")}: ${tr("computer_audio_missing")}`;
-
-  announceFallback("microphone", mic?.automatic === true);
-  announceFallback("system", system?.automatic === true);
-}
-
-/**
- * Show or hide the marker that says a device the user did not choose is in use.
- *
- * **The panel is never opened by the app.** It used to open itself here, then
- * only on the transition into a fallback, and both fought the user: the events
- * that drive this fire on a 1.5-second poll and again whenever the recorder
- * opens a stream, so a panel closed during a meeting reopened moments later.
- *
- * The warning still has to be reachable — a fallback means the recording is not
- * coming from the device that was chosen, which is worth knowing before the
- * meeting rather than after. A dot in the header carries that while collapsed,
- * and the panel opens only when the user opens it.
- *
- * @param {boolean} active
- */
-/**
- * Which sources are not on the device the user asked for.
- *
- * Per source, because the marker is one dot for the whole panel. It used to be
- * a single boolean, so the microphone reporting its device normally cleared a
- * fallback the system audio was still in — the dot vanished while the panel
- * below it still said "(automatic)".
- */
-const fallenBack = { microphone: false, system: false };
-
-/**
- * Mark one source as using something other than the configured device.
- *
- * @param {"microphone"|"system"} source
- * @param {boolean} active
- */
-function announceFallback(source, active) {
-  fallenBack[source] = active;
-
-  if (fallenBack.microphone || fallenBack.system) {
-    ui.devicesFallback.removeAttribute("hidden");
-  } else {
-    ui.devicesFallback.setAttribute("hidden", "");
-  }
 }
 
 /**
@@ -1059,24 +1005,21 @@ function wireEvents() {
   api.on(api.EVENTS.requestStop, stopFlow);
   api.on(api.EVENTS.requestCancel, cancelFlow);
 
-  api.on(api.EVENTS.deviceMic, (name) => {
+  // Four events, two lines. The recorder distinguishes "opened the configured
+  // device" from "opened a different one", but the panel does not need to: it
+  // answers one question — which device is this recording using — and the
+  // device's own name is the whole answer.
+  const showMic = (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)}`;
-    announceFallback("microphone", false);
-  });
-  api.on(api.EVENTS.micFallback, (name) => {
-    ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)} (${tr("automatic")})`;
-    // Mid-recording is when this matters most — the device changed under you.
-    // Once, though: the recorder re-reports its device on every stream open.
-    announceFallback("microphone", true);
-  });
-  api.on(api.EVENTS.deviceSystem, (name) => {
+  };
+  const showSystem = (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)}`;
-    announceFallback("system", false);
-  });
-  api.on(api.EVENTS.systemFallback, (name) => {
-    ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)} (${tr("automatic")})`;
-    announceFallback("system", true);
-  });
+  };
+
+  api.on(api.EVENTS.deviceMic, showMic);
+  api.on(api.EVENTS.micFallback, showMic);
+  api.on(api.EVENTS.deviceSystem, showSystem);
+  api.on(api.EVENTS.systemFallback, showSystem);
 
   // Recorder diagnostics are not surfaced in the UI; the console keeps them
   // reachable without adding a log panel the original never had.
@@ -1173,6 +1116,11 @@ async function cancelFlow() {
 function wireControls() {
   ui.start.addEventListener("click", async () => {
     resetResults();
+    // The damage notice belongs to the meeting that raised it. Left standing,
+    // it reads as a report on the recording now starting — a false alarm about
+    // a meeting that has not happened yet, on the one panel whose whole value
+    // is being believed.
+    ui.captureNotice.hidden = true;
     ui.timer.textContent = "00:00:00";
     try {
       // No setRecording here: the recording_state event does it, so this

@@ -255,6 +255,14 @@ where
     // `downmix_into` is asserted equal to `to_mono_float` in the tests below.
     let mut mono: Vec<f32> = Vec::new();
 
+    // Before the capture stream, not after. The tap cannot deliver until the
+    // engine is running, so opening it second leaves the capture dead for the
+    // whole of this call — measured at 0.489s of lead-in on macOS against
+    // 0.219s for the microphone, a 0.206s skew that breaks the 100ms alignment
+    // budget. Starting the engine first costs the same wall-clock time but
+    // spends it before the tap exists, where it is nobody's outage.
+    let keep_alive = keep_engine_running(endpoint, kind);
+
     let stream = endpoint
         .device
         .build_input_stream(
@@ -274,15 +282,14 @@ where
     // with no error whatsoever — Windows risk R4.
     stream.play().map_err(|e| AudioError::Play(name.clone(), e))?;
 
-    let keep_alive = keep_engine_running(endpoint, kind);
-
     Ok(Capture {
         stream,
         _keep_alive: keep_alive,
     })
 }
 
-/// Keep the Windows audio engine running so loopback capture delivers.
+/// Keep the audio engine running so loopback capture delivers while the output
+/// device is idle. Required on **both** Windows and macOS.
 ///
 /// # The bug this exists for
 ///
@@ -305,20 +312,37 @@ where
 /// writing silence. The engine then always has a stream to mix, so loopback
 /// always has packets to hand over. It is inaudible: every sample is zero.
 ///
-/// macOS needs none of this — a Core Audio process tap delivers regardless —
-/// so this is a no-op there.
+/// # Why macOS is not the exception this used to claim
+///
+/// This was Windows-only, on the strength of the M0 spike's verdict that a Core
+/// Audio process tap "delivers regardless" (`spikes/loopback-probe/RESULTS-macos.md`).
+/// That verdict was measured on **EarPods**, and the same document lists idle
+/// gating on the built-in speakers as never cleanly measured. The
+/// generalisation was wrong.
+///
+/// Measured on a MacBook Air, macOS 26.6.2, `cargo run --bin rec -- --seconds 25`
+/// with nothing playing: the system track came out as 25.490s of gap — every
+/// frame silence padding — while the microphone on the same run was perfect.
+/// With audio playing, the same code captures cleanly and the watchdog never
+/// fires. The tap is idle-gated on the built-in speakers exactly as WASAPI
+/// loopback is on Windows.
+///
+/// Beware measuring this casually: macOS keeps the output device running for a
+/// while after playback stops, so a run started shortly after any sound will
+/// capture fine and look like a pass. Only a cold, genuinely silent run shows
+/// the fault.
 fn keep_engine_running(endpoint: &Endpoint, kind: SourceKind) -> Option<Stream> {
     if kind != SourceKind::SystemAudio {
         return None;
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = endpoint;
         None
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         // `SupportedStreamConfig` is `Copy`; cloning it trips `clone_on_copy`.
         let config: StreamConfig = endpoint.config.into();

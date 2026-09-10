@@ -276,6 +276,15 @@ fn run(
     let mut gap_started_at: Option<Instant> = None;
     let mut current: Option<OpenStream> = None;
     let mut current_name = String::new();
+    // The device this track is *trying* to be on. Starts as the user's choice
+    // and moves with the OS default output when detector 4 follows it.
+    //
+    // Without this, following the default cannot work for a user who named a
+    // device: `choose_system_failover` keeps the configured device whenever it
+    // is still present, so the reopen would land straight back on the speakers
+    // the audio had just left, and detector 3b would drag it back even if it
+    // did not. Both consult this instead of the raw configuration.
+    let mut effective_name = config.configured_name.clone();
     let mut automatic_fallback = false;
     let mut ever_opened = false;
     let mut last_device_check = Instant::now();
@@ -322,13 +331,13 @@ fn run(
                 SourceKind::Microphone => policy::choose_microphone_failover(
                     &snapshot.devices,
                     &current_name,
-                    &config.configured_name,
+                    &effective_name,
                     snapshot.default_id(),
                 ),
                 SourceKind::SystemAudio => policy::choose_system_failover(
                     &snapshot.devices,
                     &current_name,
-                    &config.configured_name,
+                    &effective_name,
                     snapshot.default_id(),
                 ),
             };
@@ -465,7 +474,18 @@ fn run(
                         // tracks come to start at the same instant; calling it
                         // damage would report every healthy meeting as broken.
                         if std::mem::take(&mut gap_is_lead_in) {
-                            lead_in_frames += frames as u64;
+                            // Only the part of it that a device open can
+                            // account for. An idle-gated tap delivering
+                            // nothing for its first twelve seconds is not
+                            // lead-in, and calling it that is what let a
+                            // meeting missing its opening pass as intact.
+                            let (lead_in, over) = policy::split_lead_in(
+                                frames,
+                                TARGET_SAMPLE_RATE,
+                                open_stream.open_duration.as_secs_f64(),
+                            );
+                            lead_in_frames += lead_in;
+                            gap_frames += over;
                         } else {
                             gap_frames += frames as u64;
                         }
@@ -606,11 +626,8 @@ fn run(
                 // otherwise tear the stream down every second, forever.
                 // `returned_to_configured` latches until the device goes away
                 // again, so each reappearance is worth exactly one attempt.
-                let configured_present = !config.configured_name.is_empty()
-                    && snapshot
-                        .devices
-                        .iter()
-                        .any(|d| d.name == config.configured_name);
+                let configured_present = !effective_name.is_empty()
+                    && snapshot.devices.iter().any(|d| d.name == effective_name);
 
                 if !configured_present {
                     returned_to_configured = false;
@@ -618,7 +635,7 @@ fn run(
 
                 if !returned_to_configured
                     && policy::should_return_to_configured(
-                        &config.configured_name,
+                        &effective_name,
                         &current_name,
                         configured_present,
                     )
@@ -627,7 +644,7 @@ fn run(
                     let _ = events.send(Event::Log(format!(
                         "{}: \"{}\" is back; returning to it from \"{}\"",
                         kind.label(),
-                        config.configured_name,
+                        effective_name,
                         current_name
                     )));
 
@@ -672,8 +689,20 @@ fn run(
                 // Both were real: measured together they produced 17 teardowns
                 // in 60 s, never once switching device, and cost 21.7 s of the
                 // system track. Do not "simplify" either one away.
+                // **It is not restricted to users who named no device.** It
+                // used to be, and that made it dead code for almost everyone:
+                // naming a system-audio device in Settings — the normal thing
+                // to do — switched the detector off entirely. Measured on
+                // macOS with wired EarPods plugged in mid-recording: 28
+                // seconds of the meeting written as digital silence, `gap=0`,
+                // and a closing "VERDICT: capture looks intact". Most people
+                // wear headphones in meetings, so this was the common case,
+                // not an edge one.
+                //
+                // Following the default is what the Settings choice means in
+                // practice — "which output to listen to", not "record silence
+                // if my audio goes anywhere else".
                 if kind == SourceKind::SystemAudio
-                    && config.configured_name.is_empty()
                     && snapshot.default_id() != known_default_id.as_deref()
                 {
                     let new_default = snapshot
@@ -689,6 +718,16 @@ fn run(
                          being captured"
                     )));
 
+                    // Move the target with the audio. `choose_system_failover`
+                    // keeps the configured device whenever it is present, so
+                    // leaving this alone would reopen on the device the sound
+                    // just left — and detector 3b would pull it back there on
+                    // the next poll even if it did not.
+                    //
+                    // Unplugging restores it: the default returns to the
+                    // configured device, this fires again, and `effective_name`
+                    // becomes the user's choice once more.
+                    effective_name = new_default.to_string();
                     known_default_id = snapshot.default_id().map(str::to_string);
                     current_name.clear();
                     close_stream(
@@ -889,6 +928,10 @@ struct OpenStream {
     chunks: Receiver<Vec<f32>>,
     source_rate: u32,
     last_data: Instant,
+    /// How long this stream took to open. The opening silence is allowed to be
+    /// at least this long before any of it counts as a hole — see
+    /// [`policy::split_lead_in`].
+    open_duration: Duration,
     overflows: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
     /// What cpal said when the stream errored, if it did.
@@ -971,10 +1014,11 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         },
     )?;
 
+    let open_duration = open_started.elapsed();
     let _ = events.send(Event::Log(format!(
         "{}: stream open took {:.0}ms",
         kind.label(),
-        open_started.elapsed().as_secs_f64() * 1000.0
+        open_duration.as_secs_f64() * 1000.0
     )));
 
     Ok(OpenStream {
@@ -982,6 +1026,7 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         chunks: rx,
         source_rate,
         last_data: Instant::now(),
+        open_duration,
         overflows,
         failed,
         last_error,
