@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod commands;
+pub mod diagnostics;
 pub mod ollama;
 pub mod openai;
 pub mod pipeline;

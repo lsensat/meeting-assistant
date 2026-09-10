@@ -47,6 +47,13 @@ pub struct AppState {
     /// collected afterwards. Without this the recording would keep running
     /// while the title dialog was open, capturing the user typing a name.
     pub pending: Mutex<Option<crate::session::SessionSummary>>,
+    /// The diagnostics file for the recording in progress.
+    ///
+    /// Lives here rather than in the session so `stop_recording` can write the
+    /// outcome — track lengths, overflow and gap counts, the damage verdict —
+    /// into the same file the recorder threads were writing to, after the
+    /// session itself has been consumed by `stop`.
+    pub meeting_log: Mutex<Option<std::sync::Arc<crate::diagnostics::MeetingLog>>>,
 }
 
 impl AppState {
@@ -60,6 +67,7 @@ impl AppState {
             muted: Arc::new(AtomicBool::new(false)),
             downloading: Arc::new(AtomicBool::new(false)),
             pending: Mutex::new(None),
+            meeting_log: Mutex::new(None),
         }
     }
 
