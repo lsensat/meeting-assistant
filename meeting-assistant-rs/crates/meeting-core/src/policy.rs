@@ -715,3 +715,70 @@ mod damage_tests {
         ));
     }
 }
+
+/// How long to wait before reopening a capture device that just failed.
+///
+/// # Why a device that fails needs to be left alone for a moment
+///
+/// Reopening on failure with no delay is a storm. Measured on a real machine: a
+/// USB headset opened for capture while the *same* headset was open for
+/// loopback reported "a buffer underrun or overrun occurred" **35 times in 4.4
+/// seconds** — an open every 120 ms, each costing 60-70 ms of device work, on
+/// the machine that was supposed to be recording a meeting.
+///
+/// Nothing was gained by trying that often. The silence written to cover an
+/// outage is measured from wall-clock time, so a track is no shorter for having
+/// been retried less.
+///
+/// Doubling from 250 ms, capped at 4 s: quick enough that a device which
+/// recovers is picked up almost immediately, slow enough that one which cannot
+/// is checked fifteen times a minute rather than five hundred.
+pub fn reopen_backoff_ms(consecutive_failures: u32) -> u64 {
+    const BASE_MS: u64 = 250;
+    const CAP_MS: u64 = 4_000;
+
+    if consecutive_failures <= 1 {
+        return BASE_MS;
+    }
+    // `saturating_sub` keeps the shift in range; 5 doublings reaches the cap.
+    let shift = (consecutive_failures - 1).min(5);
+    (BASE_MS << shift).min(CAP_MS)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn the_first_failure_retries_promptly() {
+        // A one-off blip should not cost the user a pause.
+        assert_eq!(reopen_backoff_ms(0), 250);
+        assert_eq!(reopen_backoff_ms(1), 250);
+    }
+
+    #[test]
+    fn repeated_failures_back_off_and_then_stop_growing() {
+        assert_eq!(reopen_backoff_ms(2), 500);
+        assert_eq!(reopen_backoff_ms(3), 1_000);
+        assert_eq!(reopen_backoff_ms(4), 2_000);
+        assert_eq!(reopen_backoff_ms(5), 4_000);
+        assert_eq!(reopen_backoff_ms(6), 4_000, "capped");
+        assert_eq!(reopen_backoff_ms(u32::MAX), 4_000, "still capped");
+    }
+
+    /// The storm this exists to prevent, in numbers.
+    #[test]
+    fn a_failing_device_is_retried_far_less_than_before() {
+        // The observed failure: 35 opens in 4.4s, i.e. roughly every 125ms.
+        let mut elapsed = 0u64;
+        let mut attempts = 0u32;
+        while elapsed < 4_400 {
+            attempts += 1;
+            elapsed += reopen_backoff_ms(attempts);
+        }
+        assert!(
+            attempts <= 6,
+            "still storming: {attempts} opens in 4.4s, was 35"
+        );
+    }
+}

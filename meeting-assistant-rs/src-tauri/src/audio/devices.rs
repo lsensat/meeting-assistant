@@ -212,12 +212,23 @@ pub fn would_capture_microphone_instead(endpoint: &Endpoint) -> bool {
 /// `on_chunk` runs on the driver's **realtime thread**. It must not allocate,
 /// lock or block — see `recorder.rs`, where it is a `try_send` into a bounded
 /// channel and nothing else.
+/// A capture stream, plus anything that must outlive it for audio to flow.
+pub struct Capture {
+    pub stream: Stream,
+    /// A render stream playing silence, on Windows loopback only.
+    ///
+    /// See [`keep_engine_running`]. Dropping this stops the audio engine and
+    /// the loopback capture goes silent again, so it is held here rather than
+    /// left to the caller to remember.
+    _keep_alive: Option<Stream>,
+}
+
 pub fn open_capture<C, E>(
     endpoint: &Endpoint,
     kind: SourceKind,
     mut on_chunk: C,
     on_error: E,
-) -> Result<Stream, AudioError>
+) -> Result<Capture, AudioError>
 where
     C: FnMut(&[f32]) + Send + 'static,
     E: FnMut(cpal::Error) + Send + 'static,
@@ -261,10 +272,74 @@ where
 
     // cpal 0.18 no longer auto-starts streams. Forgetting this records silence
     // with no error whatsoever — Windows risk R4.
-    stream.play().map_err(|e| AudioError::Play(name, e))?;
+    stream.play().map_err(|e| AudioError::Play(name.clone(), e))?;
 
-    let _ = kind;
-    Ok(stream)
+    let keep_alive = keep_engine_running(endpoint, kind);
+
+    Ok(Capture {
+        stream,
+        _keep_alive: keep_alive,
+    })
+}
+
+/// Keep the Windows audio engine running so loopback capture delivers.
+///
+/// # The bug this exists for
+///
+/// A 51-second recording on Windows captured **zero** system-audio samples:
+/// every frame written was silence padding, across two different output
+/// devices, with the stream reopening successfully in 6-8ms each time and the
+/// watchdog firing 23 times. The microphone on the same machine was fine.
+///
+/// WASAPI loopback on an **idle** render endpoint produces no packets at all —
+/// not silence packets, nothing. Nothing was playing through the speakers, so
+/// there was nothing to capture, and the recorder read that as a device that
+/// had disappeared.
+///
+/// A meeting normally has audio playing, which is why this was not caught
+/// earlier: the failure only shows when the other side is quiet, which is also
+/// when a meeting has least to lose — until a call is silent for a stretch and
+/// that stretch is simply missing.
+///
+/// The fix is the standard one: hold an output stream on the same device
+/// writing silence. The engine then always has a stream to mix, so loopback
+/// always has packets to hand over. It is inaudible: every sample is zero.
+///
+/// macOS needs none of this — a Core Audio process tap delivers regardless —
+/// so this is a no-op there.
+fn keep_engine_running(endpoint: &Endpoint, kind: SourceKind) -> Option<Stream> {
+    if kind != SourceKind::SystemAudio {
+        return None;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = endpoint;
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let config: StreamConfig = endpoint.config.clone().into();
+        let stream = endpoint
+            .device
+            .build_output_stream(
+                &config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // Silence. The point is that the engine has a stream to
+                    // mix, not that anything is heard.
+                    data.fill(0.0);
+                },
+                // A failure here costs the loopback fix, not the recording, so
+                // it is swallowed rather than propagated.
+                move |_| {},
+                None,
+            )
+            .ok()?;
+
+        stream.play().ok()?;
+        Some(stream)
+    }
 }
 
 /// Allocation-free equivalent of [`meeting_core::convert::to_mono_float`].

@@ -322,3 +322,88 @@ mod tests {
         }
     }
 }
+
+/// Words of actual speech in a transcript, ignoring the timestamps and speaker
+/// tags this module adds.
+///
+/// A line is `[00:01:23] ME: some words`, so the prefix is stripped before
+/// counting — otherwise a transcript of pure silence still scores two "words"
+/// per line for its own formatting.
+pub fn spoken_word_count(transcript: &str) -> usize {
+    transcript
+        .lines()
+        .filter_map(|line| {
+            // Everything after the first `: ` that follows a `]`.
+            let after_time = line.split_once(']')?.1;
+            let spoken = after_time.split_once(": ").map(|(_, rest)| rest)?;
+            Some(spoken)
+        })
+        .flat_map(str::split_whitespace)
+        // Punctuation-only tokens are not speech.
+        .filter(|word| word.chars().any(char::is_alphanumeric))
+        .count()
+}
+
+/// Below this, a transcript has nothing a summary could be about.
+///
+/// # Why a summary is refused rather than attempted
+///
+/// A real 51-second recording produced this transcript, in full:
+///
+/// ```text
+/// [00:00:00] ME: Thank you.
+/// [00:00:30] ME: Thank you.
+/// ```
+///
+/// The model returned a summary containing "Potential delays in project X" and
+/// "Need to discuss supplier Y's performance". There is no project X and no
+/// supplier Y. Both the system prompt and the user's own custom prompt said not
+/// to invent information, and it did anyway — a small quantised model asked to
+/// fill named sections will fill them.
+///
+/// Losing audio is recoverable: record again. A confident, fabricated account of
+/// a meeting is worse, because nothing in it signals that it is false, and it is
+/// exactly the artefact the user keeps and later trusts.
+///
+/// Twenty words is deliberately low. It is not a judgement about whether a
+/// meeting was worthwhile — it is the point below which there is demonstrably
+/// nothing to summarise.
+pub const MIN_WORDS_TO_SUMMARISE: usize = 20;
+
+/// Whether there is enough speech for a summary to be about anything.
+pub fn is_summarisable(transcript: &str) -> bool {
+    spoken_word_count(transcript) >= MIN_WORDS_TO_SUMMARISE
+}
+
+#[cfg(test)]
+mod substance_tests {
+    use super::*;
+
+    #[test]
+    fn timestamps_and_speaker_tags_are_not_speech() {
+        let transcript = "[00:00:00] ME: Thank you.\n\n[00:00:30] ME: Thank you.";
+        assert_eq!(spoken_word_count(transcript), 4, "counted the formatting");
+        assert!(
+            !is_summarisable(transcript),
+            "this is the transcript that produced an invented summary"
+        );
+    }
+
+    #[test]
+    fn a_real_conversation_is_summarisable() {
+        let transcript = "[00:00:00] ME: We agreed to move the launch to Friday because \
+             the supplier confirmed the parts arrive Thursday morning and QA needs a full day.";
+        assert!(is_summarisable(transcript));
+    }
+
+    #[test]
+    fn punctuation_alone_is_not_speech() {
+        assert_eq!(spoken_word_count("[00:00:00] ME: . . . ? !"), 0);
+    }
+
+    #[test]
+    fn an_empty_transcript_counts_nothing() {
+        assert_eq!(spoken_word_count(""), 0);
+        assert!(!is_summarisable(""));
+    }
+}
