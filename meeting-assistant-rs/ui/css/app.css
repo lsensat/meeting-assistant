@@ -645,20 +645,6 @@ html, body {
 }
 
 /* Fills whatever the label leaves, so the row reads as one ruled line. */
-/*
- * Amber, like the readiness lamps, and for the same reason: something is not as
- * configured. Small and inline so a collapsed panel can carry the warning
- * without the panel having to open itself.
- */
-.fallback-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--amber-dark);
-  border: 1px solid var(--steel-dark);
-}
-
 .devices-toggle .rule {
   flex: 1;
   border-top: 1px solid var(--steel);
