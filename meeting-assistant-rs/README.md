@@ -104,7 +104,17 @@ of nothing, with no error anywhere.
 
 The recorder detects the switch and re-opens on the new default output, filling
 the changeover with the exact amount of silence so the two tracks stay aligned.
-If a system-audio track ever comes back empty, this is the first thing to check.
+**This follows the default output even when you have named a device in
+Settings** — the choice there means "which output to listen to", not "record
+silence if my audio goes somewhere else". `recorder.log` records every switch.
+
+Measured, wired EarPods plugged in at 24s and pulled at 51s of an 89s meeting:
+audio captured continuously at −14 to −22 dBFS throughout, 0.697s of gap across
+both changeovers, 0.031s of skew between the tracks.
+
+If a system-audio track ever comes back empty, this is still the first thing to
+check — the tap is bound to one device, and only the switches the OS reports as
+a default change can be followed.
 
 ### Ad-hoc signing re-prompts after every rebuild
 
