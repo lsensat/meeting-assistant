@@ -468,11 +468,72 @@ struct Inner {
     jobs: VecDeque<Job>,
     /// Id of the job the worker currently holds, if any.
     running: Option<String>,
-    paused: bool,
+    /// The user pressed pause. Persisted as `config.processing_paused`.
+    paused_by_user: bool,
+    /// A recording is in progress, so the machine belongs to it.
+    ///
+    /// Deliberately **not** the same flag as `paused_by_user`, and deliberately
+    /// not persisted. Folding the two together would mean stopping a recording
+    /// resumed work the user had deliberately paused, and would let a transient
+    /// condition be written to `config.json` as a preference.
+    ///
+    /// In memory only: a crash mid-recording leaves nothing to clear on the next
+    /// launch, which is the behaviour that needs no recovery code.
+    ///
+    /// Not an `AtomicBool`. Checked outside the mutex it would reintroduce a
+    /// lost wake-up — the waiter reads the flag, and before it parks the
+    /// releaser stores `false` and notifies. No further notify is coming for a
+    /// release, so the queue would sleep until some unrelated `enqueue`. Holding
+    /// `Inner` is what makes the predicate and the wait atomic.
+    held_for_recording: bool,
     /// Live percentage for the running job, updated by the worker.
     percent: u8,
     /// Set when the worker should exit entirely, at shutdown.
     stopped: bool,
+}
+
+/// Why the queue is not dispatching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlockedReason {
+    /// The user pressed pause.
+    User,
+    /// A recording is in progress. See [`RecordingHold`].
+    Recording,
+}
+
+/// Holds the queue for as long as it exists.
+///
+/// # Why a guard and not a pair of calls
+///
+/// The release has to happen on every path out of a recording: the `?` returns
+/// in `stop_recording` and `cancel_recording`, the early return when a folder
+/// sits outside the output directory, a panic in a writer thread, and a failure
+/// part-way through `RecordingSession::start`. Written as "remember to call
+/// `hold(false)`" that is one refactor away from a queue that never restarts —
+/// a worse bug than the one the hold fixes.
+///
+/// So the hold is a value owned by [`crate::session::RecordingSession`], and its
+/// lifetime *is* the recording's. The ordering works out: `RecordingSession::stop`
+/// moves out only the folder and the track results, so this drops at the end of
+/// that function — **after** the writer threads are joined and the WAVs flushed,
+/// which is exactly when processing may safely resume.
+pub struct RecordingHold {
+    queue: std::sync::Arc<Queue>,
+}
+
+impl RecordingHold {
+    /// Stop the queue until this value is dropped.
+    pub fn acquire(queue: std::sync::Arc<Queue>) -> Self {
+        queue.hold_for_recording(true);
+        Self { queue }
+    }
+}
+
+impl Drop for RecordingHold {
+    fn drop(&mut self) {
+        self.queue.hold_for_recording(false);
+    }
 }
 
 /// The processing queue: one worker, one global pause.
@@ -526,8 +587,33 @@ impl Queue {
         self.wake.notify_all();
     }
 
+    /// Whether the **user** paused processing.
+    ///
+    /// Deliberately not "is the queue stopped". This drives the pause button's
+    /// icon and its next action, and the button's action writes
+    /// `config.processing_paused` to disk. If this also reported a recording
+    /// hold, then pausing, recording, and pressing the button that now reads
+    /// "Resume" would clear the user's pause **and persist that**, while nothing
+    /// visibly happened because the hold was still on — the pause silently gone
+    /// once the recording ended.
+    ///
+    /// Use [`Queue::blocked_reason`] to ask why the queue is not moving.
     pub fn is_paused(&self) -> bool {
-        self.lock().paused
+        self.lock().paused_by_user
+    }
+
+    /// Why the queue is not dispatching, for the UI to explain.
+    pub fn blocked_reason(&self) -> Option<BlockedReason> {
+        let inner = self.lock();
+        // A recording outranks a user pause: it is the more surprising of the
+        // two, and the one the user has not chosen.
+        if inner.held_for_recording {
+            Some(BlockedReason::Recording)
+        } else if inner.paused_by_user {
+            Some(BlockedReason::User)
+        } else {
+            None
+        }
     }
 
     /// True while a meeting is being processed or is waiting to be.
@@ -547,11 +633,46 @@ impl Queue {
     /// large-v3 transcription can run for many minutes. Nothing is lost —
     /// the pipeline persists its progress before returning.
     pub fn set_paused(&self, paused: bool) {
-        self.lock().paused = paused;
-        if paused {
+        let mut inner = self.lock();
+        inner.paused_by_user = paused;
+        self.halt_if_blocked(&inner);
+        drop(inner);
+        self.wake.notify_all();
+    }
+
+    /// Hold or release the queue for a live recording.
+    ///
+    /// Called only by [`RecordingHold`], so the release cannot be forgotten on
+    /// an error path.
+    pub(crate) fn hold_for_recording(&self, held: bool) {
+        let mut inner = self.lock();
+        inner.held_for_recording = held;
+        self.halt_if_blocked(&inner);
+        drop(inner);
+        self.wake.notify_all();
+    }
+
+    /// Abort the running job if either reason to stop now applies.
+    ///
+    /// # Why the caller must still hold `Inner`
+    ///
+    /// The flag and the abort have to be one atomic step. Releasing the lock
+    /// between them allows: set the flag, release, be preempted; the other
+    /// reason clears and the worker takes `Inner`, installs a **fresh** control
+    /// and starts job J; this thread resumes and aborts J's control. J dies with
+    /// no live reason to stop it, having paid for a model load, and writes a
+    /// spurious `Paused` state.
+    ///
+    /// That flaw existed here before the recording hold, reachable by a fast
+    /// pause/unpause. Taking `&MutexGuard` rather than re-locking makes it
+    /// impossible to write the broken version by accident.
+    ///
+    /// Lock order is `Inner` → `control`, the same as `next()`. Nothing takes
+    /// them the other way round, so this introduces no cycle.
+    fn halt_if_blocked(&self, inner: &std::sync::MutexGuard<'_, Inner>) {
+        if inner.paused_by_user || inner.held_for_recording {
             self.control.lock().expect("control poisoned").abort();
         }
-        self.wake.notify_all();
     }
 
     /// Remove a meeting from the queue, aborting it first if it is running.
@@ -651,19 +772,46 @@ impl Queue {
                 return None;
             }
 
-            if !inner.paused {
-                if let Some(index) = inner.jobs.iter().position(|j| j.state.stage.is_outstanding())
-                {
-                    let job = inner.jobs[index].clone();
-                    inner.running = Some(job.state.id.clone());
-                    inner.percent = 0;
-                    *self.control.lock().expect("control poisoned") = TranscriptionControl::new();
-                    return Some(job);
-                }
+            if let Some(job) = self.dispatch(&mut inner) {
+                return Some(job);
             }
 
             inner = self.wake.wait(inner).expect("queue poisoned");
         }
+    }
+
+    /// Take the next job if one may run right now, without blocking.
+    ///
+    /// Shares [`Queue::dispatch`] with `next` rather than repeating the
+    /// conditions: a second copy of "may anything run" is how the two would
+    /// come to disagree, and disagreeing here means either a job running during
+    /// a recording or a queue that never starts.
+    pub fn try_next(&self) -> Option<Job> {
+        let mut inner = self.lock();
+        if inner.stopped {
+            return None;
+        }
+        self.dispatch(&mut inner)
+    }
+
+    /// Hand out a job if nothing forbids it.
+    ///
+    /// The control is replaced **here, under `Inner`**, which is what makes the
+    /// flag-then-abort sequence in `halt_if_blocked` safe: a thread that sets a
+    /// flag while holding the lock either wins (and this returns nothing) or
+    /// loses (and its abort lands on the control this just installed, which is
+    /// the one the job will use).
+    fn dispatch(&self, inner: &mut std::sync::MutexGuard<'_, Inner>) -> Option<Job> {
+        if inner.paused_by_user || inner.held_for_recording {
+            return None;
+        }
+
+        let index = inner.jobs.iter().position(|j| j.state.stage.is_outstanding())?;
+        let job = inner.jobs[index].clone();
+        inner.running = Some(job.state.id.clone());
+        inner.percent = 0;
+        *self.control.lock().expect("control poisoned") = TranscriptionControl::new();
+        Some(job)
     }
 
     /// The running job's handle, for polling progress from another thread.
@@ -860,6 +1008,119 @@ mod queue_tests {
         queue.set_paused(true);
         assert!(queue.is_paused());
         assert!(control.is_aborted());
+    }
+
+    // --- recording holds the queue -------------------------------------
+
+    /// A live recording outranks processing. This is the whole point.
+    #[test]
+    fn a_held_queue_hands_out_no_work() {
+        let queue = std::sync::Arc::new(Queue::new());
+        queue.enqueue(job("2026-09-10_10-00-00", Stage::Queued));
+
+        assert!(queue.has_outstanding(), "fixture is wrong");
+
+        let hold = RecordingHold::acquire(std::sync::Arc::clone(&queue));
+        assert!(
+            queue.try_next().is_none(),
+            "the queue dispatched work while a recording was running"
+        );
+
+        drop(hold);
+        assert!(
+            queue.try_next().is_some(),
+            "the queue never restarted after the recording ended"
+        );
+    }
+
+    /// The two reasons are independent. Releasing one must not start work the
+    /// other still forbids.
+    #[test]
+    fn a_user_pause_and_a_recording_hold_do_not_cancel_each_other() {
+        let queue = std::sync::Arc::new(Queue::new());
+        queue.enqueue(job("2026-09-10_10-00-00", Stage::Queued));
+
+        queue.set_paused(true);
+        let hold = RecordingHold::acquire(std::sync::Arc::clone(&queue));
+
+        drop(hold);
+        assert!(
+            queue.try_next().is_none(),
+            "ending the recording resumed work the user had paused"
+        );
+        assert!(queue.is_paused(), "the user's pause was lost");
+
+        queue.set_paused(false);
+        assert!(queue.try_next().is_some(), "unpausing did not resume work");
+    }
+
+    /// `is_paused` drives the pause button, whose action writes
+    /// `config.processing_paused` to disk. If it reported the hold as well, a
+    /// user would see "Resume" during a recording, press it, and silently lose
+    /// the pause they had set.
+    #[test]
+    fn a_recording_hold_is_not_reported_as_a_user_pause() {
+        let queue = std::sync::Arc::new(Queue::new());
+        let _hold = RecordingHold::acquire(std::sync::Arc::clone(&queue));
+
+        assert!(
+            !queue.is_paused(),
+            "a recording hold must not masquerade as the user's pause"
+        );
+        assert_eq!(queue.blocked_reason(), Some(BlockedReason::Recording));
+    }
+
+    #[test]
+    fn the_reason_says_which_and_a_recording_outranks_a_pause() {
+        let queue = std::sync::Arc::new(Queue::new());
+        assert_eq!(queue.blocked_reason(), None);
+
+        queue.set_paused(true);
+        assert_eq!(queue.blocked_reason(), Some(BlockedReason::User));
+
+        let hold = RecordingHold::acquire(std::sync::Arc::clone(&queue));
+        assert_eq!(
+            queue.blocked_reason(),
+            Some(BlockedReason::Recording),
+            "a recording is the more surprising of the two and should be named"
+        );
+
+        drop(hold);
+        assert_eq!(queue.blocked_reason(), Some(BlockedReason::User));
+    }
+
+    /// Holding must abort a transcription already in flight, not merely stop
+    /// the next one from starting.
+    #[test]
+    fn taking_the_hold_aborts_the_running_job() {
+        let queue = std::sync::Arc::new(Queue::new());
+        let control = queue.control.lock().expect("control").clone();
+        assert!(!control.is_aborted());
+
+        let _hold = RecordingHold::acquire(std::sync::Arc::clone(&queue));
+        assert!(
+            control.is_aborted(),
+            "a recording started and the running transcription kept going"
+        );
+    }
+
+    /// Dropping the guard is the only way the hold is released, so it must
+    /// survive every way a recording can end — including a panic.
+    #[test]
+    fn the_hold_is_released_even_if_the_owner_panics() {
+        let queue = std::sync::Arc::new(Queue::new());
+        let q = std::sync::Arc::clone(&queue);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _hold = RecordingHold::acquire(q);
+            panic!("a writer thread died");
+        }));
+
+        assert_eq!(
+            queue.blocked_reason(),
+            None,
+            "a panic during a recording left the queue held forever"
+        );
     }
 }
 

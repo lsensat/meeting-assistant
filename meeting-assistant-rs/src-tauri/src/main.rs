@@ -72,6 +72,7 @@ fn main() {
             commands::startup_check,
             commands::list_jobs,
             commands::is_processing_paused,
+            commands::processing_blocked_reason,
             commands::set_processing_paused,
             commands::discard_job,
             commands::retry_job,

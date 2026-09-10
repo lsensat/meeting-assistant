@@ -368,6 +368,10 @@ pub async fn download_whisper_model(
                     percent,
                 },
             );
+            // A download the user started deliberately from Settings or the
+            // wizard is not interrupted by a recording: they asked for it, and
+            // abandoning it wastes what has already arrived.
+            true
         })
         .map(|_| ())
         .map_err(|e| e.to_string());
@@ -874,8 +878,16 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
         &config.microphone_name,
         &config.system_audio_name,
         Arc::clone(&state.muted),
+        // Recording outranks processing. The session holds the queue for as
+        // long as it lives; see `queue::RecordingHold`.
+        Arc::clone(&state.queue),
     )
     .map_err(|e| e.to_string())?;
+
+    // The queue is now held, so its cards stop moving. `startQueuePolling`
+    // re-renders only while something is running, so without this the view
+    // freezes mid-meeting and every card reads "Waiting" with no explanation.
+    emit_queue_changed(&app);
 
     // Forward recorder events to the UI. The receiver is cloned out of the
     // session so this thread does not hold the state lock.
@@ -991,6 +1003,8 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
             ),
         );
         *state.current_folder.lock().expect("folder poisoned") = None;
+        // The recording is over, so the queue is no longer held.
+        emit_queue_changed(&app);
         emit_recording_state(&app, false, false);
         return Ok(());
     }
@@ -1003,6 +1017,8 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
     }
 
     *state.current_folder.lock().expect("folder poisoned") = None;
+    // Same as the early return above: the session is gone, so is the hold.
+    emit_queue_changed(&app);
     emit_recording_state(&app, false, false);
     Ok(())
 }
@@ -1396,6 +1412,16 @@ pub fn list_jobs(state: State<AppState>) -> Vec<queue::JobView> {
 #[tauri::command(async)]
 pub fn is_processing_paused(state: State<AppState>) -> bool {
     state.queue.is_paused()
+}
+
+/// Why the queue is not moving, so the UI can say which.
+///
+/// Separate from [`is_processing_paused`], which must keep meaning *the user
+/// pressed pause* because it drives that button's next action — and that action
+/// writes `config.processing_paused` to disk.
+#[tauri::command(async)]
+pub fn processing_blocked_reason(state: State<AppState>) -> Option<queue::BlockedReason> {
+    state.queue.blocked_reason()
 }
 
 /// Hold, or release, all processing.

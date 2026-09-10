@@ -57,7 +57,12 @@ fn main() {
 
     // The CLI never mutes; the flag exists so the app can pre-set it.
     let muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let session = match RecordingSession::start(&out, &mic, &system, muted) {
+    // A queue of its own, empty and with no worker: this binary records and
+    // exits, so there is nothing to hold back. The session still needs one
+    // because the hold is a field of the session rather than something the
+    // caller remembers to take and release.
+    let queue = std::sync::Arc::new(meeting_assistant::queue::Queue::new());
+    let session = match RecordingSession::start(&out, &mic, &system, muted, queue) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("could not start recording: {e}");

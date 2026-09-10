@@ -394,9 +394,17 @@ fn download_client() -> Result<&'static reqwest::blocking::Client, WhisperError>
 ///
 /// Downloads to a temporary file and renames on success, so an interrupted
 /// download can never be mistaken for an installed model.
+/// Download a model, reporting progress and honouring an abort.
+///
+/// `on_progress` returns `false` to stop. The alternative — a plain progress
+/// callback — meant a download could not be interrupted at all, so a recording
+/// started while `large-v3` was arriving competed with 3.1 GB of transfer and
+/// disk writes for as long as that took. The partial file is left where it is;
+/// it is written to a `.part` path and only renamed on success, so an abandoned
+/// download is never mistaken for an installed model.
 pub fn download_model(
     id: &str,
-    mut on_progress: impl FnMut(u8),
+    mut on_progress: impl FnMut(u8) -> bool,
 ) -> Result<PathBuf, WhisperError> {
     let spec = spec(id).ok_or_else(|| WhisperError::UnknownModel(id.to_string()))?;
     let target = model_path(id);
@@ -448,7 +456,12 @@ pub fn download_model(
 
         let percent = ((written as f64 / expected as f64) * 100.0).min(100.0) as u8;
         if percent != last_percent {
-            on_progress(percent);
+            // `false` means stop. Reported as a download failure rather than a
+            // silent truncation: the caller decides whether an abort was
+            // expected, and the temporary file is discarded either way.
+            if !on_progress(percent) {
+                return Err(WhisperError::Download("download cancelled".into()));
+            }
             last_percent = percent;
         }
     }

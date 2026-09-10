@@ -26,6 +26,20 @@ pub struct RecordingSession {
     tracks: Vec<Recorder>,
     /// Kept so the caller can drain UI events while recording.
     pub events: Receiver<Event>,
+    /// Stops the processing queue for as long as this session exists.
+    ///
+    /// A field rather than something the commands acquire and release, so the
+    /// hold cannot outlive or under-live the recording. Every way out of a
+    /// recording — the `?` returns in `stop_recording` and `cancel_recording`,
+    /// the early return for a folder outside the output directory, a panic —
+    /// drops this session, and dropping this session releases the queue.
+    ///
+    /// It is listed **last** deliberately. `stop` moves out `folder` and
+    /// `tracks` and lets the rest drop at the end of the function, which is
+    /// after the writer threads are joined and the WAVs are closed. Releasing
+    /// the queue any earlier would let transcription start while this
+    /// recording's own files were still being flushed.
+    _queue_hold: crate::queue::RecordingHold,
 }
 
 #[derive(Debug)]
@@ -72,9 +86,16 @@ impl RecordingSession {
         microphone_name: &str,
         system_audio_name: &str,
         muted: Arc<AtomicBool>,
+        queue: Arc<crate::queue::Queue>,
     ) -> std::io::Result<Self> {
         let folder = folder.as_ref().to_path_buf();
         std::fs::create_dir_all(&folder)?;
+
+        // After the fallible setup above, so a recording that never starts does
+        // not leave the queue held. Acquired before the capture threads, so no
+        // transcription can be dispatched into the window where they are
+        // opening their devices.
+        let queue_hold = crate::queue::RecordingHold::acquire(queue);
 
         let stop = Arc::new(StopEvent::new());
         let (tx, events) = unbounded();
@@ -116,6 +137,7 @@ impl RecordingSession {
             folder,
             tracks,
             events,
+            _queue_hold: queue_hold,
         })
     }
 
