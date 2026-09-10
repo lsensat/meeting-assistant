@@ -490,7 +490,6 @@ fn run(
                     &mut repacketiser,
                     &muted,
                     &mut gap_started_at,
-                    &mut automatic_fallback,
                 )?;
                 continue;
             }
@@ -505,8 +504,14 @@ fn run(
 
         // --- detector 1: the stream errored out -------------------------
         if open_stream.failed.load(Ordering::Relaxed) {
+            let detail = open_stream
+                .last_error
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .unwrap_or_else(|| "no detail from cpal".to_string());
             let _ = events.send(Event::Log(format!(
-                "{} stream reported an error; reopening",
+                "{} stream reported an error; reopening — {detail}",
                 kind.label()
             )));
             close_stream(
@@ -515,7 +520,6 @@ fn run(
                     &mut repacketiser,
                     &muted,
                     &mut gap_started_at,
-                    &mut automatic_fallback,
                 )?;
             continue;
         }
@@ -536,7 +540,6 @@ fn run(
                     &mut repacketiser,
                     &muted,
                     &mut gap_started_at,
-                    &mut automatic_fallback,
                 )?;
             continue;
         }
@@ -561,7 +564,6 @@ fn run(
                     &mut repacketiser,
                     &muted,
                     &mut gap_started_at,
-                    &mut automatic_fallback,
                 )?;
                     continue;
                 }
@@ -617,7 +619,6 @@ fn run(
                     &mut repacketiser,
                     &muted,
                     &mut gap_started_at,
-                    &mut automatic_fallback,
                 )?;
                     continue;
                 }
@@ -738,13 +739,27 @@ fn write_unit(
 /// Order matters for the same reason it does at stop: drop the stream first so
 /// the callback is dead, then drain, so this cannot sit here consuming newly
 /// captured audio.
+/// Close the current stream, writing whatever it left behind.
+///
+/// # Why this no longer touches `automatic_fallback`
+///
+/// It used to end with `*automatic_fallback = true`, unconditionally. So **any**
+/// stream close — a watchdog trip, an error, a device change — marked the
+/// recording as having fallen back, no matter which device was opened next.
+///
+/// A device that blips and comes straight back therefore reported "the device
+/// set in Settings was not available" while the panel showed the device from
+/// Settings. On a machine where the watchdog fires repeatedly it was permanent.
+///
+/// Closing a stream is not falling back. Whether we fell back is knowable only
+/// at the *open*, where the device we landed on is known, and that is where
+/// `policy::is_automatic_fallback` decides it.
 fn close_stream(
     current: &mut Option<OpenStream>,
     writer: &mut TrackWriter,
     repacketiser: &mut Repacketiser,
     muted: &AtomicBool,
     gap_started_at: &mut Option<Instant>,
-    automatic_fallback: &mut bool,
 ) -> Result<(), WavError> {
     let mut outage_began = Instant::now();
 
@@ -784,7 +799,6 @@ fn close_stream(
     if gap_started_at.is_none() {
         *gap_started_at = Some(outage_began);
     }
-    *automatic_fallback = true;
     Ok(())
 }
 
@@ -797,10 +811,33 @@ struct OpenStream {
     last_data: Instant,
     overflows: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
+    /// What cpal said when the stream errored, if it did.
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, AudioError> {
     let endpoint = devices::find(id, kind)?;
+
+    // The format the device reports, against the f32 the stream asks for.
+    //
+    // This is the single most useful line in the diagnostics file. `cpal`'s
+    // `build_input_stream::<f32>` does **not** convert: it passes `F32` down and
+    // the callback does `.expect("host supplied incorrect sample type")`. A
+    // device whose shared-mode format is not float therefore either fails to
+    // open or panics on the realtime thread — and a panic there kills the
+    // callback silently, which is indistinguishable from "the device
+    // disappeared" once the watchdog notices.
+    //
+    // Whether that is what happens on a given machine had to be guessed at,
+    // repeatedly, because nothing recorded it.
+    let _ = events.send(Event::Log(format!(
+        "{}: opening \"{}\" — device reports {} Hz, {} ch, {:?}; requesting f32",
+        kind.label(),
+        endpoint.info.name,
+        endpoint.config.sample_rate(),
+        endpoint.config.channels(),
+        endpoint.config.sample_format(),
+    )));
 
     if kind == SourceKind::SystemAudio && devices::would_capture_microphone_instead(&endpoint) {
         // Risk R-M2. Not observed on macOS, where headsets enumerate as two
@@ -820,12 +857,18 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
 
     let overflows = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicBool::new(false));
+    // The error itself, not merely that there was one. Discarding it left the
+    // watchdog to report "the device disappeared" for a stream that had told us
+    // exactly what went wrong.
+    let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     let cb_overflows = Arc::clone(&overflows);
     let cb_failed = Arc::clone(&failed);
+    let cb_error = Arc::clone(&last_error);
 
     let source_rate = endpoint.info.sample_rate;
 
+    let open_started = Instant::now();
     let stream = devices::open_capture(
         &endpoint,
         kind,
@@ -839,11 +882,20 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
                 }
             }
         },
-        move |_err| {
+        move |err| {
             // Fastest of the four detectors. The writer polls this flag.
+            if let Ok(mut slot) = cb_error.lock() {
+                *slot = Some(err.to_string());
+            }
             cb_failed.store(true, Ordering::Relaxed);
         },
     )?;
+
+    let _ = events.send(Event::Log(format!(
+        "{}: stream open took {:.0}ms",
+        kind.label(),
+        open_started.elapsed().as_secs_f64() * 1000.0
+    )));
 
     Ok(OpenStream {
         _stream: stream,
@@ -852,12 +904,44 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         last_data: Instant::now(),
         overflows,
         failed,
+        last_error,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Closing a stream must not, by itself, claim a fallback.
+    ///
+    /// `close_stream` used to end with `*automatic_fallback = true`,
+    /// unconditionally — so a watchdog trip that reopened the *same* device
+    /// still told the user "the device set in Settings was not available".
+    /// On a machine where the watchdog fires repeatedly it was permanent, and
+    /// it silently defeated `policy::is_automatic_fallback`.
+    #[test]
+    fn closing_a_stream_does_not_assert_a_fallback() {
+        use meeting_core::policy::is_automatic_fallback;
+
+        // What a watchdog cycle looks like: the same device, closed and
+        // reopened. Nothing here is a fallback.
+        assert!(!is_automatic_fallback("Headset", "Headset", "Headset"));
+
+        // And the signature no longer offers a way to say otherwise: if
+        // `close_stream` regrows an `automatic_fallback` parameter, this stops
+        // compiling rather than silently regressing.
+        /// Exactly what `close_stream` may take. Regrowing an
+        /// `automatic_fallback` parameter stops this compiling.
+        type CloseStream = fn(
+            &mut Option<OpenStream>,
+            &mut TrackWriter,
+            &mut Repacketiser,
+            &AtomicBool,
+            &mut Option<Instant>,
+        ) -> Result<(), WavError>;
+
+        let _: CloseStream = close_stream;
+    }
 
     #[test]
     fn repacketiser_emits_exactly_chunk_sized_units() {

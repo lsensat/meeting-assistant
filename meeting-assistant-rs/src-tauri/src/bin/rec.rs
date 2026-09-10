@@ -62,6 +62,10 @@ fn main() {
     // because the hold is a field of the session rather than something the
     // caller remembers to take and release.
     let queue = std::sync::Arc::new(meeting_assistant::queue::Queue::new());
+    // The same file the app writes, so a capture reproduced from the CLI can be
+    // compared against one from a real meeting.
+    let log = meeting_assistant::diagnostics::MeetingLog::create(&out);
+
     let session = match RecordingSession::start(&out, &mic, &system, muted, queue) {
         Ok(session) => session,
         Err(e) => {
@@ -78,12 +82,22 @@ fn main() {
         // is visible during the run rather than only in the summary.
         while let Ok(event) = session.events.try_recv() {
             match event {
-                Event::Device(kind, name) => println!("  [{}] {name}", kind.label()),
-                Event::Fallback(kind, name) => {
-                    println!("  [{}] {name} (automatic)", kind.label())
+                Event::Device(kind, name) => {
+                    log.line(&format!("device {}: {name}", kind.label()));
+                    println!("  [{}] {name}", kind.label());
                 }
-                Event::Log(message) => println!("  · {message}"),
-                Event::Error(message) => eprintln!("  !! {message}"),
+                Event::Fallback(kind, name) => {
+                    log.line(&format!("fallback {}: {name}", kind.label()));
+                    println!("  [{}] {name} (automatic)", kind.label());
+                }
+                Event::Log(message) => {
+                    log.line(&message);
+                    println!("  · {message}");
+                }
+                Event::Error(message) => {
+                    log.line(&format!("ERROR: {message}"));
+                    eprintln!("  !! {message}");
+                }
             }
         }
 

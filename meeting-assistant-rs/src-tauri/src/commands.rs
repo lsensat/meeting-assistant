@@ -905,8 +905,26 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 
     // Forward recorder events to the UI. The receiver is cloned out of the
     // session so this thread does not hold the state lock.
+    // Everything the recorder reports, written beside the audio it reports on.
+    //
+    // This is the only place that sees every event, so it is where the meeting's
+    // diagnostics file is written. Until now these went to `Event::Log`, which
+    // the frontend forwards to `console.log` — a console a release build cannot
+    // open — so a meeting that recorded nothing but silence could not be
+    // explained at all, on the machine where it happened or anywhere else.
+    let log = std::sync::Arc::new(crate::diagnostics::MeetingLog::create(&folder));
+    log.line(&format!(
+        "configured microphone: {:?}",
+        config.microphone_name
+    ));
+    log.line(&format!(
+        "configured system audio: {:?}",
+        config.system_audio_name
+    ));
+
     let events = session.events.clone();
     let forwarder = app.clone();
+    let event_log = std::sync::Arc::clone(&log);
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
             let (name, payload) = match event {
@@ -919,9 +937,14 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
                 RecorderEvent::Log(message) => (EV_LOG, message),
                 RecorderEvent::Error(message) => (EV_ERROR, message),
             };
+            event_log.line(&format!("{name}: {payload}"));
             let _ = forwarder.emit(name, payload);
         }
+        event_log.line("recorder events ended");
     });
+
+    // Held so `stop_recording` can write the outcome into the same file.
+    *state.meeting_log.lock().expect("log poisoned") = Some(log);
 
     *state.current_folder.lock().expect("folder poisoned") = Some(folder);
     *state.session.lock().expect("session poisoned") = Some(session);
@@ -1067,6 +1090,43 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
     // arrived hours late for the ones it did cover.
     //
     // Everything needed is already in hand and no model has to run.
+    // The outcome, into the same file the recorder threads were writing to.
+    //
+    // This is the half that makes the log answer a question rather than merely
+    // describe events: the counters beside what was asked of the device tell
+    // you whether audio arrived, and if not, what the device had said about
+    // itself first.
+    if let Some(log) = state.meeting_log.lock().expect("log poisoned").take() {
+        log.line("--- stopped ---");
+        log.line(&format!("elapsed: {:.3}s", summary.elapsed_seconds));
+        for track in &summary.tracks {
+            match track {
+                Err(e) => log.line(&format!("track FAILED: {e}")),
+                Ok(t) => log.line(&format!(
+                    "{}: {:.3}s written ({} frames), overflows={}, gap={} frames ({:.3}s), \
+                     lead-in={} frames ({:.3}s), device=\"{}\", fallback={}",
+                    t.kind.label(),
+                    t.duration_seconds,
+                    t.frames,
+                    t.overflows,
+                    t.gap_frames,
+                    t.gap_frames as f64 / 48_000.0,
+                    t.lead_in_frames,
+                    t.lead_in_frames as f64 / 48_000.0,
+                    t.final_device,
+                    t.automatic_fallback,
+                )),
+            }
+        }
+        if let Some(skew) = summary.skew_seconds() {
+            log.line(&format!("skew between tracks: {skew:.3}s"));
+        }
+        match assess_capture(&summary, language) {
+            Some(d) => log.line(&format!("VERDICT: damaged — {}", d.detail.replace('\n', " / "))),
+            None => log.line("VERDICT: capture looks intact"),
+        }
+    }
+
     if let Some(damage) = assess_capture(&summary, language) {
         // Its own event rather than `EV_STATUS`, which carries only a string:
         // the status line already knows how to show a short message with the
