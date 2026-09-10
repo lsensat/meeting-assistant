@@ -860,6 +860,16 @@ input[type="password"] { cursor: text; }
    * has somewhere to put it.
    */
   max-width: 250px;
+  /*
+   * `jobTooltip` builds one field per line and joins with "\n". The default
+   * `normal` collapses those into a single run of text, so the fields ran
+   * together mid-line — "Title Started at:" then "20.01 Length: 1:31 Stage:"
+   * — which reads as garbled rather than as a list.
+   *
+   * `pre-line`, not `pre`: newlines are kept, but a line longer than the
+   * max-width above still wraps instead of overflowing the window.
+   */
+  white-space: pre-line;
 }
 #tooltip.visible { opacity: 1; }
 
