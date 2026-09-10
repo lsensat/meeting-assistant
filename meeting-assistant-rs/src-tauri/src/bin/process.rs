@@ -228,6 +228,8 @@ fn download(model: &str) {
             println!("  {percent}%");
             last = percent;
         }
+        // This binary has no queue and nothing to yield to.
+        true
     }) {
         Ok(path) => println!("saved to {}", path.display()),
         Err(e) => {

@@ -65,6 +65,12 @@ pub const EV_QUEUE_CHANGED: &str = "queue_changed";
 /// this reason — the tray cannot re-read either. The other windows were simply
 /// left out.
 pub const EV_CONFIG_CHANGED: &str = "config_changed";
+/// The recording that just stopped is missing audio.
+///
+/// Emitted the moment capture stops, before any model runs — not from the
+/// pipeline. The failure this exists for produced an empty transcript, which is
+/// the pipeline's *error* path, and that emits no completion payload at all.
+pub const EV_CAPTURE_DAMAGE: &str = "capture_damage";
 
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
@@ -118,6 +124,14 @@ pub struct OllamaStatusDto {
     pub running: bool,
     pub models: Vec<String>,
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CaptureDamageDto {
+    /// One line for the status bar.
+    pub message: String,
+    /// The whole story, for the hover text.
+    pub detail: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -368,6 +382,10 @@ pub async fn download_whisper_model(
                     percent,
                 },
             );
+            // A download the user started deliberately from Settings or the
+            // wizard is not interrupted by a recording: they asked for it, and
+            // abandoning it wastes what has already arrived.
+            true
         })
         .map(|_| ())
         .map_err(|e| e.to_string());
@@ -874,8 +892,16 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
         &config.microphone_name,
         &config.system_audio_name,
         Arc::clone(&state.muted),
+        // Recording outranks processing. The session holds the queue for as
+        // long as it lives; see `queue::RecordingHold`.
+        Arc::clone(&state.queue),
     )
     .map_err(|e| e.to_string())?;
+
+    // The queue is now held, so its cards stop moving. `startQueuePolling`
+    // re-renders only while something is running, so without this the view
+    // freezes mid-meeting and every card reads "Waiting" with no explanation.
+    emit_queue_changed(&app);
 
     // Forward recorder events to the UI. The receiver is cloned out of the
     // session so this thread does not hold the state lock.
@@ -991,6 +1017,8 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
             ),
         );
         *state.current_folder.lock().expect("folder poisoned") = None;
+        // The recording is over, so the queue is no longer held.
+        emit_queue_changed(&app);
         emit_recording_state(&app, false, false);
         return Ok(());
     }
@@ -1003,6 +1031,8 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
     }
 
     *state.current_folder.lock().expect("folder poisoned") = None;
+    // Same as the early return above: the session is gone, so is the hold.
+    emit_queue_changed(&app);
     emit_recording_state(&app, false, false);
     Ok(())
 }
@@ -1027,15 +1057,104 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
     // Nothing may rename the folder before this returns.
     let summary = session.stop();
 
-    for track in &summary.tracks {
-        if let Err(e) = track {
-            let _ = app.emit(EV_LOG, format!("track failed: {e}"));
-        }
+    // Assess the capture before anything else touches it.
+    //
+    // Deliberately here and not at the end of the pipeline. The failure that
+    // prompted this arrived as an empty transcript, which is `NoVoice` — the
+    // error path, which emits no `CompleteDto` at all. Reporting damage the way
+    // `quiet_recording` is reported would therefore have stayed silent for
+    // exactly the meeting that needed it, and behind a backlog would have
+    // arrived hours late for the ones it did cover.
+    //
+    // Everything needed is already in hand and no model has to run.
+    if let Some(damage) = assess_capture(&summary, language) {
+        // Its own event rather than `EV_STATUS`, which carries only a string:
+        // the status line already knows how to show a short message with the
+        // long form on hover, and a damage report is exactly that shape.
+        let _ = app.emit(EV_LOG, damage.detail.clone());
+        let _ = app.emit(EV_CAPTURE_DAMAGE, damage);
     }
 
     *state.pending.lock().expect("pending poisoned") = Some(summary);
     emit_recording_state(&app, false, state.is_processing());
     Ok(())
+}
+
+/// Everything wrong with what was just captured, localised for the user.
+///
+/// `None` means the recording looks intact.
+///
+/// A failed track is included even though it carries no counters:
+/// `RecorderError::NoDevice` means no `TrackSummary` exists at all, and that is
+/// the **most** severe case — the system-audio track never opening is a
+/// plausible cause of a worthless summary, and it is invisible to any check
+/// that reads only per-track integers.
+fn assess_capture(
+    summary: &crate::session::SessionSummary,
+    language: meeting_core::config::Language,
+) -> Option<CaptureDamageDto> {
+    use meeting_core::policy::{assess_track, TrackDamage, TrackFacts};
+
+    let mut details: Vec<String> = Vec::new();
+
+    for (index, track) in summary.tracks.iter().enumerate() {
+        // The recorder reports tracks in the order the session opened them.
+        let name = i18n::tr(
+            language,
+            if index == 0 { "microphone" } else { "computer_audio" },
+        );
+
+        match track {
+            Err(error) => details.push(i18n::tr_args(
+                language,
+                "capture_track_failed",
+                &[("track", name), ("error", error)],
+            )),
+            Ok(t) => {
+                let damage = assess_track(
+                    summary.elapsed_seconds,
+                    TrackFacts {
+                        duration_seconds: t.duration_seconds,
+                        overflows: t.overflows,
+                        gap_frames: t.gap_frames,
+                        sample_rate: meeting_core::convert::TARGET_SAMPLE_RATE,
+                    },
+                );
+
+                match damage {
+                    Some(TrackDamage::Dropped { callbacks }) => details.push(i18n::tr_args(
+                        language,
+                        "capture_dropped",
+                        &[("track", name), ("count", &callbacks.to_string())],
+                    )),
+                    Some(TrackDamage::Silence { seconds }) => details.push(i18n::tr_args(
+                        language,
+                        "capture_silence",
+                        &[("track", name), ("seconds", &seconds.to_string())],
+                    )),
+                    Some(TrackDamage::Short { missing_seconds }) => details.push(i18n::tr_args(
+                        language,
+                        "capture_short",
+                        &[("track", name), ("seconds", &missing_seconds.to_string())],
+                    )),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    if details.is_empty() {
+        return None;
+    }
+
+    Some(CaptureDamageDto {
+        message: i18n::tr(language, "capture_damaged").to_string(),
+        detail: i18n::tr_args(
+            language,
+            "capture_damaged_detail",
+            &[("details", &details.join("\n"))],
+        ),
+    })
 }
 
 /// Process the meeting that [`stop_recording`] just finished capturing.
@@ -1398,6 +1517,16 @@ pub fn is_processing_paused(state: State<AppState>) -> bool {
     state.queue.is_paused()
 }
 
+/// Why the queue is not moving, so the UI can say which.
+///
+/// Separate from [`is_processing_paused`], which must keep meaning *the user
+/// pressed pause* because it drives that button's next action — and that action
+/// writes `config.processing_paused` to disk.
+#[tauri::command(async)]
+pub fn processing_blocked_reason(state: State<AppState>) -> Option<queue::BlockedReason> {
+    state.queue.blocked_reason()
+}
+
 /// Hold, or release, all processing.
 ///
 /// Persisted to the config because the choice has a horizon of hours — "do this
@@ -1500,6 +1629,99 @@ pub use policy::Device as PolicyDevice;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A track as the recorder really reports one.
+    ///
+    /// `lead_in_frames` is non-zero on purpose. **Every** recording has an
+    /// opening silence — a couple of hundred milliseconds while the device
+    /// opens, more on Windows — and an earlier version of this helper set it to
+    /// zero, a value the recorder never produces. The damage check counted that
+    /// silence as an outage, so it would have reported every healthy meeting as
+    /// broken, and these tests could not see it because they invented a
+    /// recording that cannot exist.
+    fn track(duration: f64, overflows: u64, gap_frames: u64) -> crate::audio::recorder::TrackSummary {
+        crate::audio::recorder::TrackSummary {
+            kind: crate::audio::devices::SourceKind::Microphone,
+            path: std::path::PathBuf::from("microphone.wav"),
+            frames: (duration * 48_000.0) as u64,
+            duration_seconds: duration,
+            automatic_fallback: false,
+            final_device: "Test".into(),
+            overflows,
+            gap_frames,
+            // ~0.23s, measured on macOS. Windows is larger.
+            lead_in_frames: 11_000,
+        }
+    }
+
+    fn session(elapsed: f64, tracks: Vec<Result<crate::audio::recorder::TrackSummary, String>>)
+        -> crate::session::SessionSummary
+    {
+        crate::session::SessionSummary {
+            folder: std::path::PathBuf::from("/tmp/x"),
+            elapsed_seconds: elapsed,
+            tracks,
+        }
+    }
+
+    /// The regression that matters most: a warning on every meeting is worse
+    /// than no warning at all, because it teaches the user to ignore it.
+    #[test]
+    fn a_healthy_recording_produces_no_report() {
+        let s = session(600.0, vec![Ok(track(600.0, 0, 0)), Ok(track(600.0, 0, 0))]);
+        assert!(
+            assess_capture(&s, meeting_core::config::Language::En).is_none(),
+            "a normal recording, opening silence and all, must not be called damaged"
+        );
+    }
+
+    /// The opening silence is unavoidable and belongs to alignment, not damage.
+    /// Counting it as an outage is what made every meeting look broken.
+    #[test]
+    fn the_device_open_lead_in_is_never_damage() {
+        let mut slow_to_open = track(600.0, 0, 0);
+        // Two full seconds — a slow Windows loopback open, well past any
+        // threshold an outage check would use.
+        slow_to_open.lead_in_frames = 2 * 48_000;
+
+        let s = session(600.0, vec![Ok(slow_to_open), Ok(track(600.0, 0, 0))]);
+        assert!(
+            assess_capture(&s, meeting_core::config::Language::En).is_none(),
+            "a device that took its time opening is not a damaged recording"
+        );
+    }
+
+    /// The reported failure: the machine could not keep up and audio was lost.
+    #[test]
+    fn dropped_callbacks_reach_the_user_in_their_own_language() {
+        let s = session(600.0, vec![Ok(track(480.0, 37, 0)), Ok(track(600.0, 0, 0))]);
+
+        let en = assess_capture(&s, meeting_core::config::Language::En).expect("damage should be reported");
+        assert!(en.detail.contains("37"), "the count is the evidence: {}", en.detail);
+        assert!(!en.message.is_empty());
+
+        let es = assess_capture(&s, meeting_core::config::Language::Es).expect("damage should be reported");
+        assert_ne!(es.message, en.message, "the message must be localised");
+        assert!(es.detail.contains("37"));
+    }
+
+    /// A track that never opened has no counters at all, and is the worst case.
+    #[test]
+    fn a_track_that_never_started_is_reported() {
+        let s = session(600.0, vec![Ok(track(600.0, 0, 0)), Err("no device".into())]);
+        let d = assess_capture(&s, meeting_core::config::Language::En).expect("a dead track is damage");
+        assert!(d.detail.contains("no device"), "{}", d.detail);
+    }
+
+    /// Silence padding keeps the file full length, so only `gap_frames` sees it.
+    #[test]
+    fn a_full_length_file_padded_with_silence_is_still_reported() {
+        let s = session(600.0, vec![Ok(track(600.0, 0, 20 * 48_000)), Ok(track(600.0, 0, 0))]);
+        assert!(
+            assess_capture(&s, meeting_core::config::Language::En).is_some(),
+            "a device outage pads the file; the length check alone would miss it"
+        );
+    }
 
     #[test]
     fn folder_names_have_the_expected_shape() {

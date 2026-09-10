@@ -16,6 +16,16 @@ const opener = window.__TAURI__.opener;
 export const listJobs = () => invoke("list_jobs");
 /** @returns {Promise<boolean>} */
 export const isProcessingPaused = () => invoke("is_processing_paused");
+/**
+ * Why the queue is not moving: `"user"`, `"recording"`, or null.
+ *
+ * Separate from `isProcessingPaused`, which must keep meaning *the user pressed
+ * pause* because it decides what the pause button does next — and that action
+ * writes the config.
+ *
+ * @returns {Promise<"user"|"recording"|null>}
+ */
+export const processingBlockedReason = () => invoke("processing_blocked_reason");
 /** @param {boolean} paused */
 export const setProcessingPaused = (paused) => invoke("set_processing_paused", { paused });
 /** @param {string} id */
@@ -129,6 +139,7 @@ export const browseFolder = () => open({ directory: true, multiple: false });
  */
 export const EVENTS = {
   configChanged: "config_changed",
+  captureDamage: "capture_damage",
   startupStatus: "startup_status",
   startupResult: "startup_result",
   status: "status",

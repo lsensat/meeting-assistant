@@ -238,6 +238,11 @@ const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/mai
 
 #[derive(Debug)]
 pub enum WhisperError {
+    /// The caller asked to stop — a recording started. **Not a failure**:
+    /// mapping this onto the error path marked the meeting `Failed` with an
+    /// error banner for doing exactly what was asked, leaving the user to find
+    /// it and press Retry.
+    Cancelled,
     UnknownModel(String),
     Download(String),
     Io(std::io::Error),
@@ -257,6 +262,7 @@ pub enum WhisperError {
 impl std::fmt::Display for WhisperError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "model download stopped for a recording"),
             Self::UnknownModel(id) => write!(f, "unknown Whisper model \"{id}\""),
             Self::Download(e) => write!(f, "could not download the Whisper model: {e}"),
             Self::Io(e) => write!(f, "model file error: {e}"),
@@ -394,9 +400,17 @@ fn download_client() -> Result<&'static reqwest::blocking::Client, WhisperError>
 ///
 /// Downloads to a temporary file and renames on success, so an interrupted
 /// download can never be mistaken for an installed model.
+/// Download a model, reporting progress and honouring an abort.
+///
+/// `on_progress` returns `false` to stop. The alternative — a plain progress
+/// callback — meant a download could not be interrupted at all, so a recording
+/// started while `large-v3` was arriving competed with 3.1 GB of transfer and
+/// disk writes for as long as that took. The partial file is left where it is;
+/// it is written to a `.part` path and only renamed on success, so an abandoned
+/// download is never mistaken for an installed model.
 pub fn download_model(
     id: &str,
-    mut on_progress: impl FnMut(u8),
+    mut on_progress: impl FnMut(u8) -> bool,
 ) -> Result<PathBuf, WhisperError> {
     let spec = spec(id).ok_or_else(|| WhisperError::UnknownModel(id.to_string()))?;
     let target = model_path(id);
@@ -448,7 +462,17 @@ pub fn download_model(
 
         let percent = ((written as f64 / expected as f64) * 100.0).min(100.0) as u8;
         if percent != last_percent {
-            on_progress(percent);
+            // `false` means stop. Reported as a download failure rather than a
+            // silent truncation: the caller decides whether an abort was
+            // expected, and the temporary file is discarded either way.
+            if !on_progress(percent) {
+                // The partial file is left on disk under its `.part` name. It
+                // is never mistaken for an installed model — only a completed,
+                // digest-checked download is renamed into place — but it is not
+                // resumed either: the next attempt truncates and starts over.
+                // Worth improving; not worth pretending otherwise here.
+                return Err(WhisperError::Cancelled);
+            }
             last_percent = percent;
         }
     }

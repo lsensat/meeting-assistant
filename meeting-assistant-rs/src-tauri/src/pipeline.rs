@@ -181,6 +181,20 @@ pub fn run(
     control: &whisper::TranscriptionControl,
     mut on_progress: impl FnMut(Progress),
 ) -> Result<RunOutcome, PipelineError> {
+    // Before anything. A recording that started while this job was being handed
+    // out must not pay for the prelude below.
+    //
+    // The abort flag is only *polled* once whisper's `full()` is running. Before
+    // that this function renames a folder, may download up to 3.1 GB of model,
+    // loads it, and reads and resamples the entire WAV into memory — none of
+    // which used to check, so pressing Record a second after a job started left
+    // the machine grinding through all of it while capture was live. That is the
+    // contention the hold exists to prevent, and it was invisible because the
+    // stage the user saw said "Transcribing".
+    if control.is_aborted() {
+        return Ok(RunOutcome::Paused(config.resume));
+    }
+
     on_progress(Progress::Stage(Stage::Audio, StageState::Working));
 
     // Rename the folder only now.
@@ -212,19 +226,41 @@ pub fn run(
             "downloading_model",
             &[("model", &config.whisper_model)],
         )));
-        whisper::download_model(&config.whisper_model, |percent| {
+        match whisper::download_model(&config.whisper_model, |percent| {
+            // Stops the transfer when a recording starts. Without this the hold
+            // could not interrupt the single longest thing this app ever does.
+            if control.is_aborted() {
+                return false;
+            }
             on_progress(Progress::Status(i18n::tr_args(
                 config.language,
                 "downloading_model_percent",
                 &[("model", &config.whisper_model), ("percent", &percent.to_string())],
             )));
-        })?;
+            true
+        }) {
+            // Stopping for a recording is not a failure. Propagated as an error
+            // it marked the meeting `Failed` with an error banner for doing
+            // exactly what the hold asked of it, leaving the user to find it and
+            // press Retry.
+            Err(whisper::WhisperError::Cancelled) => {
+                return Ok(RunOutcome::Paused(config.resume));
+            }
+            Err(other) => return Err(PipelineError::Whisper(other)),
+            Ok(_) => {}
+        }
     } else {
         on_progress(Progress::Status(i18n::tr_args(
             config.language,
             "loading_model",
             &[("model", &config.whisper_model)],
         )));
+    }
+
+    // Loading large-v3 is seconds of disk and gigabytes of RAM. Do not start it
+    // for a job that has already been told to stop.
+    if control.is_aborted() {
+        return Ok(RunOutcome::Paused(config.resume));
     }
 
     let transcriber = Transcriber::load(

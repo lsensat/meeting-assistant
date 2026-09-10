@@ -137,8 +137,23 @@ pub struct TrackSummary {
     /// Realtime callbacks dropped because the writer could not keep up.
     /// Non-zero means audio was lost.
     pub overflows: u64,
-    /// Silence inserted to cover device outages, in samples.
+    /// Silence inserted to cover device **outages**, in samples.
+    ///
+    /// Non-zero means the device went away mid-recording and that stretch of
+    /// the meeting is silence. Deliberately excludes the opening silence — see
+    /// `lead_in_frames`.
     pub gap_frames: u64,
+    /// Silence covering the first device open, in samples.
+    ///
+    /// Every recording has some: opening a capture device takes a couple of
+    /// hundred milliseconds on macOS, and longer on Windows where device
+    /// enumeration and the WASAPI loopback open both happen inside this window.
+    /// The silence is what makes the two tracks start at the same instant.
+    ///
+    /// It is counted separately because folding it into `gap_frames` made every
+    /// healthy recording look damaged: a damage check that fires on all of them
+    /// guarantees the one real failure is ignored.
+    pub lead_in_frames: u64,
 }
 
 #[derive(Debug)]
@@ -272,6 +287,11 @@ fn run(
     let mut last_source_rate = TARGET_SAMPLE_RATE;
     let mut overflows_reported = 0u64;
     let mut gap_frames = 0u64;
+    // Silence written to cover the FIRST device open, kept apart from
+    // `gap_frames` because it is alignment, not damage — see `lead_in_frames`
+    // on `TrackSummary`.
+    let mut lead_in_frames = 0u64;
+    let mut gap_is_lead_in = false;
     let mut repacketiser = Repacketiser::new();
 
     // The very first open covers the time between `started` and now, so the two
@@ -334,6 +354,9 @@ fn run(
             // the first sample actually arrives. See the pump branch below.
             if gap_started_at.is_none() {
                 gap_started_at = pending_lead_in.take();
+                // Only the first acquisition draws from `pending_lead_in`, so
+                // this is exactly the opening silence and never an outage.
+                gap_is_lead_in = gap_started_at.is_some();
             }
 
             // `failover.changed` is also true on the very FIRST acquisition:
@@ -412,7 +435,17 @@ fn run(
                     let frames = policy::silence_frames_for_gap(seconds, TARGET_SAMPLE_RATE);
                     if frames > 0 {
                         writer.write_silence(frames)?;
-                        gap_frames += frames as u64;
+                        // Counted apart. Opening a device takes a couple of
+                        // hundred milliseconds on macOS and longer on Windows,
+                        // where enumeration and the WASAPI loopback open both
+                        // sit inside this window. That silence is how the two
+                        // tracks come to start at the same instant; calling it
+                        // damage would report every healthy meeting as broken.
+                        if std::mem::take(&mut gap_is_lead_in) {
+                            lead_in_frames += frames as u64;
+                        } else {
+                            gap_frames += frames as u64;
+                        }
                     }
                 }
 
@@ -651,6 +684,7 @@ fn run(
         final_device: current_name,
         overflows: overflows_reported,
         gap_frames,
+        lead_in_frames,
     })
 }
 

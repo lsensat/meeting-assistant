@@ -131,7 +131,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     };
     let status = MenuItem::with_id(app, ID_STATUS, status_text, false, None::<&str>)?;
 
-    let start = MenuItem::with_id(app, ID_START, tr("tray_start"), !recording && !processing, None::<&str>)?;
+    // Enabled whenever nothing is being recorded — a queued or running meeting
+    // no longer blocks a new one.
+    //
+    // This used to be `!recording && !processing`, which refused to start a
+    // meeting while an earlier one was still transcribing. The main window
+    // allowed it, so the two disagreed; and the queue exists precisely so that
+    // more than one meeting can be in flight. Now that a recording holds the
+    // queue rather than competing with it, refusing the recording is backwards:
+    // the recording is the thing that cannot be repeated.
+    let start = MenuItem::with_id(app, ID_START, tr("tray_start"), !recording, None::<&str>)?;
     let finalize = MenuItem::with_id(app, ID_FINALIZE, tr("tray_finalize"), recording, None::<&str>)?;
     let cancel = MenuItem::with_id(app, ID_CANCEL, tr("tray_cancel"), recording, None::<&str>)?;
 

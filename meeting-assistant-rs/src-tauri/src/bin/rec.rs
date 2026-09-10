@@ -57,7 +57,12 @@ fn main() {
 
     // The CLI never mutes; the flag exists so the app can pre-set it.
     let muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let session = match RecordingSession::start(&out, &mic, &system, muted) {
+    // A queue of its own, empty and with no worker: this binary records and
+    // exits, so there is nothing to hold back. The session still needs one
+    // because the hold is a field of the session rather than something the
+    // caller remembers to take and release.
+    let queue = std::sync::Arc::new(meeting_assistant::queue::Queue::new());
+    let session = match RecordingSession::start(&out, &mic, &system, muted, queue) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("could not start recording: {e}");
@@ -110,7 +115,21 @@ fn main() {
                 println!("  duration   : {:.3}s ({} frames)", t.duration_seconds, t.frames);
                 println!("  fallback   : {}", t.automatic_fallback);
                 println!("  overflows  : {}", t.overflows);
-                println!("  gap frames : {}", t.gap_frames);
+                // Two separate numbers on purpose. The lead-in is the silence
+                // that covers opening the device and every recording has some;
+                // gap frames are outages during the meeting and a healthy
+                // recording has none. Counting them together made every
+                // recording look damaged.
+                println!(
+                    "  lead-in    : {} frames ({:.3}s, normal)",
+                    t.lead_in_frames,
+                    t.lead_in_frames as f64 / 48_000.0
+                );
+                println!(
+                    "  gap frames : {} ({:.3}s, outages — expect 0)",
+                    t.gap_frames,
+                    t.gap_frames as f64 / 48_000.0
+                );
             }
             Err(e) => println!("\nTRACK FAILED: {e}"),
         }
