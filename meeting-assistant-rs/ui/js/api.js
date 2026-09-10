@@ -129,6 +129,7 @@ export const browseFolder = () => open({ directory: true, multiple: false });
  */
 export const EVENTS = {
   configChanged: "config_changed",
+  captureDamage: "capture_damage",
   startupStatus: "startup_status",
   startupResult: "startup_result",
   status: "status",

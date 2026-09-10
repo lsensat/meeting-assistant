@@ -990,6 +990,17 @@ function wireEvents() {
 
   api.on(api.EVENTS.status, setStatus);
 
+  // The recording that just stopped is missing audio.
+  //
+  // Arrives at stop time rather than at the end of processing, and on its own
+  // event rather than through the completion payload — the failure this exists
+  // for produces an empty transcript, which is the pipeline's error path and
+  // emits no completion payload at all. Waiting for the pipeline would have
+  // stayed silent for exactly the meeting that needed telling.
+  api.on(api.EVENTS.captureDamage, ({ message, detail }) => {
+    setStatus(message, detail);
+  });
+
   // The single source of truth for whether a meeting is running. It arrives
   // whoever started it — this window, or the tray. Driving the UI from the
   // event instead of from the click is what lets a second front-end exist at

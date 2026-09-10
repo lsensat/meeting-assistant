@@ -407,3 +407,204 @@ mod tests {
         assert_eq!(silence_frames_for_gap(-1.0, 48_000), 0);
     }
 }
+
+// --- was the recording actually captured? -------------------------------
+
+/// How a recorded track can be damaged.
+///
+/// # Why this exists at all
+///
+/// A meeting was recorded while another was being processed. The audio came out
+/// wrong, the transcript was empty and the summary useless — and the app said
+/// nothing, because the counters that already knew went to a log line the
+/// frontend forwarded to `console.log`, which a release build cannot open. The
+/// user found out from an empty summary.
+///
+/// So damage is assessed the moment capture stops, from what the recorder
+/// already measured, and is reported before any model runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDamage {
+    /// The track never opened. The most severe case, and the one with no
+    /// counters at all — there is no `TrackSummary` to read.
+    NeverStarted,
+    /// Realtime callbacks were dropped because the writer could not keep up.
+    /// Audio is missing and cannot be recovered.
+    Dropped { callbacks: u64 },
+    /// The device went away and silence was written to keep the timeline
+    /// aligned. The file is full length; that length is partly not a recording.
+    Silence { seconds: u64 },
+    /// The file is materially shorter than the recording. A backstop for loss
+    /// that neither counter above saw.
+    Short { missing_seconds: u64 },
+}
+
+/// One track's measurements, as the recorder reports them.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackFacts {
+    /// Seconds of audio in the file.
+    pub duration_seconds: f64,
+    /// Realtime callbacks dropped.
+    pub overflows: u64,
+    /// Samples of silence inserted to cover an outage.
+    pub gap_frames: u64,
+    pub sample_rate: u32,
+}
+
+/// Systematic shortfall from resampling, as a fraction.
+///
+/// `convert::resample_mono` rounds down once per 1024-sample chunk. Going from
+/// 44.1 kHz to 48 kHz it wants 1114.2857 samples and writes 1114, every chunk —
+/// **0.026%**, about 0.92 s per hour. 48 kHz and 16 kHz are exact and lose
+/// nothing.
+///
+/// The tolerance has to clear this or every long recording from a 44.1 kHz
+/// device is reported as damaged. `0.2%` leaves roughly 8x headroom.
+const LENGTH_TOLERANCE: f64 = 0.002;
+
+/// Absolute floor on the tolerance, for recordings too short for a percentage
+/// to mean anything.
+///
+/// `elapsed_seconds` is sampled the instant the stop flag is set, while recorder
+/// threads may still be inside a 250 ms `recv_timeout`, and the closing gap
+/// silence is measured from a later instant. A few hundred milliseconds either
+/// way is normal.
+const LENGTH_FLOOR_SECONDS: f64 = 0.5;
+
+/// Assess one track against how long the recording actually ran.
+///
+/// `elapsed_seconds` is wall-clock; `facts` is what reached the file.
+///
+/// # Order matters
+///
+/// `overflows` and `gap_frames` are **exact**, and each names a specific
+/// mechanism. The length comparison is a backstop and is reported only when
+/// neither counter fired, because it cannot distinguish causes and, for gaps,
+/// cannot see the problem at all: `TrackWriter::write_silence` advances the
+/// frame count, so a track that lost its device for twenty seconds is *full
+/// length*. Reporting the length first would describe the symptom while the
+/// exact cause sat unused.
+pub fn assess_track(elapsed_seconds: f64, facts: TrackFacts) -> Option<TrackDamage> {
+    if facts.overflows > 0 {
+        return Some(TrackDamage::Dropped {
+            callbacks: facts.overflows,
+        });
+    }
+
+    if facts.gap_frames > 0 {
+        let rate = if facts.sample_rate == 0 {
+            1
+        } else {
+            facts.sample_rate
+        };
+        return Some(TrackDamage::Silence {
+            seconds: (facts.gap_frames / rate as u64).max(1),
+        });
+    }
+
+    // Only a shortfall counts. A track can legitimately run slightly *longer*
+    // than the measured elapsed time — see LENGTH_FLOOR_SECONDS.
+    let missing = elapsed_seconds - facts.duration_seconds;
+    let tolerance = LENGTH_FLOOR_SECONDS.max(elapsed_seconds * LENGTH_TOLERANCE);
+    if missing > tolerance {
+        return Some(TrackDamage::Short {
+            missing_seconds: missing.round().max(1.0) as u64,
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    fn facts(duration: f64, overflows: u64, gap_frames: u64) -> TrackFacts {
+        TrackFacts {
+            duration_seconds: duration,
+            overflows,
+            gap_frames,
+            sample_rate: 48_000,
+        }
+    }
+
+    #[test]
+    fn a_healthy_recording_is_not_reported() {
+        assert_eq!(assess_track(600.0, facts(600.0, 0, 0)), None);
+        // Slightly long is normal: elapsed is sampled before the threads finish.
+        assert_eq!(assess_track(600.0, facts(600.3, 0, 0)), None);
+    }
+
+    /// The bug this whole feature exists for.
+    #[test]
+    fn dropped_callbacks_are_reported_exactly() {
+        assert_eq!(
+            assess_track(600.0, facts(480.0, 37, 0)),
+            Some(TrackDamage::Dropped { callbacks: 37 }),
+            "overflow is the exact signal and must win over the length"
+        );
+    }
+
+    /// The case the length check cannot see: silence is written to keep the
+    /// tracks aligned, so the file is full length while the audio is missing.
+    #[test]
+    fn inserted_silence_is_reported_even_though_the_file_is_full_length() {
+        let full_length = facts(600.0, 0, 20 * 48_000);
+        assert_eq!(
+            assess_track(600.0, full_length),
+            Some(TrackDamage::Silence { seconds: 20 }),
+            "a device outage pads the file, so only gap_frames can see it"
+        );
+    }
+
+    #[test]
+    fn a_short_file_is_the_backstop_when_no_counter_fired() {
+        assert_eq!(
+            assess_track(600.0, facts(500.0, 0, 0)),
+            Some(TrackDamage::Short {
+                missing_seconds: 100
+            })
+        );
+    }
+
+    /// Without this the tolerance would flag every long recording made on a
+    /// 44.1 kHz device as damaged.
+    #[test]
+    fn resampling_from_44_1khz_does_not_look_like_damage() {
+        // One hour, losing the systematic 0.026% that per-chunk rounding costs.
+        let hour = 3600.0;
+        let resampled = hour * (1.0 - 0.00026);
+        assert_eq!(
+            assess_track(hour, facts(resampled, 0, 0)),
+            None,
+            "0.92s lost per hour is arithmetic, not damage"
+        );
+
+        // Ten hours: still arithmetic, and well inside a proportional tolerance.
+        let ten = 36_000.0;
+        assert_eq!(assess_track(ten, facts(ten * (1.0 - 0.00026), 0, 0)), None);
+    }
+
+    #[test]
+    fn a_short_recording_uses_the_floor_not_the_percentage() {
+        // 0.2% of 5s is 10ms, which every recording would breach.
+        assert_eq!(assess_track(5.0, facts(4.7, 0, 0)), None);
+        assert_eq!(
+            assess_track(5.0, facts(3.0, 0, 0)),
+            Some(TrackDamage::Short { missing_seconds: 2 })
+        );
+    }
+
+    #[test]
+    fn a_zero_sample_rate_does_not_divide_by_zero() {
+        let broken = TrackFacts {
+            duration_seconds: 10.0,
+            overflows: 0,
+            gap_frames: 480,
+            sample_rate: 0,
+        };
+        assert!(matches!(
+            assess_track(10.0, broken),
+            Some(TrackDamage::Silence { .. })
+        ));
+    }
+}
