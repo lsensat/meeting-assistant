@@ -324,7 +324,7 @@ fn keep_engine_running(endpoint: &Endpoint, kind: SourceKind) -> Option<Stream> 
         let stream = endpoint
             .device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     // Silence. The point is that the engine has a stream to
                     // mix, not that anything is heard.
