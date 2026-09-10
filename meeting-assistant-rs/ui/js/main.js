@@ -743,7 +743,8 @@ async function showResolvedDevices(config) {
     ? `${tr("computer_audio")}: ${system.label}${system.automatic ? ` (${tr("automatic")})` : ""}`
     : `${tr("computer_audio")}: ${tr("computer_audio_missing")}`;
 
-  announceFallback(mic?.automatic === true || system?.automatic === true);
+  announceFallback("microphone", mic?.automatic === true);
+  announceFallback("system", system?.automatic === true);
 }
 
 /**
@@ -761,8 +762,26 @@ async function showResolvedDevices(config) {
  *
  * @param {boolean} active
  */
-function announceFallback(active) {
-  if (active) {
+/**
+ * Which sources are not on the device the user asked for.
+ *
+ * Per source, because the marker is one dot for the whole panel. It used to be
+ * a single boolean, so the microphone reporting its device normally cleared a
+ * fallback the system audio was still in — the dot vanished while the panel
+ * below it still said "(automatic)".
+ */
+const fallenBack = { microphone: false, system: false };
+
+/**
+ * Mark one source as using something other than the configured device.
+ *
+ * @param {"microphone"|"system"} source
+ * @param {boolean} active
+ */
+function announceFallback(source, active) {
+  fallenBack[source] = active;
+
+  if (fallenBack.microphone || fallenBack.system) {
     ui.devicesFallback.removeAttribute("hidden");
   } else {
     ui.devicesFallback.setAttribute("hidden", "");
@@ -1042,20 +1061,21 @@ function wireEvents() {
 
   api.on(api.EVENTS.deviceMic, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)}`;
-    announceFallback(false);
+    announceFallback("microphone", false);
   });
   api.on(api.EVENTS.micFallback, (name) => {
     ui.deviceMic.textContent = `${tr("microphone")}: ${deviceLabel(name)} (${tr("automatic")})`;
     // Mid-recording is when this matters most — the device changed under you.
     // Once, though: the recorder re-reports its device on every stream open.
-    announceFallback(true);
+    announceFallback("microphone", true);
   });
   api.on(api.EVENTS.deviceSystem, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)}`;
+    announceFallback("system", false);
   });
   api.on(api.EVENTS.systemFallback, (name) => {
     ui.deviceSystem.textContent = `${tr("computer_audio")}: ${deviceLabel(name)} (${tr("automatic")})`;
-    announceFallback(true);
+    announceFallback("system", true);
   });
 
   // Recorder diagnostics are not surfaced in the UI; the console keeps them
