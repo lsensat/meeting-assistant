@@ -465,7 +465,15 @@ fn run(
                         // tracks come to start at the same instant; calling it
                         // damage would report every healthy meeting as broken.
                         if std::mem::take(&mut gap_is_lead_in) {
-                            lead_in_frames += frames as u64;
+                            // Only the part of it that a device open can
+                            // account for. An idle-gated tap delivering
+                            // nothing for its first twelve seconds is not
+                            // lead-in, and calling it that is what let a
+                            // meeting missing its opening pass as intact.
+                            let (lead_in, over) =
+                                policy::split_lead_in(frames, TARGET_SAMPLE_RATE);
+                            lead_in_frames += lead_in;
+                            gap_frames += over;
                         } else {
                             gap_frames += frames as u64;
                         }
