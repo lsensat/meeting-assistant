@@ -1224,3 +1224,36 @@ input[type="password"] { cursor: text; }
   font: 12px/1.45 ui-monospace, monospace;
   white-space: pre-wrap;
 }
+
+/* ------------------------------------------------ capture damage notice */
+
+/*
+ * Shown when a recording finished with audio missing.
+ *
+ * In the layout rather than over it. The first version was a modal, raised
+ * between stopping capture and finalising the meeting — it covered the "name
+ * this meeting" dialog, and closing the window at that point meant the meeting
+ * was never queued. A warning that loses the recording is worse than none.
+ */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 12px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.notice-text { flex: 1; min-width: 0; }
+.notice-text strong { display: block; margin-bottom: 3px; }
+
+/* The whole message, wrapped. It is the only account the user gets of what
+   went wrong, so it is not clipped to one line. */
+.notice-text span { display: block; white-space: pre-wrap; }
+
+.notice .status-action { flex: none; margin-top: -1px; }

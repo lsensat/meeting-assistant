@@ -42,6 +42,7 @@ const ui = {
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
   devicesFallback: el("devices-fallback"),
+  captureNotice: el("capture-notice"),
 };
 
 /**
@@ -1015,7 +1016,7 @@ function wireEvents() {
     //
     // It stays on screen until dismissed, because it is the only notice the
     // user will get that this meeting is incomplete.
-    showCaptureDamage(message, detail);
+    pendingCaptureDamage = { message, detail };
   });
 
   // The single source of truth for whether a meeting is running. It arrives
@@ -1096,36 +1097,42 @@ async function stopFlow() {
     await api.stopRecording();
     const title = await askMeetingTitle();
     await api.finalizeMeeting(title);
+    // Only now. The meeting is queued and nothing this shows can stop it.
+    flushCaptureDamage();
   } catch (error) {
     setStatus(String(error));
   }
 }
 
 /**
- * Tell the user this meeting is missing audio, and make them acknowledge it.
+ * The damage report for the recording that just stopped, held until the meeting
+ * is safely queued.
  *
- * @param {string} message
- * @param {string} detail
+ * Buffered rather than shown on arrival. The event fires from `stop_recording`,
+ * which sits *between* stopping capture and `finalize_meeting` — so anything
+ * raised there competes with the "name this meeting" dialog, and a user who
+ * closes the window at that moment never reaches `finalize_meeting` and loses
+ * the recording entirely.
  */
-function showCaptureDamage(message, detail) {
-  const modal = el("damage-modal");
-  el("damage-title").textContent = message;
-  // `textContent`, and the detail is built from the catalogue plus integers
-  // from the recorder — no path from a device name to markup.
-  el("damage-body").textContent = detail;
+let pendingCaptureDamage = null;
 
-  const close = () => {
-    modal.hidden = true;
-    document.removeEventListener("keydown", onKey);
-  };
-  const onKey = (event) => {
-    if (event.key === "Escape") close();
-  };
+/**
+ * Show the damage notice, if the recording that just finished had any.
+ *
+ * Called after the meeting is queued, so nothing here can prevent that.
+ */
+function flushCaptureDamage() {
+  if (!pendingCaptureDamage) return;
 
-  el("damage-ok").onclick = close;
-  document.addEventListener("keydown", onKey);
-  modal.hidden = false;
-  el("damage-ok").focus();
+  const { message, detail } = pendingCaptureDamage;
+  pendingCaptureDamage = null;
+
+  el("capture-notice-title").textContent = message;
+  // `textContent`: the detail is the catalogue plus integers from the recorder,
+  // and there is no path from a device name to markup.
+  el("capture-notice-body").textContent = detail;
+  ui.captureNotice.hidden = false;
+  resizeToContent();
 }
 
 /** Discard and delete. Confirmed here for the same reason as stopFlow. */
@@ -1179,6 +1186,11 @@ function wireControls() {
         setStatus(String(error));
       }
     }
+  });
+
+  el("capture-notice-close").addEventListener("click", () => {
+    ui.captureNotice.hidden = true;
+    resizeToContent();
   });
 
   ui.settings.addEventListener("click", () => api.openSettings());

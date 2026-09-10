@@ -231,6 +231,35 @@ pub fn choose_system_failover(
     )
 }
 
+/// Whether the device now in use counts as an automatic fallback.
+///
+/// # Why this is not "did the policy have to choose"
+///
+/// The obvious test — [`Failover::changed`] — is wrong, and was shipped.
+/// `changed` is true whenever the device we were on could not be found in the
+/// enumeration, **including when it reappears a moment later and we reopen the
+/// very same one**. A device that blips reacquires itself, and reporting that as
+/// a fallback told the user "Not the device you chose" while showing the device
+/// they had chosen.
+///
+/// It compounds: the recorder's flag is sticky, so a single blip labels the
+/// whole meeting, and the data watchdog produces a stream of them.
+///
+/// The honest question is where we *landed*:
+///
+/// * the user named a device — are we on it?
+/// * the user named nothing — have we drifted off the one we started on?
+///
+/// `previous_name` is empty on the first acquisition, which is why a first open
+/// with no configured device is never a fallback.
+pub fn is_automatic_fallback(configured_name: &str, previous_name: &str, chosen_name: &str) -> bool {
+    if configured_name.is_empty() {
+        !previous_name.is_empty() && chosen_name != previous_name
+    } else {
+        chosen_name != configured_name
+    }
+}
+
 /// How many samples of silence cover a gap of `gap_seconds`.
 ///
 /// This is what keeps the two tracks time-aligned across a device disconnect.
@@ -249,6 +278,40 @@ mod tests {
     /// Mirrors the `dev()` helper in tests/test_audio_policy.py.
     fn dev(index: u32, name: &str) -> Device {
         Device::new(index.to_string(), name, 48_000, 2)
+    }
+
+    /// The bug: a device that vanishes and comes back is not a fallback.
+    #[test]
+    fn reacquiring_the_same_device_is_not_a_fallback() {
+        // The watchdog fires, the device is briefly absent from the
+        // enumeration, and we reopen the very same one. `Failover::changed` is
+        // true here, which is exactly what the old code trusted — so the user
+        // was told "Not the device you chose" while looking at the device they
+        // had chosen.
+        assert!(
+            !is_automatic_fallback("Headset", "Headset", "Headset"),
+            "landing back on the configured device is not falling back"
+        );
+        assert!(
+            !is_automatic_fallback("", "Headset", "Headset"),
+            "with nothing configured, staying put is not falling back either"
+        );
+    }
+
+    #[test]
+    fn landing_somewhere_else_is_a_fallback() {
+        assert!(is_automatic_fallback("Headset", "Headset", "Built-in"));
+        // A configured device we could not get on the first open.
+        assert!(is_automatic_fallback("Headset", "", "Built-in"));
+        // Nothing configured, but we drifted off what we started on.
+        assert!(is_automatic_fallback("", "Headset", "Built-in"));
+    }
+
+    #[test]
+    fn the_first_open_with_no_configured_device_is_never_a_fallback() {
+        // An empty `previous_name` means nothing has been opened yet.
+        // Reporting a fallback here put "(automatic)" in the UI permanently.
+        assert!(!is_automatic_fallback("", "", "Built-in"));
     }
 
     #[test]
