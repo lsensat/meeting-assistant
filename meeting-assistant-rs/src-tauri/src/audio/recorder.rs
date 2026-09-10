@@ -367,11 +367,26 @@ fn run(
             // device was used. Only trust it once we have actually been on a
             // device.
             //
-            // The second term still catches the real first-open case: a device
-            // was configured and we ended up on a different one.
-            let is_fallback = (!current_name.is_empty() && failover.changed)
-                || (!config.configured_name.is_empty() && chosen.name != config.configured_name);
-            automatic_fallback |= is_fallback;
+            // Judged by **where we landed**, not by whether the policy had to
+            // make a choice.
+            //
+            // `failover.changed` is true whenever the device we were on could
+            // not be found in the enumeration — including when it reappears a
+            // moment later and we reopen the very same one. Treating that as a
+            // fallback told the user "Not the device you chose" while showing
+            // the device they had chosen, and because the flag is sticky, one
+            // transient blip labelled the whole meeting. A recording that
+            // reacquires its own device many times — which is what the data
+            // watchdog produces — is marked permanently.
+            //
+            // The honest question is simpler: are we on the device the user
+            // asked for? If they asked for nothing, have we drifted off the one
+            // we started on?
+            automatic_fallback |= policy::is_automatic_fallback(
+                &config.configured_name,
+                &current_name,
+                &chosen.name,
+            );
 
             current_name = chosen.name.clone();
             last_device_check = Instant::now();

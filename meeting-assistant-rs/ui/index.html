@@ -156,6 +156,30 @@
     </div>
 
     <!--
+      Shown when a recording finished with audio missing.
+
+      **Not a modal, and deliberately so.** The first version of this was a
+      dialog raised from `stop_recording` — which lands between stopping capture
+      and finalising the meeting, so it covered the "name this meeting" dialog,
+      and closing the window at that moment meant `finalize_meeting` never ran
+      and the recording was never queued at all. A warning about lost audio that
+      loses the whole meeting is worse than the silence it replaced.
+
+      So it sits in the layout, it appears only once the meeting is safely
+      queued, and it blocks nothing. It stays until dismissed because the status
+      line beneath it is overwritten by the processing messages within seconds.
+    -->
+    <div class="notice" id="capture-notice" hidden>
+      <div class="notice-text">
+        <strong id="capture-notice-title"></strong>
+        <span id="capture-notice-body"></span>
+      </div>
+      <button class="status-action" id="capture-notice-close" aria-label="Dismiss">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!--
       Absorbs any surplus window height, so a window taller than the content
       shows the toolbar sitting at the bottom edge rather than a dead gap below
       it. This is pure CSS and therefore the only part of the fit that still
@@ -271,25 +295,6 @@
       <div class="modal-actions">
         <button class="btn btn--quiet" id="discard-no" data-i18n="queue_discard_cancel"></button>
         <button class="btn btn--primary" id="discard-yes" data-i18n="queue_discard_confirm"></button>
-      </div>
-    </div>
-  </div>
-
-  <!--
-    Shown when a recording finished with audio missing.
-
-    A modal rather than a status line: the status line is overwritten by the
-    processing messages within seconds of a meeting ending, and the title dialog
-    covers it before that. This is the only notice the user gets that a meeting
-    is incomplete, and re-running the pipeline cannot recover what was never
-    captured — so it waits to be read.
-  -->
-  <div class="modal-backdrop" id="damage-modal" hidden>
-    <div class="modal">
-      <h2 id="damage-title"></h2>
-      <p id="damage-body"></p>
-      <div class="modal-actions">
-        <button class="btn btn--primary" id="damage-ok" data-i18n="damage_dismiss"></button>
       </div>
     </div>
   </div>
