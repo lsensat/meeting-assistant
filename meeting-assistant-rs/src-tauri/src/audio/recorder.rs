@@ -288,6 +288,9 @@ fn run(
     let mut overflows_reported = 0u64;
     // Consecutive failed opens, for the backoff below.
     let mut consecutive_failures = 0u32;
+    // Whether the configured device's current reappearance has already been
+    // acted on. Reset when it goes away, so each return is attempted once.
+    let mut returned_to_configured = false;
     let mut gap_frames = 0u64;
     // Silence written to cover the FIRST device open, kept apart from
     // `gap_frames` because it is alignment, not damage — see `lead_in_frames`
@@ -587,6 +590,59 @@ fn run(
                     &muted,
                     &mut gap_started_at,
                 )?;
+                    continue;
+                }
+
+                // --- detector 3b: the configured device came back --------
+                //
+                // A headset unplugged at 5s and plugged back in at 36s left the
+                // remaining fifteen seconds recorded on the laptop's built-in
+                // microphone, while the user was wearing the headset. The
+                // policy is only consulted when the current stream has already
+                // died, so a healthy fallback is never reconsidered.
+                //
+                // Edge-triggered, for the reason spelled out on detector 4
+                // below: a device that enumerates but will not open would
+                // otherwise tear the stream down every second, forever.
+                // `returned_to_configured` latches until the device goes away
+                // again, so each reappearance is worth exactly one attempt.
+                let configured_present = !config.configured_name.is_empty()
+                    && snapshot
+                        .devices
+                        .iter()
+                        .any(|d| d.name == config.configured_name);
+
+                if !configured_present {
+                    returned_to_configured = false;
+                }
+
+                if !returned_to_configured
+                    && policy::should_return_to_configured(
+                        &config.configured_name,
+                        &current_name,
+                        configured_present,
+                    )
+                {
+                    returned_to_configured = true;
+                    let _ = events.send(Event::Log(format!(
+                        "{}: \"{}\" is back; returning to it from \"{}\"",
+                        kind.label(),
+                        config.configured_name,
+                        current_name
+                    )));
+
+                    // Cleared for the same reason detector 4 clears it:
+                    // `choose_failover` keeps the device it is already on, so
+                    // without this the reopen re-selects the fallback and the
+                    // switch silently never happens.
+                    current_name.clear();
+                    close_stream(
+                        &mut current,
+                        &mut writer,
+                        &mut repacketiser,
+                        &muted,
+                        &mut gap_started_at,
+                    )?;
                     continue;
                 }
 

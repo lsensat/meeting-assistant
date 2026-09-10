@@ -782,3 +782,69 @@ mod backoff_tests {
         );
     }
 }
+
+/// Whether to move back to the device the user configured, now that it is
+/// present again.
+///
+/// # Why this is worth a device switch mid-meeting
+///
+/// [`choose_failover`] deliberately keeps the device it is already on, and that
+/// rule is right for the case it was written for: a *default* device changing
+/// under us should not drag the recording around. But it was also doing
+/// something else, unintended — once a fallback had happened, the configured
+/// device was never reconsidered, because the policy is only consulted when the
+/// current stream has already died.
+///
+/// Measured on a real meeting: a headset was unplugged at ~5s, the recording
+/// fell back to the laptop's built-in microphone, the headset was plugged back
+/// in at ~36s, and the remaining fifteen seconds were still recorded on the
+/// built-in mic. The user was wearing the headset at the time, speaking into a
+/// boom microphone an inch from their mouth, while the app recorded the room.
+///
+/// Plugging a device back in is a deliberate act. Honouring it costs one gap of
+/// a few hundred milliseconds; ignoring it costs the rest of the meeting.
+///
+/// # Only the configured device
+///
+/// This never chases a default. It fires only when the user named a device and
+/// that exact device has returned — the one case where the user's intent is not
+/// in doubt.
+///
+/// The caller must make this **edge-triggered**: attempt the return once per
+/// reappearance, not once per poll. A device that enumerates but will not open
+/// would otherwise tear the stream down every second forever, which is the
+/// failure documented on detector 4 in `recorder.rs`.
+pub fn should_return_to_configured(
+    configured_name: &str,
+    current_name: &str,
+    configured_is_present: bool,
+) -> bool {
+    !configured_name.is_empty() && configured_is_present && current_name != configured_name
+}
+
+#[cfg(test)]
+mod return_tests {
+    use super::*;
+
+    #[test]
+    fn a_configured_device_that_comes_back_is_reclaimed() {
+        assert!(should_return_to_configured("Headset", "Built-in", true));
+    }
+
+    #[test]
+    fn nothing_happens_while_it_is_still_missing() {
+        assert!(!should_return_to_configured("Headset", "Built-in", false));
+    }
+
+    #[test]
+    fn already_on_it_is_not_a_switch() {
+        assert!(!should_return_to_configured("Headset", "Headset", true));
+    }
+
+    /// Without an explicit choice there is no intent to honour, and chasing the
+    /// default around mid-meeting is the churn `choose_failover` exists to stop.
+    #[test]
+    fn no_configured_device_means_no_switching() {
+        assert!(!should_return_to_configured("", "Built-in", true));
+    }
+}
