@@ -1173,6 +1173,11 @@ async function cancelFlow() {
 function wireControls() {
   ui.start.addEventListener("click", async () => {
     resetResults();
+    // The damage notice belongs to the meeting that raised it. Left standing,
+    // it reads as a report on the recording now starting — a false alarm about
+    // a meeting that has not happened yet, on the one panel whose whole value
+    // is being believed.
+    ui.captureNotice.hidden = true;
     ui.timer.textContent = "00:00:00";
     try {
       // No setRecording here: the recording_state event does it, so this
