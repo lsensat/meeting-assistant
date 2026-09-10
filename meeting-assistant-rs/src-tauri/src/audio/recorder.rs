@@ -286,6 +286,11 @@ fn run(
     // gone by then and the stream's own `source_rate` is no longer reachable.
     let mut last_source_rate = TARGET_SAMPLE_RATE;
     let mut overflows_reported = 0u64;
+    // Consecutive failed opens, for the backoff below.
+    let mut consecutive_failures = 0u32;
+    // Whether the configured device's current reappearance has already been
+    // acted on. Reset when it goes away, so each return is attempted once.
+    let mut returned_to_configured = false;
     let mut gap_frames = 0u64;
     // Silence written to cover the FIRST device open, kept apart from
     // `gap_frames` because it is alignment, not damage — see `lead_in_frames`
@@ -388,6 +393,9 @@ fn run(
                 &chosen.name,
             );
 
+            // A successful open clears the backoff, so a device that recovers
+            // is not punished for having failed earlier.
+            consecutive_failures = 0;
             current_name = chosen.name.clone();
             last_device_check = Instant::now();
             ever_opened = true;
@@ -510,9 +518,13 @@ fn run(
                 .ok()
                 .and_then(|slot| slot.clone())
                 .unwrap_or_else(|| "no detail from cpal".to_string());
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            let wait = Duration::from_millis(policy::reopen_backoff_ms(consecutive_failures));
             let _ = events.send(Event::Log(format!(
-                "{} stream reported an error; reopening — {detail}",
-                kind.label()
+                "{} stream reported an error ({consecutive_failures} in a row); \
+                 reopening in {}ms — {detail}",
+                kind.label(),
+                wait.as_millis()
             )));
             close_stream(
                     &mut current,
@@ -521,6 +533,19 @@ fn run(
                     &muted,
                     &mut gap_started_at,
                 )?;
+
+            // Backed off, because reopening a device that keeps failing is not
+            // free. A Plantronics headset opened for capture while the same
+            // headset was open for loopback produced "a buffer underrun or
+            // overrun occurred" **35 times in 4.4 seconds** — an open every
+            // 120ms, each costing 60-70ms of device work, on the machine that
+            // was supposed to be recording a meeting.
+            //
+            // The silence written to cover the outage is the same either way:
+            // it is measured from wall-clock time, not from how often we tried.
+            if stop.wait(wait) {
+                break;
+            }
             continue;
         }
 
@@ -565,6 +590,59 @@ fn run(
                     &muted,
                     &mut gap_started_at,
                 )?;
+                    continue;
+                }
+
+                // --- detector 3b: the configured device came back --------
+                //
+                // A headset unplugged at 5s and plugged back in at 36s left the
+                // remaining fifteen seconds recorded on the laptop's built-in
+                // microphone, while the user was wearing the headset. The
+                // policy is only consulted when the current stream has already
+                // died, so a healthy fallback is never reconsidered.
+                //
+                // Edge-triggered, for the reason spelled out on detector 4
+                // below: a device that enumerates but will not open would
+                // otherwise tear the stream down every second, forever.
+                // `returned_to_configured` latches until the device goes away
+                // again, so each reappearance is worth exactly one attempt.
+                let configured_present = !config.configured_name.is_empty()
+                    && snapshot
+                        .devices
+                        .iter()
+                        .any(|d| d.name == config.configured_name);
+
+                if !configured_present {
+                    returned_to_configured = false;
+                }
+
+                if !returned_to_configured
+                    && policy::should_return_to_configured(
+                        &config.configured_name,
+                        &current_name,
+                        configured_present,
+                    )
+                {
+                    returned_to_configured = true;
+                    let _ = events.send(Event::Log(format!(
+                        "{}: \"{}\" is back; returning to it from \"{}\"",
+                        kind.label(),
+                        config.configured_name,
+                        current_name
+                    )));
+
+                    // Cleared for the same reason detector 4 clears it:
+                    // `choose_failover` keeps the device it is already on, so
+                    // without this the reopen re-selects the fallback and the
+                    // switch silently never happens.
+                    current_name.clear();
+                    close_stream(
+                        &mut current,
+                        &mut writer,
+                        &mut repacketiser,
+                        &muted,
+                        &mut gap_started_at,
+                    )?;
                     continue;
                 }
 
@@ -805,7 +883,9 @@ fn close_stream(
 /// A live capture stream plus the state the writer needs about it.
 struct OpenStream {
     /// Dropped on teardown, which stops the realtime callback.
-    _stream: cpal::Stream,
+    /// The capture stream, and on Windows loopback the silent render stream
+    /// that keeps the audio engine delivering. Both must outlive the capture.
+    _stream: devices::Capture,
     chunks: Receiver<Vec<f32>>,
     source_rate: u32,
     last_data: Instant,

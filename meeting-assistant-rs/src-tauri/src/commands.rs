@@ -961,6 +961,18 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 #[tauri::command]
 pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
     let muted = state.toggle_muted();
+
+    // Into the meeting's log as well. A muted microphone writes silence through
+    // the same path a dead device does, so a track that goes quiet at 40s looks
+    // identical to one that lost its device there — unless the log says which.
+    if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+        log.line(if muted {
+            "microphone MUTED by the user — silence from here is deliberate"
+        } else {
+            "microphone unmuted by the user"
+        });
+    }
+
     let _ = app.emit(EV_MUTE_STATE, muted);
     muted
 }

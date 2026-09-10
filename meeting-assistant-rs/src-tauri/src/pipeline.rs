@@ -375,6 +375,49 @@ pub fn run(
     // --- summary ---------------------------------------------------------
     on_progress(Progress::Stage(Stage::Summary, StageState::Working));
 
+    // Refuse to summarise what has nothing in it.
+    //
+    // A real 51-second recording transcribed to "Thank you." twice, and the
+    // model returned a summary naming a project and a supplier that do not
+    // exist. Both the system prompt and the user's own custom prompt forbid
+    // inventing information; a small quantised model asked to fill named
+    // sections fills them regardless.
+    //
+    // Losing audio is recoverable — record again. A confident fabricated
+    // account of a meeting is not, because nothing in it signals that it is
+    // false, and it is the artefact the user keeps.
+    //
+    // Written rather than skipped: a missing summary.md looks like a crash, and
+    // the file itself is the right place to explain why there is no summary.
+    if !text::is_summarisable(&transcript) {
+        let words = text::spoken_word_count(&transcript);
+        let note = format!(
+            "# {}\n\n{}\n",
+            i18n::tr(config.language, "summary_too_little_title"),
+            i18n::tr_args(
+                config.language,
+                "summary_too_little_body",
+                &[("words", &words.to_string())],
+            )
+        );
+        std::fs::write(&summary_file, &note)?;
+        on_progress(Progress::Stage(Stage::Summary, StageState::Done));
+
+        // The same cleanup the normal path does. Returning early without it
+        // left `transcript.partial.json` beside a finished meeting, where the
+        // next scan would read it as work still outstanding.
+        let _ = std::fs::remove_file(&partial_segments_file);
+        let _ = std::fs::remove_file(&partial_summary_file);
+
+        return Ok(RunOutcome::Finished(PipelineOutput {
+            folder,
+            transcript_file,
+            summary_file,
+            quiet_recording,
+            segment_count: segments.len(),
+        }));
+    }
+
     let summary = match summarize(
         &transcript,
         &config,

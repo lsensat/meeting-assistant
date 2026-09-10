@@ -715,3 +715,136 @@ mod damage_tests {
         ));
     }
 }
+
+/// How long to wait before reopening a capture device that just failed.
+///
+/// # Why a device that fails needs to be left alone for a moment
+///
+/// Reopening on failure with no delay is a storm. Measured on a real machine: a
+/// USB headset opened for capture while the *same* headset was open for
+/// loopback reported "a buffer underrun or overrun occurred" **35 times in 4.4
+/// seconds** — an open every 120 ms, each costing 60-70 ms of device work, on
+/// the machine that was supposed to be recording a meeting.
+///
+/// Nothing was gained by trying that often. The silence written to cover an
+/// outage is measured from wall-clock time, so a track is no shorter for having
+/// been retried less.
+///
+/// Doubling from 250 ms, capped at 4 s: quick enough that a device which
+/// recovers is picked up almost immediately, slow enough that one which cannot
+/// is checked fifteen times a minute rather than five hundred.
+pub fn reopen_backoff_ms(consecutive_failures: u32) -> u64 {
+    const BASE_MS: u64 = 250;
+    const CAP_MS: u64 = 4_000;
+
+    if consecutive_failures <= 1 {
+        return BASE_MS;
+    }
+    // `saturating_sub` keeps the shift in range; 5 doublings reaches the cap.
+    let shift = (consecutive_failures - 1).min(5);
+    (BASE_MS << shift).min(CAP_MS)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn the_first_failure_retries_promptly() {
+        // A one-off blip should not cost the user a pause.
+        assert_eq!(reopen_backoff_ms(0), 250);
+        assert_eq!(reopen_backoff_ms(1), 250);
+    }
+
+    #[test]
+    fn repeated_failures_back_off_and_then_stop_growing() {
+        assert_eq!(reopen_backoff_ms(2), 500);
+        assert_eq!(reopen_backoff_ms(3), 1_000);
+        assert_eq!(reopen_backoff_ms(4), 2_000);
+        assert_eq!(reopen_backoff_ms(5), 4_000);
+        assert_eq!(reopen_backoff_ms(6), 4_000, "capped");
+        assert_eq!(reopen_backoff_ms(u32::MAX), 4_000, "still capped");
+    }
+
+    /// The storm this exists to prevent, in numbers.
+    #[test]
+    fn a_failing_device_is_retried_far_less_than_before() {
+        // The observed failure: 35 opens in 4.4s, i.e. roughly every 125ms.
+        let mut elapsed = 0u64;
+        let mut attempts = 0u32;
+        while elapsed < 4_400 {
+            attempts += 1;
+            elapsed += reopen_backoff_ms(attempts);
+        }
+        assert!(
+            attempts <= 6,
+            "still storming: {attempts} opens in 4.4s, was 35"
+        );
+    }
+}
+
+/// Whether to move back to the device the user configured, now that it is
+/// present again.
+///
+/// # Why this is worth a device switch mid-meeting
+///
+/// [`choose_failover`] deliberately keeps the device it is already on, and that
+/// rule is right for the case it was written for: a *default* device changing
+/// under us should not drag the recording around. But it was also doing
+/// something else, unintended — once a fallback had happened, the configured
+/// device was never reconsidered, because the policy is only consulted when the
+/// current stream has already died.
+///
+/// Measured on a real meeting: a headset was unplugged at ~5s, the recording
+/// fell back to the laptop's built-in microphone, the headset was plugged back
+/// in at ~36s, and the remaining fifteen seconds were still recorded on the
+/// built-in mic. The user was wearing the headset at the time, speaking into a
+/// boom microphone an inch from their mouth, while the app recorded the room.
+///
+/// Plugging a device back in is a deliberate act. Honouring it costs one gap of
+/// a few hundred milliseconds; ignoring it costs the rest of the meeting.
+///
+/// # Only the configured device
+///
+/// This never chases a default. It fires only when the user named a device and
+/// that exact device has returned — the one case where the user's intent is not
+/// in doubt.
+///
+/// The caller must make this **edge-triggered**: attempt the return once per
+/// reappearance, not once per poll. A device that enumerates but will not open
+/// would otherwise tear the stream down every second forever, which is the
+/// failure documented on detector 4 in `recorder.rs`.
+pub fn should_return_to_configured(
+    configured_name: &str,
+    current_name: &str,
+    configured_is_present: bool,
+) -> bool {
+    !configured_name.is_empty() && configured_is_present && current_name != configured_name
+}
+
+#[cfg(test)]
+mod return_tests {
+    use super::*;
+
+    #[test]
+    fn a_configured_device_that_comes_back_is_reclaimed() {
+        assert!(should_return_to_configured("Headset", "Built-in", true));
+    }
+
+    #[test]
+    fn nothing_happens_while_it_is_still_missing() {
+        assert!(!should_return_to_configured("Headset", "Built-in", false));
+    }
+
+    #[test]
+    fn already_on_it_is_not_a_switch() {
+        assert!(!should_return_to_configured("Headset", "Headset", true));
+    }
+
+    /// Without an explicit choice there is no intent to honour, and chasing the
+    /// default around mid-meeting is the churn `choose_failover` exists to stop.
+    #[test]
+    fn no_configured_device_means_no_switching() {
+        assert!(!should_return_to_configured("", "Built-in", true));
+    }
+}
