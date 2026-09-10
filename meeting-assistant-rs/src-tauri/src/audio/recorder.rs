@@ -470,8 +470,11 @@ fn run(
                             // nothing for its first twelve seconds is not
                             // lead-in, and calling it that is what let a
                             // meeting missing its opening pass as intact.
-                            let (lead_in, over) =
-                                policy::split_lead_in(frames, TARGET_SAMPLE_RATE);
+                            let (lead_in, over) = policy::split_lead_in(
+                                frames,
+                                TARGET_SAMPLE_RATE,
+                                open_stream.open_duration.as_secs_f64(),
+                            );
                             lead_in_frames += lead_in;
                             gap_frames += over;
                         } else {
@@ -897,6 +900,10 @@ struct OpenStream {
     chunks: Receiver<Vec<f32>>,
     source_rate: u32,
     last_data: Instant,
+    /// How long this stream took to open. The opening silence is allowed to be
+    /// at least this long before any of it counts as a hole — see
+    /// [`policy::split_lead_in`].
+    open_duration: Duration,
     overflows: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
     /// What cpal said when the stream errored, if it did.
@@ -979,10 +986,11 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         },
     )?;
 
+    let open_duration = open_started.elapsed();
     let _ = events.send(Event::Log(format!(
         "{}: stream open took {:.0}ms",
         kind.label(),
-        open_started.elapsed().as_secs_f64() * 1000.0
+        open_duration.as_secs_f64() * 1000.0
     )));
 
     Ok(OpenStream {
@@ -990,6 +998,7 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         chunks: rx,
         source_rate,
         last_data: Instant::now(),
+        open_duration,
         overflows,
         failed,
         last_error,

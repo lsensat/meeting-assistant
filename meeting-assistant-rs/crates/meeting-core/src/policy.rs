@@ -271,16 +271,18 @@ pub fn silence_frames_for_gap(gap_seconds: f64, sample_rate: u32) -> usize {
     (gap_seconds * sample_rate).round_ties_even() as usize
 }
 
-/// The longest opening silence that can honestly be called device-open latency.
+/// How long a stream may take to deliver its first sample once it is open.
 ///
-/// Measured opens: ~0.2s for a macOS microphone, ~0.5s for a Core Audio tap
-/// that must also start a render stream, longer on Windows where enumeration
-/// and the WASAPI loopback open both sit inside the window. Two seconds is
-/// generous against all of them.
-const LEAD_IN_MAX_SECONDS: f64 = 2.0;
+/// `play()` returns before the device starts producing, and how long that takes
+/// differs per device. This is the only part of the opening silence that is not
+/// already accounted for by the measured open.
+const FIRST_SAMPLE_SLACK_SECONDS: f64 = 1.0;
 
 /// Split an opening silence into the part that is device-open latency and the
 /// part that is a genuine hole in the recording.
+///
+/// `open_seconds` is the **measured** duration of the open that preceded this
+/// silence, which the recorder already times for its log line.
 ///
 /// # Why this is not simply all lead-in
 ///
@@ -290,11 +292,20 @@ const LEAD_IN_MAX_SECONDS: f64 = 2.0;
 /// all of which was booked as lead-in — so a meeting missing its first twelve
 /// seconds was reported to the user as **"capture looks intact"**.
 ///
-/// Device-open latency is bounded and small. An opening silence that is not is
-/// something else, and the user is entitled to hear about it.
-pub fn split_lead_in(frames: usize, sample_rate: u32) -> (u64, u64) {
-    let cap = silence_frames_for_gap(LEAD_IN_MAX_SECONDS, sample_rate);
-    let lead_in = frames.min(cap);
+/// # Why the allowance is measured rather than a constant
+///
+/// The first attempt at this was a flat 2s cap, and it misfired the same day.
+/// The macOS TCC permission prompt on an app's first run blocks inside the open
+/// for as long as the user takes to click Allow — a measured 3.384s for the
+/// system audio, 2.382s for the microphone, and the M0 spike once saw ~2.5
+/// minutes. Every second past the cap was booked as a hole, so a perfectly
+/// intact recording was reported as damaged.
+///
+/// A constant cannot separate "slow to open" from "opened and then delivered
+/// nothing"; the measured open time can, because it is exactly the difference.
+pub fn split_lead_in(frames: usize, sample_rate: u32, open_seconds: f64) -> (u64, u64) {
+    let allowance = open_seconds.max(0.0) + FIRST_SAMPLE_SLACK_SECONDS;
+    let lead_in = frames.min(silence_frames_for_gap(allowance, sample_rate));
 
     (lead_in as u64, (frames - lead_in) as u64)
 }
@@ -500,18 +511,28 @@ mod tests {
 
     #[test]
     fn an_ordinary_device_open_is_all_lead_in() {
-        // 0.489s — a real measured Core Audio tap open.
-        let (lead_in, gap) = split_lead_in(23_488, 48_000);
+        // 0.489s of silence after a 0.083s open — a real measured tap open.
+        let (lead_in, gap) = split_lead_in(23_488, 48_000, 0.083);
         assert_eq!(gap, 0, "a normal open must not be reported as damage");
         assert_eq!(lead_in, 23_488);
     }
 
     #[test]
+    fn a_slow_permission_prompt_is_all_lead_in() {
+        // Recording A verbatim: the TCC prompt held the open for 3.384s, and a
+        // flat 2s cap reported the 1.384s remainder as a hole in the meeting.
+        let (lead_in, gap) = split_lead_in(162_432, 48_000, 3.384);
+        assert_eq!(gap, 0, "waiting for the user to click Allow is not damage");
+        assert_eq!(lead_in, 162_432);
+    }
+
+    #[test]
     fn an_idle_gated_tap_is_not_lead_in() {
-        // The macOS failure verbatim: 11.728s before the first sample arrived.
-        let (lead_in, gap) = split_lead_in(562_948, 48_000);
-        assert_eq!(lead_in, 96_000, "capped at LEAD_IN_MAX_SECONDS");
-        assert_eq!(gap, 466_948);
+        // The macOS failure verbatim: 11.728s before the first sample arrived,
+        // after an open that took only 83ms.
+        let (lead_in, gap) = split_lead_in(562_948, 48_000, 0.083);
+        assert_eq!(lead_in, 51_984, "the open, plus first-sample slack");
+        assert_eq!(gap, 510_964);
 
         // And the part that is not lead-in must be loud enough to report.
         let facts = TrackFacts {
