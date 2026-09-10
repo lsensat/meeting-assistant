@@ -94,6 +94,27 @@ export const openPath = (path) => invoke("open_path", { path });
 /** Open the OS sound settings. No argument: the URI is fixed in Rust. */
 export const openSoundSettings = () => invoke("open_sound_settings");
 
+// --- the markdown library ---------------------------------------------------
+
+/** @returns {Promise<{id:string,title:string,preview:string,duration_seconds:number|null}[]>} */
+export const listLibrary = () => invoke("list_library");
+/** A meeting's summary as a token stream. @param {string} id */
+export const readSummary = (id) => invoke("read_summary", { id });
+/** Absolute path of a meeting's summary, for "open in the default app". */
+export const libraryFolder = (id) => invoke("library_folder", { id });
+/** @param {string} [id] meeting to select on open */
+export const openLibrary = (id) => invoke("open_library", { id: id ?? null });
+/**
+ * Hand a link to the system browser.
+ *
+ * A plain `<a href>` navigates the webview and replaces the app; this does not.
+ * The scheme is re-checked in Rust, so this call is not the thing keeping
+ * `javascript:` out.
+ *
+ * @param {string} url
+ */
+export const openExternalUrl = (url) => invoke("open_external_url", { url });
+
 export const startupCheck = () => invoke("startup_check");
 
 /** Settings is its own 590x610 window, so closing it closes settings, not the app. */
@@ -129,6 +150,7 @@ export const browseFolder = () => open({ directory: true, multiple: false });
  */
 export const EVENTS = {
   configChanged: "config_changed",
+  librarySelect: "library_select",
   startupStatus: "startup_status",
   startupResult: "startup_result",
   status: "status",

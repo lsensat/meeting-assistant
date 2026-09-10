@@ -65,6 +65,8 @@ pub const EV_QUEUE_CHANGED: &str = "queue_changed";
 /// this reason — the tray cannot re-read either. The other windows were simply
 /// left out.
 pub const EV_CONFIG_CHANGED: &str = "config_changed";
+/// Show this meeting in the library window, which is already open.
+pub const EV_LIBRARY_SELECT: &str = "library_select";
 
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
@@ -440,24 +442,17 @@ fn debug_inspect(window: &tauri::WebviewWindow) {
 /// Do not remove the `(async)`.
 #[tauri::command(async)]
 pub fn open_setup(app: AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window("setup") {
-        existing.show().map_err(|e| e.to_string())?;
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let window =
-        tauri::WebviewWindowBuilder::new(&app, "setup", tauri::WebviewUrl::App("setup.html".into()))
-            .title("Welcome to Meeting Assistant")
-            .inner_size(620.0, 560.0)
-            .resizable(false)
-            .maximizable(false)
-            .center()
-            .build()
-            .map_err(|e| e.to_string())?;
-
-    debug_inspect(&window);
-    Ok(())
+    show_window(
+        &app,
+        &WindowSpec {
+            label: "setup",
+            url: "setup.html".into(),
+            title: "Welcome to Meeting Assistant",
+            width: 620.0,
+            height: 560.0,
+            resizable: false,
+        },
+    )
 }
 
 /// What each window's webview currently has loaded.
@@ -650,6 +645,94 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// How a secondary window differs from the others.
+pub struct WindowSpec {
+    /// Tauri's window label. **Must also appear in `capabilities/default.json`**
+    /// or every `invoke` from it is rejected, and near-silently.
+    pub label: &'static str,
+    /// The page, relative to the frontend root. Owned rather than `&'static
+    /// str` because the library appends `?id=` to select a meeting.
+    pub url: String,
+    pub title: &'static str,
+    pub width: f64,
+    pub height: f64,
+    /// The main window is pinned to its content; a window holding a document is
+    /// not.
+    pub resizable: bool,
+}
+
+/// Show a window, creating it the first time.
+///
+/// # Why this is shared
+///
+/// `open_settings` and `open_setup` were the same twenty lines twice: look for
+/// an existing window, show and focus it if found, otherwise build it, then
+/// attach the inspector under `MA_DEBUG`. Adding the library window would have
+/// made three copies.
+///
+/// That is not hypothetical tidiness. The device panel and the queue panel were
+/// also "the same thing written twice", they drifted, and the drift was a
+/// user-visible bug — one polled and re-measured while collapsed, the other did
+/// not, and the queue felt heavy to open as a result. Two copies is where that
+/// starts.
+///
+/// # The two things a caller must not get wrong
+///
+/// **The caller must be `#[tauri::command(async)]`.** A synchronous command runs
+/// on the main thread, and `WebviewWindowBuilder` **deadlocks** there on Windows
+/// — documented at `tauri-2.11.5/src/webview/webview_window.rs:58`. That cost
+/// four rounds of build-test-report before it was found.
+///
+/// **`spec.label` must be listed in `capabilities/default.json`.** A window
+/// missing from that list loads its HTML and then has every command rejected by
+/// the ACL, which looks like a page that rendered but does nothing.
+fn show_window(app: &AppHandle, spec: &WindowSpec) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(spec.label) {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        spec.label,
+        tauri::WebviewUrl::App(spec.url.as_str().into()),
+    )
+    .title(spec.title)
+    .inner_size(spec.width, spec.height)
+    .resizable(spec.resizable)
+    .maximizable(spec.resizable)
+    // Only `open_setup` centred before this was shared. Centring the rest is a
+    // deliberate change, not an oversight: a window the app opens on the user's
+    // behalf should appear where they are looking.
+    .center()
+    // Nothing may navigate a window away from the app.
+    //
+    // This is not belt-and-braces. The library renders links from documents,
+    // and `markdown.js` cancels the click and opens them in the real browser —
+    // but a `click` handler only sees a primary-button click. Middle-click
+    // raises `auxclick`, and WebView2's own context menu offers "open link in
+    // new window" without dispatching `click` at all. Either one would replace
+    // this window's contents with an arbitrary page, in a frame with no address
+    // bar, no back button and the app's name in the title.
+    //
+    // That is a *better* impersonation primitive than the fake panel the token
+    // renderer exists to prevent, and the CSP does not close it: `default-src`
+    // does not restrict top-level navigation.
+    .on_navigation(|url| {
+        // `tauri://localhost` on macOS, `http://tauri.localhost` on Windows.
+        matches!(url.scheme(), "tauri" | "http" | "https")
+            && url.host_str().is_some_and(|host| {
+                host == "tauri.localhost" || host == "localhost" || host.is_empty()
+            })
+    })
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    debug_inspect(&window);
+    Ok(())
+}
+
 /// Open, or focus, the settings window.
 ///
 /// # Why a second window and not a navigation
@@ -668,26 +751,17 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
 /// `(async)` for the same reason as `open_setup` — see the note there.
 #[tauri::command(async)]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window("settings") {
-        existing.show().map_err(|e| e.to_string())?;
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let window = tauri::WebviewWindowBuilder::new(
+    show_window(
         &app,
-        "settings",
-        tauri::WebviewUrl::App("settings.html".into()),
+        &WindowSpec {
+            label: "settings",
+            url: "settings.html".into(),
+            title: "Settings",
+            width: 590.0,
+            height: 610.0,
+            resizable: false,
+        },
     )
-    .title("Settings")
-    .inner_size(590.0, 610.0)
-    .resizable(false)
-    .maximizable(false)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    debug_inspect(&window);
-    Ok(())
 }
 
 /// Close the settings window from inside it, after a save.
@@ -770,6 +844,158 @@ pub fn open_sound_settings(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(uri, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// Every meeting with a summary, newest first.
+#[tauri::command(async)]
+pub fn list_library(state: State<AppState>) -> Vec<crate::library::LibraryEntry> {
+    crate::library::entries(&state.config_snapshot().output_folder)
+}
+
+/// One meeting's summary, as a token stream for the frontend's DOM builder.
+///
+/// Takes an **id**, not a path. Every other file-touching command here derives
+/// its path from an id and this one keeps that property — see
+/// `library::summary_path`, which matches the id against a folder name so `..`,
+/// an absolute path or a separator simply fails to resolve.
+#[tauri::command(async)]
+pub fn read_summary(
+    id: String,
+    state: State<AppState>,
+) -> Result<Vec<crate::markdown::Token>, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(crate::markdown::to_tokens(&text))
+}
+
+/// The absolute path of a meeting's folder, for "open in the default app".
+#[tauri::command(async)]
+pub fn library_folder(id: String, state: State<AppState>) -> Result<String, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Percent-encode a value for use in a query string.
+///
+/// # Why this is needed, contrary to an earlier comment here
+///
+/// A previous version said encoding was unnecessary because an id is
+/// "`[A-Za-z0-9_-]`-ish". It is not. A meeting folder is
+/// `{timestamp}_{sanitised title}`, and `text::sanitize_name` strips only
+/// `<>:"/\|?*` — so `&`, `#`, `%` and `+` all survive into the folder name and
+/// therefore into the id.
+///
+/// Each of them breaks the URL in its own way, and the symptom is the same: the
+/// frontend's `URLSearchParams.get("id")` returns something that matches no
+/// meeting, so the Summary button silently opens the newest meeting instead of
+/// the one the user pressed it for.
+///
+/// | title | id fragment | what the query does |
+/// |---|---|---|
+/// | `Q3 #plan` | `..._Q3_#plan` | `#` begins a fragment; the id is truncated |
+/// | `Sales & Ops` | `..._Sales_&_Ops` | `&` begins another parameter |
+/// | `100% done` | `..._100%_done` | `%_d` is a malformed escape |
+/// | `a + b` | `..._a_+_b` | `+` decodes to a space |
+///
+/// Unreserved characters are per RFC 3986, so the output is stable across
+/// decoders.
+fn encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Open, or focus, the library window, optionally on a given meeting.
+///
+/// The id travels two ways on purpose. As a query string it is there before the
+/// page's first line runs, which covers opening the window. As an event it
+/// reaches a window that is **already open** — where the URL is fixed and
+/// re-navigating would throw away the reader's scroll position.
+#[tauri::command(async)]
+pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    let already_open = app.get_webview_window("library").is_some();
+
+    let url = match id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) if !already_open => format!("library.html?id={}", encode_query_value(id)),
+        _ => "library.html".to_string(),
+    };
+
+    show_window(
+        &app,
+        &WindowSpec {
+            label: "library",
+            url,
+            title: "Summaries",
+            width: 900.0,
+            height: 640.0,
+            // Unlike Settings and the wizard, this one holds a document.
+            resizable: true,
+        },
+    )?;
+
+    if already_open {
+        if let Some(id) = id {
+            let _ = app.emit(EV_LIBRARY_SELECT, id);
+        }
+    }
+    Ok(())
+}
+
+/// Hand a link from a rendered document to the system browser.
+///
+/// # Why a link cannot simply be a link
+///
+/// In a Tauri webview an `<a href>` does not open a browser. It **navigates the
+/// webview**, replacing the app's interface with that page, in a window with no
+/// address bar and no back button. So the frontend cancels the click and calls
+/// this instead.
+///
+/// # Why this command and not `opener:allow-open-url`
+///
+/// That permission is scoped to `https://ollama.com/*` on purpose: unscoped, any
+/// string the frontend can build becomes a URL the OS opens. Widening it for
+/// links in a document would hand over every scheme the OS honours, which on
+/// both platforms includes ones that launch applications.
+///
+/// This is the narrower door. The scheme is checked **here**, in Rust, not in
+/// the JavaScript that calls it — `javascript:`, `file:` and `data:` are refused
+/// whatever the frontend believes it is sending.
+#[tauri::command(async)]
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target = permitted_url(&url).ok_or_else(|| format!("refused to open {}", url.trim()))?;
+
+    app.opener()
+        .open_url(target, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// The schemes a document may ask the OS to open.
+///
+/// Separated from the command so it can be tested without a running app, which
+/// is the whole reason this check is worth having.
+///
+/// `javascript:` is the obvious exclusion. `file:` and `data:` matter as much:
+/// the first makes a document a probe for local paths, and the second can carry
+/// a payload inline. Anything not listed is refused, so a scheme nobody
+/// considered cannot arrive by default.
+fn permitted_url(url: &str) -> Option<&str> {
+    let trimmed = url.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|scheme| lowered.starts_with(scheme))
+        .then_some(trimmed)
 }
 
 // --- startup -----------------------------------------------------------
@@ -1500,6 +1726,62 @@ pub use policy::Device as PolicyDevice;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_with_url_punctuation_still_selects_the_right_meeting() {
+        // `text::sanitize_name` strips `<>:"/\|?*` and nothing else, so each of
+        // these reaches a folder name and then the query string.
+        for (id, encoded) in [
+            ("2026-09-10_10-00-00_Q3_#plan", "2026-09-10_10-00-00_Q3_%23plan"),
+            ("2026-09-10_10-00-00_Sales_&_Ops", "2026-09-10_10-00-00_Sales_%26_Ops"),
+            ("2026-09-10_10-00-00_100%_done", "2026-09-10_10-00-00_100%25_done"),
+            ("2026-09-10_10-00-00_a_+_b", "2026-09-10_10-00-00_a_%2B_b"),
+        ] {
+            assert_eq!(encode_query_value(id), encoded, "for {id}");
+        }
+
+        // A plain id is untouched, so the common case stays readable.
+        assert_eq!(
+            encode_query_value("2026-09-10_10-00-00"),
+            "2026-09-10_10-00-00"
+        );
+    }
+
+    /// The one place this app lets a *document* reach the OS. The check lives
+    /// in Rust rather than in the JavaScript that calls it, so a frontend bug
+    /// cannot widen it.
+    #[test]
+    fn only_browser_schemes_may_be_opened() {
+        for good in [
+            "https://example.com/x",
+            "http://example.com",
+            "mailto:a@b.c",
+            "  https://example.com  ",
+            "HTTPS://EXAMPLE.COM",
+        ] {
+            assert!(permitted_url(good).is_some(), "{good} should be allowed");
+        }
+
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "  javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>x</script>",
+            "vbscript:msgbox",
+            "ms-settings:sound",
+            "./relative.md",
+            "#anchor",
+            "",
+        ] {
+            assert!(permitted_url(bad).is_none(), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_permitted_url_is_trimmed_before_it_is_opened() {
+        assert_eq!(permitted_url("  https://example.com  "), Some("https://example.com"));
+    }
 
     #[test]
     fn folder_names_have_the_expected_shape() {

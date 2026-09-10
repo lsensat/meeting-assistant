@@ -1110,8 +1110,14 @@ function wireControls() {
   ui.transcript.addEventListener("click", () => {
     if (isAvailable(ui.transcript)) api.openPath(results.transcript_file);
   });
+  // Opens the library rather than handing summary.md to the OS. On Windows
+  // that meant Notepad showing raw `#` and `*`; "open in the default app" is
+  // still there, inside the viewer, for anyone who wants their own tool.
   ui.summary.addEventListener("click", () => {
-    if (isAvailable(ui.summary)) api.openPath(results.summary_file);
+    if (!isAvailable(ui.summary)) return;
+    // The library keys on the folder name, which is the meeting's id.
+    const id = String(results.folder ?? "").split(/[/\\]/).filter(Boolean).pop() ?? "";
+    api.openLibrary(id).catch((error) => setStatus(String(error)));
   });
   // Falls back to the configured output folder, so this works before any
   // meeting has been recorded as well as after one.

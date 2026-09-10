@@ -183,6 +183,15 @@ jobs:
         working-directory: meeting-assistant-rs
         run: node ui/check.mjs
 
+      # `check.mjs` proves the modules compile. This proves the one whose
+      # failure mode IS the threat model actually behaves: that a document
+      # cannot name an element outside the allowlist, cannot reach a prototype
+      # key, cannot escape the root with surplus end tokens, and cannot make a
+      # link navigate the window.
+      - name: Test the Markdown renderer
+        working-directory: meeting-assistant-rs
+        run: node ui/test-markdown.mjs
+
       # Cheap, and it catches a Windows-only compile break in meeting-core
       # before the much slower bundling step runs.
       - name: Test

@@ -81,6 +81,7 @@ serde_json = "1"
 # a separate opt-in that also requires converting the model, and is deferred.
 whisper-rs = "0.16"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["simd"] }
 
 # The Tauri app. `rec` and `process` are the Phase M2/M3 CLI drivers; they stay
 # because they exercise the audio and pipeline layers without the UI in the way.
