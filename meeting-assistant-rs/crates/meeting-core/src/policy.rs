@@ -414,6 +414,10 @@ mod tests {
 ///
 /// # Why this exists at all
 ///
+/// A track that never opened is **not** represented here: there is no
+/// `TrackSummary` for it at all, so it is handled by the caller, which sees the
+/// `Err` arm directly.
+///
 /// A meeting was recorded while another was being processed. The audio came out
 /// wrong, the transcript was empty and the summary useless — and the app said
 /// nothing, because the counters that already knew went to a log line the
@@ -424,9 +428,6 @@ mod tests {
 /// already measured, and is reported before any model runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackDamage {
-    /// The track never opened. The most severe case, and the one with no
-    /// counters at all — there is no `TrackSummary` to read.
-    NeverStarted,
     /// Realtime callbacks were dropped because the writer could not keep up.
     /// Audio is missing and cannot be recovered.
     Dropped { callbacks: u64 },
@@ -452,10 +453,15 @@ pub struct TrackFacts {
 
 /// Systematic shortfall from resampling, as a fraction.
 ///
-/// `convert::resample_mono` rounds down once per 1024-sample chunk. Going from
-/// 44.1 kHz to 48 kHz it wants 1114.2857 samples and writes 1114, every chunk —
-/// **0.026%**, about 0.92 s per hour. 48 kHz and 16 kHz are exact and lose
-/// nothing.
+/// `convert::resample_mono` rounds to nearest once per 1024-sample chunk
+/// (`round_ties_even`). Going from 44.1 kHz to 48 kHz it wants 1114.2857
+/// samples and writes 1114 — **0.026%**, about 0.92 s per hour. The direction
+/// depends on the rate pair: it happens to lose here, and another pair could
+/// gain, which is why the comparison below is signed and only a shortfall
+/// counts. 48 kHz and 16 kHz return early and are exact.
+///
+/// The test derives this fraction from the resampler rather than from this
+/// comment, so the two cannot drift apart.
 ///
 /// The tolerance has to clear this or every long recording from a 44.1 kHz
 /// device is reported as damaged. `0.2%` leaves roughly 8x headroom.
@@ -469,6 +475,16 @@ const LENGTH_TOLERANCE: f64 = 0.002;
 /// silence is measured from a later instant. A few hundred milliseconds either
 /// way is normal.
 const LENGTH_FLOOR_SECONDS: f64 = 0.5;
+
+/// How much outage silence is worth telling the user about.
+///
+/// `gap_frames` counts only genuine outages — the opening device-open silence
+/// is `lead_in_frames` and never reaches here. Even so, a device switch
+/// mid-meeting (headphones going in) is handled gracefully and costs a fraction
+/// of a second, which is not the kind of thing to interrupt someone about.
+///
+/// A second is the point where a listener would notice a hole.
+const GAP_REPORT_SECONDS: f64 = 1.0;
 
 /// Assess one track against how long the recording actually ran.
 ///
@@ -490,14 +506,15 @@ pub fn assess_track(elapsed_seconds: f64, facts: TrackFacts) -> Option<TrackDama
         });
     }
 
-    if facts.gap_frames > 0 {
-        let rate = if facts.sample_rate == 0 {
-            1
-        } else {
-            facts.sample_rate
-        };
+    let rate = if facts.sample_rate == 0 {
+        1
+    } else {
+        facts.sample_rate
+    };
+    let gap_seconds = facts.gap_frames as f64 / rate as f64;
+    if gap_seconds >= GAP_REPORT_SECONDS {
         return Some(TrackDamage::Silence {
-            seconds: (facts.gap_frames / rate as u64).max(1),
+            seconds: gap_seconds.round().max(1.0) as u64,
         });
     }
 
@@ -518,6 +535,9 @@ pub fn assess_track(elapsed_seconds: f64, facts: TrackFacts) -> Option<TrackDama
 mod damage_tests {
     use super::*;
 
+    /// Note `gap_frames` here means **outage** silence. The opening device-open
+    /// silence is counted separately by the recorder, precisely so a healthy
+    /// recording reaches this function with `gap_frames == 0`.
     fn facts(duration: f64, overflows: u64, gap_frames: u64) -> TrackFacts {
         TrackFacts {
             duration_seconds: duration,
@@ -546,6 +566,14 @@ mod damage_tests {
 
     /// The case the length check cannot see: silence is written to keep the
     /// tracks aligned, so the file is full length while the audio is missing.
+    /// A device blip is not worth a warning, and warning about all of them
+    /// would train the user to ignore the one that matters.
+    #[test]
+    fn a_sub_second_outage_is_not_reported() {
+        let blip = facts(600.0, 0, (0.4 * 48_000.0) as u64);
+        assert_eq!(assess_track(600.0, blip), None);
+    }
+
     #[test]
     fn inserted_silence_is_reported_even_though_the_file_is_full_length() {
         let full_length = facts(600.0, 0, 20 * 48_000);
@@ -568,11 +596,27 @@ mod damage_tests {
 
     /// Without this the tolerance would flag every long recording made on a
     /// 44.1 kHz device as damaged.
+    /// The shortfall is taken from the resampler, not from a constant.
+    ///
+    /// An earlier version hardcoded `1.0 - 0.00026` — the number written in the
+    /// comment above `LENGTH_TOLERANCE`. That asserted the tolerance clears a
+    /// figure someone typed, not the figure the code produces, and would have
+    /// gone on passing if the rounding changed.
     #[test]
     fn resampling_from_44_1khz_does_not_look_like_damage() {
-        // One hour, losing the systematic 0.026% that per-chunk rounding costs.
+        let chunk = vec![0.0f32; 1024];
+        let out = crate::convert::resample_mono(&chunk, 44_100, 48_000).len() as f64;
+        let want = 1024.0 * 48_000.0 / 44_100.0;
+        // Whatever the rounding does, this is the fraction actually lost.
+        let shortfall = (want - out) / want;
+        assert!(
+            shortfall < LENGTH_TOLERANCE,
+            "the resampler loses {shortfall:.5} per chunk, more than the {LENGTH_TOLERANCE} \
+             tolerance — every long recording from a 44.1kHz device would be called damaged"
+        );
+
         let hour = 3600.0;
-        let resampled = hour * (1.0 - 0.00026);
+        let resampled = hour * (1.0 - shortfall);
         assert_eq!(
             assess_track(hour, facts(resampled, 0, 0)),
             None,
@@ -581,7 +625,7 @@ mod damage_tests {
 
         // Ten hours: still arithmetic, and well inside a proportional tolerance.
         let ten = 36_000.0;
-        assert_eq!(assess_track(ten, facts(ten * (1.0 - 0.00026), 0, 0)), None);
+        assert_eq!(assess_track(ten, facts(ten * (1.0 - shortfall), 0, 0)), None);
     }
 
     #[test]

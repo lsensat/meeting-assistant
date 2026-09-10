@@ -508,8 +508,8 @@ pub enum BlockedReason {
 ///
 /// The release has to happen on every path out of a recording: the `?` returns
 /// in `stop_recording` and `cancel_recording`, the early return when a folder
-/// sits outside the output directory, a panic in a writer thread, and a failure
-/// part-way through `RecordingSession::start`. Written as "remember to call
+/// sits outside the output directory, and a failure part-way through
+/// `RecordingSession::start`. Written as "remember to call
 /// `hold(false)`" that is one refactor away from a queue that never restarts —
 /// a worse bug than the one the hold fixes.
 ///
@@ -524,7 +524,14 @@ pub struct RecordingHold {
 
 impl RecordingHold {
     /// Stop the queue until this value is dropped.
-    pub fn acquire(queue: std::sync::Arc<Queue>) -> Self {
+    ///
+    /// `pub(crate)` on purpose. The flag is a boolean, not a count, so two live
+    /// holds would mean the first `Drop` released the queue while the second
+    /// recording was still capturing. One session at a time is the invariant
+    /// `start_recording` already enforces, and keeping this out of the public
+    /// surface keeps it that way rather than trusting every future caller to
+    /// know.
+    pub(crate) fn acquire(queue: std::sync::Arc<Queue>) -> Self {
         queue.hold_for_recording(true);
         Self { queue }
     }
@@ -684,9 +691,12 @@ impl Queue {
         let mut inner = self.lock();
 
         if inner.running.as_deref() == Some(id) {
-            drop(inner);
+            // Aborted **under the lock**, for the reason `halt_if_blocked`
+            // spells out: releasing first lets the worker finish this job,
+            // install a fresh control for the next one, and receive this abort
+            // instead. That job then dies at its first checkpoint with no live
+            // reason, having paid for a model load.
             self.control.lock().expect("control poisoned").abort();
-            inner = self.lock();
 
             // Actually wait. This used to abort and return immediately while
             // claiming in a comment that it waited, so a discard raced the
@@ -1104,16 +1114,21 @@ mod queue_tests {
         );
     }
 
-    /// Dropping the guard is the only way the hold is released, so it must
-    /// survive every way a recording can end — including a panic.
+    /// A panic in whichever thread owns the session still releases the queue.
+    ///
+    /// Deliberately narrow. This does **not** cover a panic in a recorder
+    /// thread: `handle.join()` absorbs that into a failed track and the session
+    /// lives on. An earlier version of this test panicked with the message
+    /// "a writer thread died", which named the one case the mechanism does not
+    /// handle while passing for an unrelated reason.
     #[test]
-    fn the_hold_is_released_even_if_the_owner_panics() {
+    fn the_hold_is_released_if_the_thread_owning_the_session_panics() {
         let queue = std::sync::Arc::new(Queue::new());
         let q = std::sync::Arc::clone(&queue);
 
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _hold = RecordingHold::acquire(q);
-            panic!("a writer thread died");
+            panic!("the thread owning the session died");
         }));
 
         assert_eq!(

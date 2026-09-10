@@ -31,8 +31,14 @@ pub struct RecordingSession {
     /// A field rather than something the commands acquire and release, so the
     /// hold cannot outlive or under-live the recording. Every way out of a
     /// recording — the `?` returns in `stop_recording` and `cancel_recording`,
-    /// the early return for a folder outside the output directory, a panic —
-    /// drops this session, and dropping this session releases the queue.
+    /// the early return for a folder outside the output directory — drops this
+    /// session, and dropping this session releases the queue.
+    ///
+    /// Note what this does **not** cover: a panic in a recorder thread. That is
+    /// absorbed by `handle.join()` and reported as a failed track, leaving this
+    /// session alive in `AppState` and the hold in place until someone stops or
+    /// cancels. The guard covers a panic in whichever thread owns the session,
+    /// which is a different thing.
     ///
     /// It is listed **last** deliberately. `stop` moves out `folder` and
     /// `tracks` and lets the rest drop at the end of the function, which is
@@ -203,6 +209,7 @@ mod tests {
             final_device: "test".into(),
             overflows: 0,
             gap_frames: 0,
+            lead_in_frames: 0,
         }
     }
 

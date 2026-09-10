@@ -115,7 +115,21 @@ fn main() {
                 println!("  duration   : {:.3}s ({} frames)", t.duration_seconds, t.frames);
                 println!("  fallback   : {}", t.automatic_fallback);
                 println!("  overflows  : {}", t.overflows);
-                println!("  gap frames : {}", t.gap_frames);
+                // Two separate numbers on purpose. The lead-in is the silence
+                // that covers opening the device and every recording has some;
+                // gap frames are outages during the meeting and a healthy
+                // recording has none. Counting them together made every
+                // recording look damaged.
+                println!(
+                    "  lead-in    : {} frames ({:.3}s, normal)",
+                    t.lead_in_frames,
+                    t.lead_in_frames as f64 / 48_000.0
+                );
+                println!(
+                    "  gap frames : {} ({:.3}s, outages — expect 0)",
+                    t.gap_frames,
+                    t.gap_frames as f64 / 48_000.0
+                );
             }
             Err(e) => println!("\nTRACK FAILED: {e}"),
         }

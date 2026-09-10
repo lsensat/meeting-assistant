@@ -238,6 +238,11 @@ const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/mai
 
 #[derive(Debug)]
 pub enum WhisperError {
+    /// The caller asked to stop — a recording started. **Not a failure**:
+    /// mapping this onto the error path marked the meeting `Failed` with an
+    /// error banner for doing exactly what was asked, leaving the user to find
+    /// it and press Retry.
+    Cancelled,
     UnknownModel(String),
     Download(String),
     Io(std::io::Error),
@@ -257,6 +262,7 @@ pub enum WhisperError {
 impl std::fmt::Display for WhisperError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "model download stopped for a recording"),
             Self::UnknownModel(id) => write!(f, "unknown Whisper model \"{id}\""),
             Self::Download(e) => write!(f, "could not download the Whisper model: {e}"),
             Self::Io(e) => write!(f, "model file error: {e}"),
@@ -460,7 +466,12 @@ pub fn download_model(
             // silent truncation: the caller decides whether an abort was
             // expected, and the temporary file is discarded either way.
             if !on_progress(percent) {
-                return Err(WhisperError::Download("download cancelled".into()));
+                // The partial file is left on disk under its `.part` name. It
+                // is never mistaken for an installed model — only a completed,
+                // digest-checked download is renamed into place — but it is not
+                // resumed either: the next attempt truncates and starts over.
+                // Worth improving; not worth pretending otherwise here.
+                return Err(WhisperError::Cancelled);
             }
             last_percent = percent;
         }

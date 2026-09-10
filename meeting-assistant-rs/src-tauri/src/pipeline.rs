@@ -226,7 +226,7 @@ pub fn run(
             "downloading_model",
             &[("model", &config.whisper_model)],
         )));
-        whisper::download_model(&config.whisper_model, |percent| {
+        match whisper::download_model(&config.whisper_model, |percent| {
             // Stops the transfer when a recording starts. Without this the hold
             // could not interrupt the single longest thing this app ever does.
             if control.is_aborted() {
@@ -238,7 +238,17 @@ pub fn run(
                 &[("model", &config.whisper_model), ("percent", &percent.to_string())],
             )));
             true
-        })?;
+        }) {
+            // Stopping for a recording is not a failure. Propagated as an error
+            // it marked the meeting `Failed` with an error banner for doing
+            // exactly what the hold asked of it, leaving the user to find it and
+            // press Retry.
+            Err(whisper::WhisperError::Cancelled) => {
+                return Ok(RunOutcome::Paused(config.resume));
+            }
+            Err(other) => return Err(PipelineError::Whisper(other)),
+            Ok(_) => {}
+        }
     } else {
         on_progress(Progress::Status(i18n::tr_args(
             config.language,

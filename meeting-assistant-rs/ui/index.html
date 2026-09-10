@@ -275,6 +275,25 @@
     </div>
   </div>
 
+  <!--
+    Shown when a recording finished with audio missing.
+
+    A modal rather than a status line: the status line is overwritten by the
+    processing messages within seconds of a meeting ending, and the title dialog
+    covers it before that. This is the only notice the user gets that a meeting
+    is incomplete, and re-running the pipeline cannot recover what was never
+    captured — so it waits to be read.
+  -->
+  <div class="modal-backdrop" id="damage-modal" hidden>
+    <div class="modal">
+      <h2 id="damage-title"></h2>
+      <p id="damage-body"></p>
+      <div class="modal-actions">
+        <button class="btn btn--primary" id="damage-ok" data-i18n="damage_dismiss"></button>
+      </div>
+    </div>
+  </div>
+
   <div id="tooltip"></div>
   <script type="module" src="js/main.js"></script>
 </body>

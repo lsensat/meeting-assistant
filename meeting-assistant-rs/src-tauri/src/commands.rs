@@ -1137,7 +1137,7 @@ fn assess_capture(
                         "capture_short",
                         &[("track", name), ("seconds", &missing_seconds.to_string())],
                     )),
-                    Some(TrackDamage::NeverStarted) | None => {}
+                    None => {}
                 }
             }
         }
@@ -1630,6 +1630,15 @@ pub use policy::Device as PolicyDevice;
 mod tests {
     use super::*;
 
+    /// A track as the recorder really reports one.
+    ///
+    /// `lead_in_frames` is non-zero on purpose. **Every** recording has an
+    /// opening silence — a couple of hundred milliseconds while the device
+    /// opens, more on Windows — and an earlier version of this helper set it to
+    /// zero, a value the recorder never produces. The damage check counted that
+    /// silence as an outage, so it would have reported every healthy meeting as
+    /// broken, and these tests could not see it because they invented a
+    /// recording that cannot exist.
     fn track(duration: f64, overflows: u64, gap_frames: u64) -> crate::audio::recorder::TrackSummary {
         crate::audio::recorder::TrackSummary {
             kind: crate::audio::devices::SourceKind::Microphone,
@@ -1640,6 +1649,8 @@ mod tests {
             final_device: "Test".into(),
             overflows,
             gap_frames,
+            // ~0.23s, measured on macOS. Windows is larger.
+            lead_in_frames: 11_000,
         }
     }
 
@@ -1653,10 +1664,31 @@ mod tests {
         }
     }
 
+    /// The regression that matters most: a warning on every meeting is worse
+    /// than no warning at all, because it teaches the user to ignore it.
     #[test]
     fn a_healthy_recording_produces_no_report() {
         let s = session(600.0, vec![Ok(track(600.0, 0, 0)), Ok(track(600.0, 0, 0))]);
-        assert!(assess_capture(&s, meeting_core::config::Language::En).is_none());
+        assert!(
+            assess_capture(&s, meeting_core::config::Language::En).is_none(),
+            "a normal recording, opening silence and all, must not be called damaged"
+        );
+    }
+
+    /// The opening silence is unavoidable and belongs to alignment, not damage.
+    /// Counting it as an outage is what made every meeting look broken.
+    #[test]
+    fn the_device_open_lead_in_is_never_damage() {
+        let mut slow_to_open = track(600.0, 0, 0);
+        // Two full seconds — a slow Windows loopback open, well past any
+        // threshold an outage check would use.
+        slow_to_open.lead_in_frames = 2 * 48_000;
+
+        let s = session(600.0, vec![Ok(slow_to_open), Ok(track(600.0, 0, 0))]);
+        assert!(
+            assess_capture(&s, meeting_core::config::Language::En).is_none(),
+            "a device that took its time opening is not a damaged recording"
+        );
     }
 
     /// The reported failure: the machine could not keep up and audio was lost.

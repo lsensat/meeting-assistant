@@ -243,6 +243,8 @@ const ICON_RETRY =
 
 /** True while processing is held. Mirrored from Rust, which owns the truth. */
 let processingPaused = false;
+/** Why the queue is stopped: "user", "recording", or null. */
+let blockedReason = null;
 
 function iconButton(className, path, tooltipKey, onClick) {
   const button = document.createElement("button");
@@ -305,6 +307,11 @@ function percentFor(job) {
 function stageLabel(job) {
   if (job.stage === "failed") return tr("queue_stage_failed");
   // Paused work is not "waiting its turn"; say which it is.
+  // Say *why* nothing is moving. A card that reads "Waiting" for a whole
+  // meeting, with no reason, is how the hold looks from the outside — and the
+  // reason matters, because one of the two is the user's own choice and the
+  // other is not.
+  if (!job.running && blockedReason === "recording") return tr("queue_held_recording");
   if (!job.running && processingPaused) return tr("queue_paused");
 
   const name = tr(`queue_stage_${job.stage}`);
@@ -458,6 +465,7 @@ async function renderQueue() {
   try {
     jobs = await api.listJobs();
     processingPaused = await api.isProcessingPaused();
+    blockedReason = await api.processingBlockedReason();
   } catch {
     // The window can outlive a command failing; an empty queue is the honest
     // thing to draw, and the status line reports anything that matters.
@@ -998,7 +1006,16 @@ function wireEvents() {
   // emits no completion payload at all. Waiting for the pipeline would have
   // stayed silent for exactly the meeting that needed telling.
   api.on(api.EVENTS.captureDamage, ({ message, detail }) => {
-    setStatus(message, detail);
+    // NOT `setStatus`. The sequence after a recording is: stop -> the title
+    // modal opens over the window -> processing starts emitting its own status
+    // every few seconds. A damage report written to the status line is behind a
+    // modal within a second and overwritten within a few more, which for a
+    // feature whose entire premise is "the app said nothing" is barely better
+    // than saying nothing.
+    //
+    // It stays on screen until dismissed, because it is the only notice the
+    // user will get that this meeting is incomplete.
+    showCaptureDamage(message, detail);
   });
 
   // The single source of truth for whether a meeting is running. It arrives
@@ -1082,6 +1099,33 @@ async function stopFlow() {
   } catch (error) {
     setStatus(String(error));
   }
+}
+
+/**
+ * Tell the user this meeting is missing audio, and make them acknowledge it.
+ *
+ * @param {string} message
+ * @param {string} detail
+ */
+function showCaptureDamage(message, detail) {
+  const modal = el("damage-modal");
+  el("damage-title").textContent = message;
+  // `textContent`, and the detail is built from the catalogue plus integers
+  // from the recorder — no path from a device name to markup.
+  el("damage-body").textContent = detail;
+
+  const close = () => {
+    modal.hidden = true;
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") close();
+  };
+
+  el("damage-ok").onclick = close;
+  document.addEventListener("keydown", onKey);
+  modal.hidden = false;
+  el("damage-ok").focus();
 }
 
 /** Discard and delete. Confirmed here for the same reason as stopFlow. */
