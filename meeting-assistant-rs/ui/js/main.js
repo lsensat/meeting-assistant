@@ -1205,17 +1205,37 @@ async function main() {
     showResolvedDevices(await api.getConfig());
   }, 1500);
 
-  // Settings is a separate window, so this one has to notice when it changes.
-  // Regaining focus is the moment settings was closed or saved; re-reading the
-  // config here keeps the language and the device panel from going stale.
-  window.addEventListener("focus", async () => {
-    if (recording) return;
+  /**
+   * Re-read the config and re-apply everything derived from it.
+   *
+   * @param {boolean} [force] apply even while recording
+   */
+  async function adoptConfig(force = false) {
+    if (recording && !force) return;
     const latest = await api.getConfig();
     currentConfig = latest;
     setLanguage(String(latest.language ?? "en"));
     applyLanguage();
     showResolvedDevices(latest);
-  });
+    // The queue cards are built in JavaScript, so `applyLanguage` — which only
+    // touches `[data-i18n]` elements — does not reach them. Without this the
+    // stage labels stay in the old language until the next poll.
+    renderQueue();
+  }
+
+  // Settings saved. This is the reliable signal: `focus` only fires if the user
+  // brings this window forward, so changing the language with Settings left open
+  // used to leave the main window in the old one — Rust emitting Spanish onto a
+  // status line surrounded by English labels.
+  //
+  // Forced, because a language change must apply during a recording too. The
+  // `recording` guard exists to stop the device panel being redrawn mid-session,
+  // and that concern does not extend to re-labelling the UI.
+  api.on(api.EVENTS.configChanged, () => adoptConfig(true));
+
+  // Kept as a backstop: the config file can also change without this window
+  // hearing an event — another instance, or an edit on disk.
+  window.addEventListener("focus", () => adoptConfig());
 
   // Awaited and reported. Unawaited, a rejection here was invisible: the status
   // line kept its static "Checking environment..." placeholder, which reads

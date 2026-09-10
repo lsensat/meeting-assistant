@@ -80,6 +80,7 @@ serde_json = "1"
 # metal` is redundant and `--no-default-features` does NOT disable it. CoreML is
 # a separate opt-in that also requires converting the model, and is deferred.
 whisper-rs = "0.16"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 
 # The Tauri app. `rec` and `process` are the Phase M2/M3 CLI drivers; they stay
 # because they exercise the audio and pipeline layers without the UI in the way.

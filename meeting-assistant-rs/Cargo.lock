@@ -2348,6 +2348,7 @@ dependencies = [
 name = "meeting-assistant"
 version = "0.2.4"
 dependencies = [
+ "chrono",
  "cpal",
  "crossbeam-channel",
  "hound",
