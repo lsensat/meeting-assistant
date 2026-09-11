@@ -75,10 +75,21 @@ serde_json = "1"
 # whisper.cpp. GGUF weights, not CTranslate2 — the Python's faster-whisper
 # models are a different format and are not reusable.
 #
-# No feature flags on purpose: Metal is wired into the manifest for
-# `aarch64-apple-darwin` and is enabled automatically, so adding `--features
-# metal` is redundant and `--no-default-features` does NOT disable it. CoreML is
-# a separate opt-in that also requires converting the model, and is deferred.
+# No feature flags, and that means **no GPU at all — on either platform**.
+#
+# This comment used to claim Metal was wired in automatically for
+# `aarch64-apple-darwin`. It is not, and the mistake was load-bearing: it made
+# the Mac's speed look like GPU acceleration and Windows' slowness look like the
+# absence of it, when both are CPU numbers. `whisper-rs-sys/build.rs` defines
+# `GGML_METAL=OFF` unless the `metal` feature is on, and whisper-rs 0.16.0 has no
+# target-specific default that turns it on.
+#
+# The Mac is fast because of Accelerate (linked unconditionally by
+# whisper-rs-sys) plus NEON on Apple Silicon. Enabling `metal` here, and
+# `vulkan` on Windows, is a deliberate change with real consequences — a build
+# dependency on the Vulkan SDK, and a load-time DLL import that breaks launch on
+# a machine without the loader — so it is a decision, not a default.
+# CoreML is a further opt-in that also requires converting the model.
 whisper-rs = "0.16"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 

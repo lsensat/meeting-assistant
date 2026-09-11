@@ -260,6 +260,33 @@ pub fn is_automatic_fallback(configured_name: &str, previous_name: &str, chosen_
     }
 }
 
+/// The most threads whisper.cpp is given, however many cores the machine has.
+///
+/// OpenMP is **off** in this build (`whisper-rs-sys/build.rs` defines
+/// `GGML_OPENMP=OFF` unless the feature is on, and it is not), so ggml uses its
+/// own thread pool — which spin-waits at barriers. Past the point where the
+/// work actually parallelises, extra threads burn cores fighting each other and
+/// the transcription gets *slower*. The ceiling is not superstition.
+const MAX_WHISPER_THREADS: usize = 8;
+
+/// How many threads to hand whisper.cpp.
+///
+/// # Why this exists at all
+///
+/// `set_n_threads` was never called, so whisper.cpp used its default of
+/// `min(4, hardware_concurrency)` — four threads on a sixteen-thread laptop.
+/// Measured on Windows before this: 577s of transcription for 150s of audio,
+/// **3.8x slower than realtime**, with most of the machine idle. A one-hour
+/// meeting would have taken close to four hours.
+///
+/// One core is left free so the machine stays usable while a meeting processes.
+/// Recording is not a concern here — a recording takes the queue hold
+/// (`queue.rs`), so capture and transcription never run at the same time — but
+/// the user's other work is.
+pub fn whisper_threads(available: usize) -> i32 {
+    available.saturating_sub(1).clamp(1, MAX_WHISPER_THREADS) as i32
+}
+
 /// How many samples of silence cover a gap of `gap_seconds`.
 ///
 /// This is what keeps the two tracks time-aligned across a device disconnect.
@@ -506,6 +533,27 @@ mod tests {
     #[test]
     fn gap_to_silence_frames() {
         assert_eq!(silence_frames_for_gap(0.7, 48_000), 33_600);
+    }
+
+    #[test]
+    fn whisper_gets_the_cores_the_machine_has_minus_one() {
+        assert_eq!(whisper_threads(8), 7);
+        assert_eq!(whisper_threads(5), 4);
+    }
+
+    #[test]
+    fn a_big_machine_is_capped() {
+        // ggml's thread pool spin-waits at barriers with OpenMP off, so past
+        // the ceiling more threads cost time rather than saving it.
+        assert_eq!(whisper_threads(16), MAX_WHISPER_THREADS as i32);
+        assert_eq!(whisper_threads(128), MAX_WHISPER_THREADS as i32);
+    }
+
+    #[test]
+    fn a_single_core_machine_still_gets_a_thread() {
+        // `available - 1` is zero here, and zero threads is not a transcription.
+        assert_eq!(whisper_threads(1), 1);
+        assert_eq!(whisper_threads(0), 1, "must not underflow or return zero");
         assert_eq!(silence_frames_for_gap(-1.0, 48_000), 0);
     }
 

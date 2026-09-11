@@ -22,6 +22,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use meeting_core::convert::{peak, resample_for_whisper, WHISPER_SAMPLE_RATE};
+use meeting_core::policy;
 use meeting_core::text::Segment;
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -235,6 +236,69 @@ mod integrity_tests {
 
 /// Official whisper.cpp weight mirror.
 const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+
+/// The decoding knobs, with diagnostic overrides.
+///
+/// # Why these are settable from the environment
+///
+/// Windows transcribed 150s of audio in 577s — **3.8x slower than realtime**,
+/// which makes an hour-long meeting a four-hour wait. Three knobs plausibly
+/// explain it and none had ever been measured on a slow machine. Rebuilding and
+/// reinstalling between each measurement is three round-trips through CI and an
+/// installer; one build that can be asked all three questions is not.
+///
+/// They are **diagnostics, not settings**: unset, the app behaves exactly as
+/// documented, and nothing in the UI offers them. If a measurement turns one of
+/// them into a real decision, it becomes a real setting and this goes away.
+struct Tuning {
+    threads: i32,
+    beam_size: i32,
+    suppress_nst: bool,
+}
+
+impl Tuning {
+    /// Read at the call site, deliberately.
+    ///
+    /// `policy::whisper_threads` stays a pure function of the core count:
+    /// reading the environment inside it would make its unit tests depend on
+    /// process-wide state that `cargo test`'s threaded runner shares.
+    fn from_env() -> Self {
+        let available = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1);
+
+        Self {
+            threads: env_i32("MEETING_ASSISTANT_WHISPER_THREADS")
+                .filter(|n| *n > 0)
+                .unwrap_or_else(|| policy::whisper_threads(available)),
+            beam_size: env_i32("MEETING_ASSISTANT_WHISPER_BEAM")
+                .filter(|n| *n > 0)
+                .unwrap_or(5),
+            // Only an explicit "0" turns it off; anything else keeps the
+            // documented behaviour, so a typo cannot silently change output.
+            suppress_nst: std::env::var("MEETING_ASSISTANT_WHISPER_SUPPRESS_NST")
+                .map_or(true, |v| v.trim() != "0"),
+        }
+    }
+}
+
+/// One line describing how transcription is configured, for `meeting.json`.
+pub fn tuning_summary() -> String {
+    let tuning = Tuning::from_env();
+    let available = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+
+    format!(
+        "threads={} of {}, beam={}, suppress_nst={}",
+        tuning.threads, available, tuning.beam_size, tuning.suppress_nst
+    )
+}
+
+fn env_i32(key: &str) -> Option<i32> {
+    std::env::var(key).ok()?.trim().parse().ok()
+}
+
 
 #[derive(Debug)]
 pub enum WhisperError {
@@ -718,10 +782,12 @@ impl Transcriber {
             });
         }
 
+        let tuning = Tuning::from_env();
+
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-            // Both match the Python's `model.transcribe(..., beam_size=5)`
-            // (`app.py:1877`). Changing them changes the transcript.
-            beam_size: 5,
+            // Matches the Python's `model.transcribe(..., beam_size=5)`
+            // (`app.py:1877`). Changing it changes the transcript.
+            beam_size: tuning.beam_size,
             patience: 0.0,
         });
 
@@ -731,13 +797,16 @@ impl Transcriber {
         // mean giving up beam search for every transcript in order to improve a
         // path taken only when a window fails its checks. Not worth it.
 
+        // The whole machine, not four threads of it. See `policy::whisper_threads`.
+        params.set_n_threads(tuning.threads);
+
         if let Some(language) = &self.language {
             params.set_language(Some(language));
         }
 
         // The Python passed `vad_filter=True`. whisper.cpp's equivalent knob is
         // suppressing non-speech tokens; true VAD is a separate model here.
-        params.set_suppress_nst(true);
+        params.set_suppress_nst(tuning.suppress_nst);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_special(false);

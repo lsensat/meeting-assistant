@@ -1553,6 +1553,8 @@ fn run_job(
     // are worth recording. A failure's timings are the most interesting of all.
     if let Ok(clocks) = timings.lock() {
         meeting.timings = clocks.clone();
+        // Beside the timing it explains. See `MeetingState::whisper_tuning`.
+        meeting.whisper_tuning = Some(whisper::tuning_summary());
     }
 
     match result {
