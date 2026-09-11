@@ -328,6 +328,13 @@ fn select_device(app: &AppHandle, microphone: Option<String>, system: Option<Str
     }
     *state.config.lock().expect("config poisoned") = config;
     rebuild(app);
+
+    // The Settings window path (`commands::save_config`) emits this; the tray
+    // path is the same action and did not, so a window open at the time went on
+    // showing the old device. Saving from Settings no longer clobbers this
+    // choice regardless — see `collect` in `settings.js` — but a panel that
+    // disagrees with the tray is still wrong on its face.
+    let _ = app.emit(crate::commands::EV_CONFIG_CHANGED, ());
 }
 
 /// Reveal the main window, whether it was hidden or merely behind something.
