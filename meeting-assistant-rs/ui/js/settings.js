@@ -288,13 +288,54 @@ function populateFiles() {
   el("custom-prompt").value = String(config.custom_summary_prompt ?? "");
 }
 
+/**
+ * Fill every control, with each step isolated from the others.
+ *
+ * # Why this is not a chain of awaits
+ *
+ * It was, and the cost is recorded twice in this codebase. A bare
+ * `await a(); await b(); await c();` means the first rejection abandons every
+ * step after it **and** the `wire()` call that follows in `main`, so the window
+ * opens with empty dropdowns and dead buttons and nothing on screen saying why.
+ * `ollama.rs` documents one occurrence; a debug build hit the same shape again,
+ * because `reqwest::blocking` panics inside tokio when `debug_assertions` is on
+ * and takes `populateOllama` down with it — blanking the device lists, which
+ * have nothing to do with Ollama.
+ *
+ * Each step now reports its own failure, in its own section, and the rest of the
+ * window still works. A Settings window that is half-populated and says which
+ * half failed is far more useful than one that is silently inert.
+ */
 async function populateAll() {
-  await populateLanguages();
-  await populateWhisper();
-  await populateProvider();
-  await populateOllama();
-  await populateDevices();
-  populateFiles();
+  await step(populateLanguages, "settings-note");
+  await step(populateWhisper, "whisper-note");
+  await step(populateProvider, "settings-note");
+  await step(populateOllama, "ollama-status");
+  await step(populateDevices, "devices-note");
+  await step(populateFiles, "settings-note");
+}
+
+/**
+ * Run one population step, containing any failure.
+ *
+ * @param {() => unknown} fn
+ * @param {string} noteId element that carries the message when `fn` fails
+ */
+async function step(fn, noteId) {
+  try {
+    await fn();
+  } catch (error) {
+    const message = tr("section_load_failed", { error: String(error) });
+    const note = el(noteId);
+    if (note) note.textContent = message;
+
+    // Also to the log: the note is only visible while Settings is open, and
+    // whoever is debugging this is usually reading a terminal, not the window.
+    // Same shape as `main()`'s handler below.
+    window.__TAURI__?.core?.invoke("ui_log", {
+      message: `settings ${noteId}: ${error?.stack ?? String(error)}`,
+    });
+  }
 }
 
 /**

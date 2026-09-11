@@ -11,6 +11,10 @@
     <!-- Five sections, matching the original: Language, Processing, Audio,
          Files and privacy, Custom prompt. -->
 
+    <!-- Anything that failed to load and has no section of its own to say so.
+         Empty in the normal case. See `populateAll` in settings.js. -->
+    <div class="helper" id="settings-note"></div>
+
     <section class="section">
       <h2 data-i18n="language">Language</h2>
       <div class="field">
@@ -109,6 +113,9 @@
         <label for="system-audio" data-i18n="meeting_audio_title">Computer audio</label>
         <select id="system-audio"></select>
       </div>
+
+      <!-- Empty unless the device list could not be read. See `populateAll`. -->
+      <div class="helper" id="devices-note"></div>
 
       <!--
         Two actions on one row: re-read the device list, and go and change it.
