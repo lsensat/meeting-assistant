@@ -146,6 +146,20 @@ pub struct MeetingState {
     /// How long each stage took. See [`Timings`].
     #[serde(default)]
     pub timings: Timings,
+    /// The decoding knobs the transcription actually ran with.
+    ///
+    /// A timing is only evidence if it says what produced it. Windows sat at
+    /// 3.8x slower than realtime with four threads, and the fix is measured by
+    /// comparing runs — which is impossible if a `whisper.seconds` in one
+    /// meeting.json cannot be told apart from the same number produced by
+    /// different settings. Free-form text: this is a note for whoever reads the
+    /// file, not a schema.
+    ///
+    /// `#[serde(default)]` and no `SCHEMA_VERSION` bump — `load` rejects a
+    /// version above its own, so bumping for an optional field would make every
+    /// new meeting invisible to an older build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whisper_tuning: Option<String>,
     /// The failure from the last attempt, when `stage` is `Failed`.
     #[serde(default)]
     pub error: Option<String>,
@@ -170,6 +184,7 @@ impl MeetingState {
             summary_chunk: 0,
             duration_seconds: None,
             timings: Timings::default(),
+            whisper_tuning: None,
             error: None,
             config,
         }

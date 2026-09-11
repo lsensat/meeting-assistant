@@ -33,9 +33,11 @@ cargo clippy --all-targets -- -D warnings
 cargo run --bin meeting-assistant
 ```
 
-The first build compiles whisper.cpp, which takes a few minutes. Metal is
-enabled automatically on Apple Silicon — do **not** pass `--features metal`, and
-note that `--no-default-features` does not turn it off.
+The first build compiles whisper.cpp, which takes a few minutes. **No GPU
+backend is enabled on either platform** — this used to say Metal was automatic on
+Apple Silicon, which is wrong: `whisper-rs-sys` defines `GGML_METAL=OFF` unless
+the `metal` feature is on. The Mac is fast because of Accelerate and NEON, on the
+CPU. See "Measuring transcription speed" below.
 
 ### CLI drivers
 
@@ -130,6 +132,37 @@ There is no public API to query or pre-request the audio-capture grant, so the
 app cannot detect this state and warn you — it can only attempt the tap and
 report the failure. Signing with a Developer ID certificate would end the
 re-prompting; that is deliberately out of scope for now.
+
+## Measuring transcription speed
+
+Whisper runs at very different speeds on different machines: roughly 0.2x
+realtime on an Apple Silicon Mac, and **3.8x slower than realtime** on a Windows
+laptop before threading was fixed — a one-hour meeting taking close to four
+hours. Both are CPU numbers; neither platform enables a GPU backend today.
+
+Every meeting already measures itself. `meeting.json` records `duration_seconds`
+and `timings.whisper.seconds`, so the ratio needs no instrumentation, and
+`whisper_tuning` beside them says what produced it:
+
+```json
+"whisper_tuning": "threads=7 of 8, beam=5, suppress_nst=true"
+```
+
+Three knobs can be overridden from the environment, to measure without a
+rebuild. They are **diagnostics, not settings** — unset, the app behaves exactly
+as documented, and nothing in the UI offers them.
+
+| Variable | Default | What it changes |
+|---|---|---|
+| `MEETING_ASSISTANT_WHISPER_THREADS` | cores - 1, capped at 8 | Decode threads. whisper.cpp's own default is `min(4, cores)`, which left most of the machine idle. |
+| `MEETING_ASSISTANT_WHISPER_BEAM` | 5 | Beam width. Lower is faster and less accurate. |
+| `MEETING_ASSISTANT_WHISPER_SUPPRESS_NST` | on | Set to `0` to stop suppressing non-speech tokens. Never benchmarked; it modifies the logits at every decode step. |
+
+Change one at a time and compare the ratio across runs of the same audio.
+
+On Windows the app is launched from the Start menu, so set these as **user
+environment variables** (Settings -> System -> About -> Advanced system settings
+-> Environment Variables) and relaunch, rather than exporting them in a shell.
 
 ## Diagnosing an empty system-audio track
 
