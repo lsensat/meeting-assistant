@@ -297,9 +297,26 @@ async function populateAll() {
   populateFiles();
 }
 
-function collect() {
+/**
+ * The form's values, merged onto the config as it is **right now**.
+ *
+ * `base` must be freshly read at save time, not the snapshot taken when the
+ * window opened. The spread carries every field this form does not show —
+ * `processing_paused`, `devices_expanded`, `queue_expanded`, `setup_completed`
+ * — so a stale base silently reverts whatever changed elsewhere while Settings
+ * sat open. Concretely: open Settings, pause the queue in the main window,
+ * press Save here, and the pause is undone. The tray's device menu writes
+ * config too and is the same hazard.
+ *
+ * Re-reading at the moment of the click closes the window entirely, which
+ * listening for a change event cannot: anything changed between the last event
+ * and the click would still be lost.
+ *
+ * @param {Record<string, unknown>} base
+ */
+function collect(base) {
   return {
-    ...config,
+    ...base,
     language: el("app-language").value,
     transcription_language: el("transcription-language").value,
     whisper_model: el("whisper-model").value,
@@ -322,20 +339,20 @@ function wire() {
   // part that is not covered by the `[data-i18n]` walk.
   el("app-language").addEventListener("change", async () => {
     setLanguage(el("app-language").value);
-    config = collect();
+    config = collect(config);
     applyLanguage();
     await populateAll();
   });
 
   el("whisper-model").addEventListener("change", async () => {
-    config = collect();
+    config = collect(config);
     await populateWhisper();
   });
 
   el("summary-provider").addEventListener("change", applyProviderVisibility);
 
   el("refresh-models").addEventListener("click", async () => {
-    config = collect();
+    config = collect(config);
     await populateOllama();
   });
 
@@ -353,7 +370,7 @@ function wire() {
   });
 
   el("refresh-devices").addEventListener("click", async () => {
-    config = collect();
+    config = collect(config);
     await api.refreshDevices();
     await populateDevices();
   });
@@ -364,7 +381,8 @@ function wire() {
   });
 
   el("save-settings").addEventListener("click", async () => {
-    const next = collect();
+    // Read-modify-write, not write. See `collect`.
+    const next = collect(await api.getConfig());
 
     // The custom summary type is the only one that needs its prompt; the
     // original refused to save an empty one (`custom_prompt_required`).

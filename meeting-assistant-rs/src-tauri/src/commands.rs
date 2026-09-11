@@ -1200,6 +1200,7 @@ fn assess_capture(
                         duration_seconds: t.duration_seconds,
                         overflows: t.overflows,
                         gap_frames: t.gap_frames,
+                        glitches: t.glitches,
                         sample_rate: meeting_core::convert::TARGET_SAMPLE_RATE,
                     },
                 );
@@ -1219,6 +1220,18 @@ fn assess_capture(
                         language,
                         "capture_short",
                         &[("track", name), ("seconds", &missing_seconds.to_string())],
+                    )),
+                    Some(TrackDamage::Glitched {
+                        missing_seconds,
+                        glitches,
+                    }) => details.push(i18n::tr_args(
+                        language,
+                        "capture_glitched",
+                        &[
+                            ("track", name),
+                            ("seconds", &missing_seconds.to_string()),
+                            ("glitches", &glitches.to_string()),
+                        ],
                     )),
                     None => {}
                 }

@@ -538,6 +538,7 @@ mod tests {
         let facts = TrackFacts {
             overflows: 0,
             gap_frames: gap,
+            glitches: 0,
             sample_rate: 48_000,
             duration_seconds: 40.763,
         };
@@ -580,6 +581,17 @@ pub enum TrackDamage {
     /// The file is materially shorter than the recording. A backstop for loss
     /// that neither counter above saw.
     Short { missing_seconds: u64 },
+    /// The driver reported glitches and the file came out short by about the
+    /// time they account for.
+    ///
+    /// Distinct from `Short` because the cause is known and actionable: the
+    /// machine could not feed the capture buffer reliably. `Short` alone says
+    /// "something is missing and I do not know what", which is true but not
+    /// useful to someone deciding whether to trust the transcript.
+    Glitched {
+        missing_seconds: u64,
+        glitches: u64,
+    },
 }
 
 /// One track's measurements, as the recorder reports them.
@@ -591,6 +603,17 @@ pub struct TrackFacts {
     pub overflows: u64,
     /// Samples of silence inserted to cover an outage.
     pub gap_frames: u64,
+    /// Driver-reported glitches that did not end the stream.
+    ///
+    /// These are why this field has to be here rather than only in the log.
+    /// A glitch means frames were genuinely lost, the driver does not say how
+    /// many, and the writer advances the file by samples received — so the
+    /// track simply comes out **short**, with `gap_frames == 0` and nothing
+    /// naming the cause. Worse, the two tracks lose different amounts and
+    /// drift apart. Before the Xrun fix this loss was hidden behind grossly
+    /// over-inserted silence; removing that would otherwise have traded a
+    /// loud wrong answer for a quiet one.
+    pub glitches: u64,
     pub sample_rate: u32,
 }
 
@@ -667,9 +690,18 @@ pub fn assess_track(elapsed_seconds: f64, facts: TrackFacts) -> Option<TrackDama
     let missing = elapsed_seconds - facts.duration_seconds;
     let tolerance = LENGTH_FLOOR_SECONDS.max(elapsed_seconds * LENGTH_TOLERANCE);
     if missing > tolerance {
-        return Some(TrackDamage::Short {
-            missing_seconds: missing.round().max(1.0) as u64,
-        });
+        let missing_seconds = missing.round().max(1.0) as u64;
+
+        // Name the cause when the recorder saw one. A shortfall on a track the
+        // driver reported glitching is not a mystery.
+        if facts.glitches > 0 {
+            return Some(TrackDamage::Glitched {
+                missing_seconds,
+                glitches: facts.glitches,
+            });
+        }
+
+        return Some(TrackDamage::Short { missing_seconds });
     }
 
     None
@@ -687,6 +719,7 @@ mod damage_tests {
             duration_seconds: duration,
             overflows,
             gap_frames,
+            glitches: 0,
             sample_rate: 48_000,
         }
     }
@@ -783,11 +816,54 @@ mod damage_tests {
     }
 
     #[test]
+    fn a_glitching_device_is_named_rather_than_merely_short() {
+        // A 90s meeting whose track came out 3s short on a machine the driver
+        // reported glitching 47 times. `gap_frames` is 0 — a glitch inserts no
+        // silence, it simply loses frames — so only the length backstop sees it.
+        let facts = TrackFacts {
+            duration_seconds: 87.0,
+            overflows: 0,
+            gap_frames: 0,
+            glitches: 47,
+            sample_rate: 48_000,
+        };
+
+        assert_eq!(
+            assess_track(90.0, facts),
+            Some(TrackDamage::Glitched {
+                missing_seconds: 3,
+                glitches: 47,
+            }),
+            "a shortfall with a known cause must not be reported as a mystery"
+        );
+    }
+
+    #[test]
+    fn glitches_alone_are_not_damage() {
+        // The driver complained, but everything arrived. Nothing to report:
+        // warning about a recording that is intact is how a damage report
+        // stops being believed.
+        let mut facts = facts(90.0, 0, 0);
+        facts.glitches = 47;
+
+        assert_eq!(assess_track(90.0, facts), None);
+    }
+
+    #[test]
+    fn a_shortfall_with_no_glitches_is_still_just_short() {
+        assert_eq!(
+            assess_track(90.0, facts(87.0, 0, 0)),
+            Some(TrackDamage::Short { missing_seconds: 3 })
+        );
+    }
+
+    #[test]
     fn a_zero_sample_rate_does_not_divide_by_zero() {
         let broken = TrackFacts {
             duration_seconds: 10.0,
             overflows: 0,
             gap_frames: 480,
+            glitches: 0,
             sample_rate: 0,
         };
         assert!(matches!(
