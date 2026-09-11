@@ -137,6 +137,13 @@ pub struct TrackSummary {
     /// Realtime callbacks dropped because the writer could not keep up.
     /// Non-zero means audio was lost.
     pub overflows: u64,
+    /// Driver-reported glitches that did not end the stream — WASAPI's
+    /// `DATA_DISCONTINUITY`, surfaced by cpal as `ErrorKind::Xrun`.
+    ///
+    /// Real but small sample loss. Reported so a noisy machine is visible in
+    /// the log; never treated as a device failure. See the error callback in
+    /// [`open`] for the recording this distinction cost.
+    pub glitches: u64,
     /// Silence inserted to cover device **outages**, in samples.
     ///
     /// Non-zero means the device went away mid-recording and that stretch of
@@ -295,6 +302,10 @@ fn run(
     // gone by then and the stream's own `source_rate` is no longer reachable.
     let mut last_source_rate = TARGET_SAMPLE_RATE;
     let mut overflows_reported = 0u64;
+    // Glitches survive a reopen; the per-stream atomic does not. Accumulated
+    // here by diffing, and rebased whenever a new stream is acquired.
+    let mut glitches_total = 0u64;
+    let mut glitches_this_stream = 0u64;
     // Consecutive failed opens, for the backoff below.
     let mut consecutive_failures = 0u32;
     // Whether the configured device's current reappearance has already been
@@ -402,9 +413,12 @@ fn run(
                 &chosen.name,
             );
 
-            // A successful open clears the backoff, so a device that recovers
-            // is not punished for having failed earlier.
-            consecutive_failures = 0;
+            // The backoff is NOT cleared here. Opening is not recovering: on
+            // Windows these streams opened in ~120ms and errored 1-10ms later,
+            // every time, so clearing on open pinned `consecutive_failures` at
+            // 1 and the backoff at its 250ms floor — 223 reopens in 151s. It is
+            // cleared when a sample actually arrives, below.
+            glitches_this_stream = 0;
             current_name = chosen.name.clone();
             last_device_check = Instant::now();
             ever_opened = true;
@@ -492,6 +506,8 @@ fn run(
                     }
                 }
 
+                // Data is what recovery means. See the open site above.
+                consecutive_failures = 0;
                 open_stream.last_data = Instant::now();
                 repacketiser.push(&chunk);
 
@@ -521,6 +537,12 @@ fn run(
                 )?;
                 continue;
             }
+        }
+
+        let glitches_now = open_stream.glitches.load(Ordering::Relaxed);
+        if glitches_now > glitches_this_stream {
+            glitches_total += glitches_now - glitches_this_stream;
+            glitches_this_stream = glitches_now;
         }
 
         // Report dropped callbacks once per occurrence rather than per chunk.
@@ -816,6 +838,7 @@ fn run(
         automatic_fallback,
         final_device: current_name,
         overflows: overflows_reported,
+        glitches: glitches_total,
         gap_frames,
         lead_in_frames,
     })
@@ -933,6 +956,9 @@ struct OpenStream {
     /// [`policy::split_lead_in`].
     open_duration: Duration,
     overflows: Arc<AtomicU64>,
+    /// Driver-reported glitches that did **not** end the stream. See the error
+    /// callback in `open` for why these must never trigger a teardown.
+    glitches: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
     /// What cpal said when the stream errored, if it did.
     last_error: Arc<Mutex<Option<String>>>,
@@ -979,6 +1005,9 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
     let (tx, rx) = bounded::<Vec<f32>>(QUEUE_DEPTH);
 
     let overflows = Arc::new(AtomicU64::new(0));
+    // Non-fatal glitches reported by the driver. Real sample loss, but tiny and
+    // self-healing — counted so it reaches the log, never acted on.
+    let glitches = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicBool::new(false));
     // The error itself, not merely that there was one. Discarding it left the
     // watchdog to report "the device disappeared" for a stream that had told us
@@ -986,6 +1015,7 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     let cb_overflows = Arc::clone(&overflows);
+    let cb_glitches = Arc::clone(&glitches);
     let cb_failed = Arc::clone(&failed);
     let cb_error = Arc::clone(&last_error);
 
@@ -1006,6 +1036,32 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
             }
         },
         move |err| {
+            // Not every error ends the stream, and treating them alike destroyed
+            // four Windows recordings.
+            //
+            // `ErrorKind::Xrun` — "A buffer underrun or overrun occurred" — is
+            // raised by the WASAPI capture loop whenever a buffer arrives with
+            // `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY` set (cpal 0.18.2
+            // `wasapi/stream.rs:825`). Look at what cpal does next: nothing. No
+            // `return`, no `break`. It hands the buffer to the data callback and
+            // carries on. It is a glitch *notice* — some samples were lost —
+            // not a disconnect.
+            //
+            // Detector 1 took it as fatal: tear the stream down, write silence
+            // over the outage, reopen. The reopened stream glitched again within
+            // milliseconds, so it looped. Measured on Windows 0.2.9, one 151s
+            // meeting: **223 teardowns and 105.282s of fabricated silence**, on
+            // a device that was working the entire time. The recording was
+            // destroyed by the code meant to protect it.
+            //
+            // `RealtimeDenied` is the same shape — cpal's own docs say "audio
+            // will still play". Everything else stays fatal.
+            use cpal::ErrorKind;
+            if matches!(err.kind(), ErrorKind::Xrun | ErrorKind::RealtimeDenied) {
+                cb_glitches.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
             // Fastest of the four detectors. The writer polls this flag.
             if let Ok(mut slot) = cb_error.lock() {
                 *slot = Some(err.to_string());
@@ -1028,6 +1084,7 @@ fn open(id: &str, kind: SourceKind, events: &Events) -> Result<OpenStream, Audio
         last_data: Instant::now(),
         open_duration,
         overflows,
+        glitches,
         failed,
         last_error,
     })

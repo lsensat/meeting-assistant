@@ -208,6 +208,7 @@ mod tests {
             automatic_fallback: false,
             final_device: "test".into(),
             overflows: 0,
+            glitches: 0,
             gap_frames: 0,
             lead_in_frames: 0,
         }

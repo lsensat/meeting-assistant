@@ -818,7 +818,24 @@ input[type="password"] { cursor: text; }
 #refresh-devices { min-width: 175px; height: 28px; white-space: nowrap; }
 #save-settings   { width: 190px; height: 34px; font-size: 13px; }
 
-.save-row { display: flex; justify-content: center; margin-top: 16px; }
+/*
+ * The version sits at the left edge while the button stays centred: `absolute`
+ * takes it out of the flex flow, so adding it cannot shift the Save button off
+ * centre the way a third flex child would.
+ */
+.save-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 16px;
+  position: relative;
+}
+.save-row .version {
+  position: absolute;
+  left: 0;
+  font-size: 12px;
+  opacity: 0.55;
+}
 
 /* ---------------------------------------------------------------- tooltip */
 

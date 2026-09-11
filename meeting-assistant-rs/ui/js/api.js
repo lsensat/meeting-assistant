@@ -46,6 +46,7 @@ export const saveConfig = (config) =>
 
 /** @returns {Promise<Record<string, Record<string, string>>>} */
 export const getI18n = () => invoke("get_i18n");
+export const appVersion = () => invoke("app_version");
 
 /** @returns {Promise<{microphones: Device[], system: Device[]}>} */
 export const listDevices = () => invoke("list_devices");

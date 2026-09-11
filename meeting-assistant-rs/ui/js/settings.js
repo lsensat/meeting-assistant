@@ -401,6 +401,14 @@ async function main() {
   setLanguage(String(config.language ?? "en"));
 
   applyLanguage();
+
+  // Not fatal if it fails: an unknown version is worth less than the window.
+  try {
+    el("app-version").textContent = `v${await api.appVersion()}`;
+  } catch {
+    /* leave it blank */
+  }
+
   await populateAll();
   initTooltips(el("tooltip"));
   wire();

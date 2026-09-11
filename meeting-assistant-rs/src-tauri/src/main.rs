@@ -43,6 +43,7 @@ fn main() {
             commands::get_config,
             commands::save_config,
             commands::get_i18n,
+            commands::app_version,
             commands::ui_log,
             commands::list_devices,
             commands::refresh_devices,

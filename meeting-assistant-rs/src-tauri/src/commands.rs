@@ -216,6 +216,16 @@ pub fn ui_log(message: String) {
     eprintln!("[ui] {message}");
 }
 
+/// The running version, for the Settings window.
+///
+/// The builds are unsigned and installed by hand, so "which version am I on"
+/// is a question the app is the only reliable answer to — a user comparing a
+/// bug against a release cannot otherwise tell.
+#[tauri::command]
+pub fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 #[tauri::command]
 pub fn get_i18n() -> Result<serde_json::Value, String> {
     serde_json::from_str(i18n::catalog_json()).map_err(|e| e.to_string())
@@ -1115,12 +1125,13 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
             match track {
                 Err(e) => log.line(&format!("track FAILED: {e}")),
                 Ok(t) => log.line(&format!(
-                    "{}: {:.3}s written ({} frames), overflows={}, gap={} frames ({:.3}s), \
+                    "{}: {:.3}s written ({} frames), overflows={}, glitches={}, gap={} frames ({:.3}s), \
                      lead-in={} frames ({:.3}s), device=\"{}\", fallback={}",
                     t.kind.label(),
                     t.duration_seconds,
                     t.frames,
                     t.overflows,
+                    t.glitches,
                     t.gap_frames,
                     t.gap_frames as f64 / 48_000.0,
                     t.lead_in_frames,
@@ -1719,6 +1730,7 @@ mod tests {
             duration_seconds: duration,
             automatic_fallback: false,
             final_device: "Test".into(),
+            glitches: 0,
             overflows,
             gap_frames,
             // ~0.23s, measured on macOS. Windows is larger.
