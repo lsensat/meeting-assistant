@@ -162,10 +162,12 @@
         Its own window, not a disclosure here: expanded inline the notices
         pushed every control below them down the page, and this is reference
         material rather than a setting. Last, for the same reason.
+
+        A `button` styled as a link, not an `a`: it performs an action rather
+        than navigating, and the app's CSP and `on_navigation` guard exist to
+        keep real navigation out of this webview.
       -->
-      <div class="row-actions">
-        <button class="btn btn--secondary" id="open-licenses" data-i18n="acknowledgements_show">Open-source notices</button>
-      </div>
+      <button class="link-button" id="open-licenses" data-i18n="acknowledgements_show">Open-source notices</button>
     </section>
 
     <div class="save-row">

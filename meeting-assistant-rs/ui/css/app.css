@@ -761,6 +761,24 @@ main {
  * so it keeps its own line breaks and gets a scroll box rather than being
  * reflowed to fit.
  */
+/*
+ * An action that reads as a link. It was a `.btn`, which put a filled amber
+ * pill in the middle of a text section — too loud for a footnote, and the
+ * label did not fit the box.
+ */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--amber);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover { color: var(--faceplate); }
+
 #licenses-text {
   margin: 0;
   white-space: pre-wrap;
