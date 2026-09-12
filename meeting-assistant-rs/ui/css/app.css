@@ -761,15 +761,12 @@ main {
  * so it keeps its own line breaks and gets a scroll box rather than being
  * reflowed to fit.
  */
-.acknowledgements summary { cursor: pointer; font-size: 12px; }
-.acknowledgements pre {
-  margin-top: 8px;
-  max-height: 220px;
-  overflow: auto;
+#licenses-text {
+  margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--faceplate-2);
 }
 

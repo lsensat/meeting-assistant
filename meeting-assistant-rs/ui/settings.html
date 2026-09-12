@@ -150,24 +150,22 @@
     </section>
 
     <section class="section">
-      <h2 data-i18n="acknowledgements">Acknowledgements</h2>
-      <!--
-        `details`/`summary`, not a modal: it is native, needs no JavaScript, and
-        collapses a wall of licence text that most people will never open while
-        still delivering it with the app. A notice in the repository is not a
-        notice delivered to the user.
-      -->
-      <details class="acknowledgements">
-        <summary data-i18n="acknowledgements_show">Open-source notices</summary>
-        <pre id="licenses-text"></pre>
-      </details>
-      <div class="helper" data-i18n="acknowledgements_note"></div>
-    </section>
-
-    <section class="section">
       <h2 data-i18n="custom_prompt_title">Custom prompt</h2>
       <textarea id="custom-prompt"></textarea>
       <div class="helper" id="custom-prompt-note"></div>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="acknowledgements">Acknowledgements</h2>
+      <div class="helper" data-i18n="acknowledgements_note"></div>
+      <!--
+        Its own window, not a disclosure here: expanded inline the notices
+        pushed every control below them down the page, and this is reference
+        material rather than a setting. Last, for the same reason.
+      -->
+      <div class="row-actions">
+        <button class="btn btn--secondary" id="open-licenses" data-i18n="acknowledgements_show">Open-source notices</button>
+      </div>
     </section>
 
     <div class="save-row">

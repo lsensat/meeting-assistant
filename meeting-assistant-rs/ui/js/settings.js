@@ -313,22 +313,8 @@ async function populateAll() {
   await step(populateOllama, "ollama-status");
   await step(populateDevices, "devices-note");
   await step(populateFiles, "settings-note");
-  await step(populateAcknowledgements, "settings-note");
 }
 
-/**
- * The third-party notices, delivered with the app rather than left in the repo.
- *
- * whisper.cpp and ggml are compiled into the binary and linked statically, as
- * is every Rust crate, so the app redistributes a good deal of MIT and
- * Apache-2.0 code. Those licences ask for their notice to travel with copies,
- * and a file in the git repository does not reach anyone running an installer.
- */
-async function populateAcknowledgements() {
-  // `textContent`: this is a licence file, not markup, and it must render as
-  // the plain text it is.
-  el("licenses-text").textContent = await api.thirdPartyLicenses();
-}
 
 /**
  * Run one population step, containing any failure.
@@ -434,6 +420,12 @@ function wire() {
   el("browse-folder").addEventListener("click", async () => {
     const chosen = await api.browseFolder();
     if (typeof chosen === "string" && chosen) el("output-folder").value = chosen;
+  });
+
+  el("open-licenses").addEventListener("click", () => {
+    api.openLicenses().catch((error) => {
+      el("settings-note").textContent = String(error);
+    });
   });
 
   el("save-settings").addEventListener("click", async () => {

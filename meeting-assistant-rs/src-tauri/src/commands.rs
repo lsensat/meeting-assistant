@@ -729,6 +729,37 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the open-source notices in their own window.
+///
+/// Its own window rather than a disclosure inside Settings: expanded inline it
+/// pushed everything below it down the page, and the notices are reference
+/// material — something you open, read and close — not a setting to be scanned
+/// past on the way to something else.
+///
+/// `(async)` for the same reason as `open_settings`: building a webview window
+/// from a synchronous command deadlocks on Windows.
+#[tauri::command(async)]
+pub fn open_licenses(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("licenses") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "licenses",
+        tauri::WebviewUrl::App("licenses.html".into()),
+    )
+    .title("Acknowledgements")
+    .inner_size(640.0, 620.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    debug_inspect(&window);
+    Ok(())
+}
+
 /// Close the settings window from inside it, after a save.
 #[tauri::command]
 pub fn close_settings(app: AppHandle) -> Result<(), String> {

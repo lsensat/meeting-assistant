@@ -48,6 +48,7 @@ export const saveConfig = (config) =>
 export const getI18n = () => invoke("get_i18n");
 export const appVersion = () => invoke("app_version");
 export const thirdPartyLicenses = () => invoke("third_party_licenses");
+export const openLicenses = () => invoke("open_licenses");
 
 /** @returns {Promise<{microphones: Device[], system: Device[]}>} */
 export const listDevices = () => invoke("list_devices");
