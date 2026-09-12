@@ -315,6 +315,7 @@ async function populateAll() {
   await step(populateFiles, "settings-note");
 }
 
+
 /**
  * Run one population step, containing any failure.
  *
@@ -419,6 +420,12 @@ function wire() {
   el("browse-folder").addEventListener("click", async () => {
     const chosen = await api.browseFolder();
     if (typeof chosen === "string" && chosen) el("output-folder").value = chosen;
+  });
+
+  el("open-licenses").addEventListener("click", () => {
+    api.openLicenses().catch((error) => {
+      el("settings-note").textContent = String(error);
+    });
   });
 
   el("save-settings").addEventListener("click", async () => {

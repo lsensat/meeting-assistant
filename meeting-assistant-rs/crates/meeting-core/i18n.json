@@ -1,5 +1,8 @@
 {
   "en": {
+    "acknowledgements": "Acknowledgements",
+    "acknowledgements_show": "Open-source notices",
+    "acknowledgements_note": "Meeting Assistant is built on open-source software. These notices ship with the app.",
     "ai_model": "AI model",
     "api_base_url": "API base URL",
     "api_incomplete": "Enter a base URL, a model and a key.",
@@ -219,6 +222,9 @@
     "whisper_model": "Whisper model"
   },
   "es": {
+    "acknowledgements": "Reconocimientos",
+    "acknowledgements_show": "Avisos de código abierto",
+    "acknowledgements_note": "Meeting Assistant se apoya en software de código abierto. Estos avisos se incluyen con la aplicación.",
     "ai_model": "Modelo IA",
     "api_base_url": "URL base de la API",
     "api_incomplete": "Introduce una URL base, un modelo y una clave.",

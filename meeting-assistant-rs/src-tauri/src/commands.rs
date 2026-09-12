@@ -226,6 +226,17 @@ pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// The third-party notices, for the Acknowledgements section in Settings.
+///
+/// `include_str!` rather than a bundled resource so the shipped text and the
+/// file in the repository cannot drift apart: there is one copy, and it is the
+/// one CI reads. The obligation is to deliver the notice **with the binary**,
+/// and a file sitting in a git repository does not do that.
+#[tauri::command]
+pub fn third_party_licenses() -> &'static str {
+    include_str!("../../THIRD-PARTY-LICENSES.md")
+}
+
 #[tauri::command]
 pub fn get_i18n() -> Result<serde_json::Value, String> {
     serde_json::from_str(i18n::catalog_json()).map_err(|e| e.to_string())
@@ -718,6 +729,37 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the open-source notices in their own window.
+///
+/// Its own window rather than a disclosure inside Settings: expanded inline it
+/// pushed everything below it down the page, and the notices are reference
+/// material — something you open, read and close — not a setting to be scanned
+/// past on the way to something else.
+///
+/// `(async)` for the same reason as `open_settings`: building a webview window
+/// from a synchronous command deadlocks on Windows.
+#[tauri::command(async)]
+pub fn open_licenses(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("licenses") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "licenses",
+        tauri::WebviewUrl::App("licenses.html".into()),
+    )
+    .title("Acknowledgements")
+    .inner_size(640.0, 620.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    debug_inspect(&window);
+    Ok(())
+}
+
 /// Close the settings window from inside it, after a save.
 #[tauri::command]
 pub fn close_settings(app: AppHandle) -> Result<(), String> {
@@ -820,6 +862,12 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
 
         emit_status("checking_folder");
         let folder_ok = std::fs::create_dir_all(&config.output_folder).is_ok();
+
+        // 885 KB, once, so the first meeting does not stop to fetch it. Its
+        // result is ignored on purpose: without it transcription falls back to
+        // the whole track, which is slower but correct, and a machine that is
+        // offline at launch must still be able to record.
+        crate::vad::prefetch();
 
         // Probe Ollama only when it is the configured provider. Launching a
         // local server for someone who chose a remote endpoint is both
@@ -1555,6 +1603,9 @@ fn run_job(
         meeting.timings = clocks.clone();
         // Beside the timing it explains. See `MeetingState::whisper_tuning`.
         meeting.whisper_tuning = Some(whisper::tuning_summary());
+        // Recorded here, before the match below, so it reaches the file on the
+        // paused and failed paths too — those being the runs most worth it.
+        meeting.whisper_vad = control.vad_summary();
     }
 
     match result {

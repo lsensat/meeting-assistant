@@ -44,6 +44,8 @@ fn main() {
             commands::save_config,
             commands::get_i18n,
             commands::app_version,
+            commands::third_party_licenses,
+            commands::open_licenses,
             commands::ui_log,
             commands::list_devices,
             commands::refresh_devices,

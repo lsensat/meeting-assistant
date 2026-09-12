@@ -17,4 +17,5 @@ pub mod session;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod vad;
 pub mod whisper;
