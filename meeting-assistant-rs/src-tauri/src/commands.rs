@@ -226,6 +226,17 @@ pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// The third-party notices, for the Acknowledgements section in Settings.
+///
+/// `include_str!` rather than a bundled resource so the shipped text and the
+/// file in the repository cannot drift apart: there is one copy, and it is the
+/// one CI reads. The obligation is to deliver the notice **with the binary**,
+/// and a file sitting in a git repository does not do that.
+#[tauri::command]
+pub fn third_party_licenses() -> &'static str {
+    include_str!("../../THIRD-PARTY-LICENSES.md")
+}
+
 #[tauri::command]
 pub fn get_i18n() -> Result<serde_json::Value, String> {
     serde_json::from_str(i18n::catalog_json()).map_err(|e| e.to_string())

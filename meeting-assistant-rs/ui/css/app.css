@@ -757,6 +757,23 @@ main {
 .helper { font-size: 10px; margin-top: 3px; color: var(--faceplate-2); }
 
 /*
+ * Licence text is the one place in this app where the exact characters matter,
+ * so it keeps its own line breaks and gets a scroll box rather than being
+ * reflowed to fit.
+ */
+.acknowledgements summary { cursor: pointer; font-size: 12px; }
+.acknowledgements pre {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--faceplate-2);
+}
+
+/*
  * Inputs are cream faceplate insets on the dark chrome, with a steel hairline.
  * The Python fakes these borders with a nested-frame trick
  * (`BorderedContainer`) because CustomTkinter's own border rendering is blurry
