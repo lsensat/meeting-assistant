@@ -23,6 +23,8 @@ use sha2::{Digest, Sha256};
 
 use meeting_core::convert::{peak, resample_for_whisper, WHISPER_SAMPLE_RATE};
 use meeting_core::policy;
+
+use crate::vad;
 use meeting_core::text::Segment;
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -254,6 +256,7 @@ struct Tuning {
     threads: i32,
     beam_size: i32,
     suppress_nst: bool,
+    vad: bool,
 }
 
 impl Tuning {
@@ -278,6 +281,10 @@ impl Tuning {
             // documented behaviour, so a typo cannot silently change output.
             suppress_nst: std::env::var("MEETING_ASSISTANT_WHISPER_SUPPRESS_NST")
                 .map_or(true, |v| v.trim() != "0"),
+            // Same rule: only an explicit "0" turns it off, so a typo cannot
+            // quietly put whisper back to transcribing silence.
+            vad: std::env::var("MEETING_ASSISTANT_WHISPER_VAD")
+                .map_or(true, |v| v.trim() != "0"),
         }
     }
 }
@@ -290,8 +297,8 @@ pub fn tuning_summary() -> String {
         .unwrap_or(1);
 
     format!(
-        "threads={} of {}, beam={}, suppress_nst={}",
-        tuning.threads, available, tuning.beam_size, tuning.suppress_nst
+        "threads={} of {}, beam={}, suppress_nst={}, vad={}",
+        tuning.threads, available, tuning.beam_size, tuning.suppress_nst, tuning.vad
     )
 }
 
@@ -593,11 +600,44 @@ pub struct TranscriptionControl {
     /// `seconds_done` can answer for the meeting rather than the file.
     progress_cs: Arc<AtomicI64>,
     base_cs: Arc<AtomicI64>,
+    /// What voice activity detection did, per track, for `meeting.json`.
+    ///
+    /// It is measured two layers below the queue worker that writes the file,
+    /// and the worker needs it on the paused and failed paths as well as the
+    /// finished one — those being the runs most worth the number. This control
+    /// is already shared with all three, so it carries the answer rather than a
+    /// new `Progress` variant existing only to relay it.
+    vad_summary: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl TranscriptionControl {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record what VAD found on one track. Later calls for the same track win,
+    /// so a retried track reports its latest run rather than its first.
+    pub fn set_vad_summary(&self, track: &str, summary: String) {
+        if let Ok(mut all) = self.vad_summary.lock() {
+            match all.iter_mut().find(|(name, _)| name == track) {
+                Some(slot) => slot.1 = summary,
+                None => all.push((track.to_string(), summary)),
+            }
+        }
+    }
+
+    /// One line for `meeting.json`, or `None` if VAD never ran.
+    pub fn vad_summary(&self) -> Option<String> {
+        let all = self.vad_summary.lock().ok()?;
+        if all.is_empty() {
+            return None;
+        }
+        Some(
+            all.iter()
+                .map(|(track, summary)| format!("{track}: {summary}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
 
     /// Ask the run to stop at the next opportunity. Whatever has been
@@ -660,6 +700,18 @@ unsafe extern "C" fn abort_trampoline(user_data: *mut std::ffi::c_void) -> bool 
         return false;
     }
     unsafe { (*(user_data as *const AtomicBool)).load(Ordering::SeqCst) }
+}
+
+/// The fallback "run": everything from the resume point to the end.
+///
+/// Used when VAD is unavailable or switched off, so the loop below has one
+/// shape rather than two.
+fn whole_track(samples: &[f32], resume_from_seconds: f64) -> vad::Run {
+    let start = (resume_from_seconds.max(0.0) * WHISPER_SAMPLE_RATE as f64) as usize;
+    vad::Run {
+        start: start.min(samples.len()),
+        end: samples.len(),
+    }
 }
 
 /// What one `transcribe` call produced.
@@ -784,37 +836,51 @@ impl Transcriber {
 
         let tuning = Tuning::from_env();
 
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-            // Matches the Python's `model.transcribe(..., beam_size=5)`
-            // (`app.py:1877`). Changing it changes the transcript.
-            beam_size: tuning.beam_size,
-            patience: 0.0,
-        });
+        // --- decide what whisper will actually see ------------------------
+        //
+        // Everything below this point transcribes *runs of speech*, not the
+        // track. See `crate::vad` for the measurement that motivated it: a real
+        // microphone track that was 96.1% exactly zero still cost 8.9s and
+        // returned 25 fabricated sentences, because whisper always emits text.
+        //
+        // A failure here is not a failure of the meeting. If the model cannot be
+        // written, loaded or run, fall back to the whole track — a slower
+        // transcript beats no transcript.
+        let total_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+        let runs = if tuning.vad {
+            match vad::speech_runs(&samples, resume_from_seconds, WHISPER_SAMPLE_RATE) {
+                Ok(runs) => {
+                    control.set_vad_summary(
+                        speaker,
+                        vad::summary(&runs, samples.len(), WHISPER_SAMPLE_RATE),
+                    );
+                    runs
+                }
+                Err(e) => {
+                    control.set_vad_summary(speaker, format!("unavailable ({e})"));
+                    vec![whole_track(&samples, resume_from_seconds)]
+                }
+            }
+        } else {
+            control.set_vad_summary(speaker, "disabled".to_string());
+            vec![whole_track(&samples, resume_from_seconds)]
+        };
 
-        // A note for anyone tempted by whisper.cpp's temperature fallback: once
-        // it engages it decodes with `greedy.best_of`, which whisper-rs only
-        // lets you set through `SamplingStrategy::Greedy`. Reaching it would
-        // mean giving up beam search for every transcript in order to improve a
-        // path taken only when a window fails its checks. Not worth it.
+        if runs.is_empty() {
+            // Nobody spoke. Report the track as fully covered so a progress bar
+            // spanning the meeting moves past it, and hand back the **absolute**
+            // end of the track: `resume_from_seconds + seconds` would be wrong
+            // here, because `seconds` already counts from zero.
+            control
+                .progress_cs
+                .store((total_seconds * 100.0) as i64, Ordering::Relaxed);
 
-        // The whole machine, not four threads of it. See `policy::whisper_threads`.
-        params.set_n_threads(tuning.threads);
-
-        if let Some(language) = &self.language {
-            params.set_language(Some(language));
-        }
-
-        // The Python passed `vad_filter=True`. whisper.cpp's equivalent knob is
-        // suppressing non-speech tokens; true VAD is a separate model here.
-        params.set_suppress_nst(tuning.suppress_nst);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_special(false);
-        params.set_print_timestamps(false);
-
-        if resume_from_seconds > 0.0 {
-            // Skip what a previous attempt already transcribed.
-            params.set_offset_ms((resume_from_seconds * 1000.0) as i32);
+            return Ok(TranscriptionOutcome {
+                segments: Vec::new(),
+                last_end_seconds: total_seconds,
+                aborted: false,
+                peak: level,
+            });
         }
 
         // Shared with the FFI callbacks, which must be `'static` and so cannot
@@ -822,89 +888,172 @@ impl Transcriber {
         let collected: Arc<Mutex<Vec<Segment>>> = Arc::new(Mutex::new(Vec::new()));
         let last_end_cs = Arc::new(AtomicI64::new(0));
 
-        {
-            let collected = Arc::clone(&collected);
-            let last_end_cs = Arc::clone(&last_end_cs);
-            let progress_cs = Arc::clone(&control.progress_cs);
-            let speaker = speaker.to_string();
-
-            // The `_lossy` variant for the same reason the old code used
-            // `to_str_lossy`: whisper.cpp can emit invalid UTF-8 mid-word on a
-            // truncated multibyte token, and losing one character is far better
-            // than failing the whole meeting.
-            params.set_segment_callback_safe_lossy(move |data: whisper_rs::SegmentCallbackData| {
-                // whisper.cpp reports timestamps in centiseconds (10 ms units),
-                // not seconds or milliseconds. Getting this wrong scales every
-                // timestamp in the transcript by 10 or 100, and is not obvious
-                // from a short test clip.
-                //
-                // Already absolute. whisper.cpp reports positions in the FILE,
-                // not relative to `offset_ms`, so adding the resume point back
-                // on would double it — a run resumed at 114s reported its first
-                // segment at 228s, past the end of a 192s recording. The seek
-                // and the timeline need the offset applied once, by
-                // `set_offset_ms`, and not again here.
-                let start = data.start_timestamp as f64 / 100.0;
-                let end_cs = data.end_timestamp;
-
-                last_end_cs.store(end_cs, Ordering::Relaxed);
-                progress_cs.store(end_cs, Ordering::Relaxed);
-
-                // Blank segments are dropped before they reach the transcript,
-                // as the Python does (`app.py:1898`).
-                let text = data.text.trim();
-                if text.is_empty() {
-                    return;
-                }
-
-                if let Ok(mut segments) = collected.lock() {
-                    segments.push(Segment {
-                        start,
-                        speaker: speaker.clone(),
-                        text: text.to_string(),
-                    });
-                }
-            });
-        }
-
-        // --- cancellation ------------------------------------------------
-        //
-        // NOT `set_abort_callback_safe`, which is unsound in whisper-rs 0.16.0.
-        // It boxes the closure twice and stores a `*mut Box<dyn FnMut() -> bool>`,
-        // but its trampoline casts that pointer to `*mut F` — the concrete
-        // closure type — and calls it. The callback therefore reads the box's own
-        // pointer bytes as if they were the closure's captures and returns
-        // whatever that happens to be.
-        //
-        // The symptom is not a crash. whisper.cpp polls this inside the encoder,
-        // so a garbage `true` aborts the encode and `full()` returns **-6**,
-        // nondeterministically, on audio that is perfectly fine. It cost an
-        // afternoon precisely because it looks like a transcription failure.
-        //
-        // The raw setters take a pointer whose type we control, so the trampoline
-        // below and the pointer passed to it agree. `control` outlives this call,
-        // so the `AtomicBool` behind the `Arc` outlives every invocation — no
-        // ownership is transferred and nothing leaks.
-        unsafe {
-            params.set_abort_callback(Some(abort_trampoline));
-            params.set_abort_callback_user_data(
-                Arc::as_ptr(&control.abort) as *mut std::ffi::c_void
-            );
-        }
-
+        // One state for every run. `whisper_full_with_state` clears `result_all`
+        // on entry and `no_context` defaults to true, so nothing carries between
+        // calls and the segment indices restart each time.
         let mut state = self
             .context
             .create_state()
             .map_err(|e| WhisperError::Transcribe(e.to_string()))?;
 
-        let outcome = state.full(params, &samples);
+        let mut aborted = false;
 
-        let aborted = control.is_aborted();
-        // An aborted run reports failure, which here is the expected result of
-        // being asked to stop rather than something to surface. Checking the
-        // flag first is what keeps a deliberate pause from looking like a
-        // transcription error to the user.
-        if !aborted {
+        for run in &runs {
+            // Between runs as well as inside them. Without this an aborted track
+            // would walk the remaining runs collecting `-6`s.
+            if control.is_aborted() {
+                aborted = true;
+                break;
+            }
+
+            let shift_cs = (run.start as f64 / WHISPER_SAMPLE_RATE as f64 * 100.0) as i64;
+            let run_len_cs = (run.len() as f64 / WHISPER_SAMPLE_RATE as f64 * 100.0) as i64;
+
+            let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+                // Matches the Python's `model.transcribe(..., beam_size=5)`
+                // (`app.py:1877`). Changing it changes the transcript.
+                beam_size: tuning.beam_size,
+                patience: 0.0,
+            });
+
+            // A note for anyone tempted by whisper.cpp's temperature fallback:
+            // once it engages it decodes with `greedy.best_of`, which whisper-rs
+            // only lets you set through `SamplingStrategy::Greedy`. Reaching it
+            // would mean giving up beam search for every transcript in order to
+            // improve a path taken only when a window fails its checks.
+
+            // The whole machine, not four threads of it. See
+            // `policy::whisper_threads`. VAD deliberately does **not** use this:
+            // its work is many tiny graphs, not a few big ones.
+            params.set_n_threads(tuning.threads);
+
+            if let Some(language) = &self.language {
+                params.set_language(Some(language));
+            }
+
+            // Token-level suppression of non-speech. Kept alongside real VAD
+            // rather than replaced by it: this shapes the logits inside a window
+            // that does contain speech, which VAD cannot do.
+            params.set_suppress_nst(tuning.suppress_nst);
+            params.set_print_progress(false);
+            params.set_print_realtime(false);
+            params.set_print_special(false);
+            params.set_print_timestamps(false);
+
+            // NOTE: no `set_offset_ms`. The buffer handed to `full()` below is a
+            // **slice** of the track, so whisper's timestamps are relative to the
+            // run and the shift is applied once, in the callback.
+            //
+            // The alternative — pass the whole buffer and seek with
+            // `set_offset_ms`/`set_duration_ms` — was rejected for two measured
+            // reasons. The mel is recomputed over the entire buffer on every call
+            // (`whisper.cpp:6804`, before `offset_ms` is read at `:6838`), so
+            // cost would scale as runs x track length. And the decode loop breaks
+            // only at `seek + 10 >= seek_end` (`:7008`) with no clamp on emitted
+            // timestamps (`:7605`), so the trailing window would reach 30s past
+            // the run into the *next* run's audio and transcribe it a second
+            // time — which `build_transcript` would not deduplicate.
+            {
+                // `Weak`, not `Arc`. `set_segment_callback_safe_lossy` does
+                // `Box::into_raw` and `FullParams` has no `Drop`, so the boxed
+                // closure outlives the call. Captured as `Arc` it would pin this
+                // track's entire `Vec<Segment>` in memory for the life of the
+                // process — every meeting, forever, in a tray app that stays
+                // open. The `Arc`s here live on the stack until `full()`
+                // returns, so the upgrade always succeeds while it matters.
+                let collected = Arc::downgrade(&collected);
+                let last_end_cs = Arc::downgrade(&last_end_cs);
+                let progress_cs = Arc::downgrade(&control.progress_cs);
+                let speaker = speaker.to_string();
+
+                // The `_lossy` variant for the same reason the old code used
+                // `to_str_lossy`: whisper.cpp can emit invalid UTF-8 mid-word on
+                // a truncated multibyte token, and losing one character is far
+                // better than failing the whole meeting.
+                params.set_segment_callback_safe_lossy(
+                    move |data: whisper_rs::SegmentCallbackData| {
+                        // whisper.cpp reports timestamps in centiseconds (10 ms
+                        // units), not seconds or milliseconds. Getting this wrong
+                        // scales every timestamp in the transcript by 10 or 100,
+                        // and is not obvious from a short test clip.
+                        let start_cs = data.start_timestamp;
+                        let end_cs = data.end_timestamp;
+
+                        // Past the end of the slice is whisper decoding its own
+                        // zero padding — the phantom-segment case this module
+                        // exists to remove. Drop it.
+                        if start_cs >= run_len_cs {
+                            return;
+                        }
+
+                        // The one place the run's offset is added.
+                        let start = (shift_cs + start_cs) as f64 / 100.0;
+                        let absolute_end_cs = shift_cs + end_cs;
+
+                        if let Some(slot) = last_end_cs.upgrade() {
+                            slot.store(absolute_end_cs, Ordering::Relaxed);
+                        }
+                        if let Some(slot) = progress_cs.upgrade() {
+                            slot.store(absolute_end_cs, Ordering::Relaxed);
+                        }
+
+                        // Blank segments are dropped before they reach the
+                        // transcript, as the Python does (`app.py:1898`).
+                        let text = data.text.trim();
+                        if text.is_empty() {
+                            return;
+                        }
+
+                        if let Some(collected) = collected.upgrade() {
+                            if let Ok(mut segments) = collected.lock() {
+                                segments.push(Segment {
+                                    start,
+                                    speaker: speaker.clone(),
+                                    text: text.to_string(),
+                                });
+                            }
+                        }
+                    },
+                );
+            }
+
+            // --- cancellation ---------------------------------------------
+            //
+            // NOT `set_abort_callback_safe`, which is unsound in whisper-rs
+            // 0.16.0. It boxes the closure twice and stores a
+            // `*mut Box<dyn FnMut() -> bool>`, but its trampoline casts that
+            // pointer to `*mut F` — the concrete closure type — and calls it. The
+            // callback therefore reads the box's own pointer bytes as if they
+            // were the closure's captures and returns whatever that happens to
+            // be.
+            //
+            // The symptom is not a crash. whisper.cpp polls this inside the
+            // encoder, so a garbage `true` aborts the encode and `full()` returns
+            // **-6**, nondeterministically, on audio that is perfectly fine. It
+            // cost an afternoon precisely because it looks like a transcription
+            // failure.
+            //
+            // The raw setters take a pointer whose type we control, so the
+            // trampoline and the pointer passed to it agree. `control` outlives
+            // this call, so the `AtomicBool` behind the `Arc` outlives every
+            // invocation — no ownership is transferred and nothing leaks.
+            unsafe {
+                params.set_abort_callback(Some(abort_trampoline));
+                params.set_abort_callback_user_data(
+                    Arc::as_ptr(&control.abort) as *mut std::ffi::c_void
+                );
+            }
+
+            let outcome = state.full(params, &samples[run.start..run.end]);
+
+            aborted = control.is_aborted();
+            // An aborted run reports failure, which here is the expected result
+            // of being asked to stop rather than something to surface. Checking
+            // the flag first is what keeps a deliberate pause from looking like a
+            // transcription error to the user.
+            if aborted {
+                break;
+            }
             outcome.map_err(|e| WhisperError::Transcribe(e.to_string()))?;
         }
 
@@ -934,7 +1083,7 @@ impl Transcriber {
 /// Our WAVs are mono 48 kHz PCM16 by construction, but the rate is read from
 /// the file rather than assumed, so a hand-placed or future file cannot quietly
 /// be misinterpreted.
-fn read_wav_as_16k_mono(path: &Path) -> Result<Vec<f32>, WhisperError> {
+pub(crate) fn read_wav_as_16k_mono(path: &Path) -> Result<Vec<f32>, WhisperError> {
     let mut reader =
         hound::WavReader::open(path).map_err(|e| WhisperError::ReadAudio(e.to_string()))?;
     let spec = reader.spec();

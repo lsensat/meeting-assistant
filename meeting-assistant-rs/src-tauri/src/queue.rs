@@ -160,6 +160,16 @@ pub struct MeetingState {
     /// new meeting invisible to an older build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whisper_tuning: Option<String>,
+    /// What voice activity detection kept, per track.
+    ///
+    /// `"mic: kept 0.0s of 90.9s in 0 runs; system: kept 88.0s of 90.9s in 1 run"`.
+    ///
+    /// Every meeting then measures its own saving, which matters because the
+    /// alternative — an A/B behind an environment variable — failed four times
+    /// on the machine this work exists for, and its 30% run-to-run noise would
+    /// have swallowed the answer even when it worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whisper_vad: Option<String>,
     /// The failure from the last attempt, when `stage` is `Failed`.
     #[serde(default)]
     pub error: Option<String>,
@@ -185,6 +195,7 @@ impl MeetingState {
             duration_seconds: None,
             timings: Timings::default(),
             whisper_tuning: None,
+            whisper_vad: None,
             error: None,
             config,
         }

@@ -1555,6 +1555,9 @@ fn run_job(
         meeting.timings = clocks.clone();
         // Beside the timing it explains. See `MeetingState::whisper_tuning`.
         meeting.whisper_tuning = Some(whisper::tuning_summary());
+        // Recorded here, before the match below, so it reaches the file on the
+        // paused and failed paths too — those being the runs most worth it.
+        meeting.whisper_vad = control.vad_summary();
     }
 
     match result {
