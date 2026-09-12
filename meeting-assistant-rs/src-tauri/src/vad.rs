@@ -40,32 +40,26 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 
-/// The silero VAD weights, compiled into the binary.
+/// Where the silero VAD weights come from.
 ///
-/// Bundled rather than downloaded, which removes three problems at once: the
-/// file lives in a *different* Hugging Face repo from the whisper weights, it
-/// would otherwise need an entry in `whisper::MODELS` and would then appear in
-/// the model picker as something to transcribe with, and whisper.cpp's
-/// `models/README.md` lists no silero row — so the second-publisher SHA-1 that
-/// every entry in `MODELS` carries does not exist for it.
-///
-/// # Licence
-///
-/// silero-vad is MIT (© Silero Team); the ggml conversion is from whisper.cpp,
-/// also MIT. Downloading was attribution-neutral; **redistributing is not**, so
-/// both notices are recorded in `THIRD-PARTY-LICENSES.md`.
-const MODEL: &[u8] = include_bytes!("../assets/ggml-silero-v5.1.2.bin");
+/// A **different** Hugging Face repository from the Whisper weights, which is
+/// why this cannot reuse `whisper::BASE_URL` or live in `whisper::MODELS`. It
+/// must also stay out of `MODELS` for a second reason: everything there appears
+/// in the Settings model picker, and a VAD model offered as something to
+/// transcribe with is a visible bug.
+const MODEL_URL: &str =
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 
-/// SHA-256 of [`MODEL`].
+/// SHA-256 of the file at [`MODEL_URL`], 885,098 bytes.
 ///
-/// From the Hugging Face LFS pointer for
-/// `ggml-org/whisper-vad/ggml-silero-v5.1.2.bin`, transcribed 2026-09-12 and
-/// confirmed against an independent fetch of the same file (885,098 bytes).
+/// From the Hugging Face LFS pointer, transcribed 2026-09-12 and confirmed
+/// against an independent fetch of the same file.
 ///
-/// `MODELS` pins two digests from two publishers because those files arrive
-/// over the network at run time. This one is in the binary, so the supply chain
-/// is the build: the test below hashes the embedded bytes, which catches a
-/// tampered or truncated asset before it can ship rather than after.
+/// `whisper::MODELS` pins **two** digests from two publishers, so substituting a
+/// model would mean compromising both. That is not possible here:
+/// whisper.cpp's `models/README.md` lists no silero row, so there is no second
+/// publisher to pin against. One digest, honestly described, rather than a
+/// second one invented to satisfy the pattern.
 const MODEL_SHA256: &str = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
 
 const MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
@@ -123,20 +117,29 @@ impl std::fmt::Display for VadError {
     }
 }
 
-/// Write the bundled model beside the whisper weights, once, and return its path.
+/// The model file, downloading it once if it is not already there.
 ///
-/// # Why this is more careful than "is it there and the right size"
+/// # Why this is downloaded rather than bundled
+///
+/// It was briefly embedded with `include_bytes!`. At 885 KB that is invisible in
+/// a download, and shipping it inside the binary makes us a **distributor** of
+/// someone else's MIT-licensed work — which attaches a notice obligation that
+/// then has to reach every end user, not just the repository. Fetching it puts
+/// the copy in the user's hands directly, exactly as the Whisper weights
+/// already are, and that obligation does not arise.
+///
+/// # Why the care with the bytes
 ///
 /// A corrupt file of the right length does not fail gracefully.
 /// `whisper_vad_init_with_params` reads `n_encoder_layers` from the header and
 /// allocates from it with no sanity bound, and tensor creation can
 /// `throw std::runtime_error`. That exception unwinds out of an `extern "C"`
-/// boundary into Rust, which is an **abort**, not an error we can fall back
-/// from. So the bytes are verified before whisper.cpp is allowed near them.
+/// boundary into Rust, which is an **abort**, not something to fall back from.
+/// So the digest is checked before whisper.cpp is allowed near the file.
 ///
-/// Written to a temporary file and renamed, the same shape `download_model`
-/// uses: `rec` and `process` can run beside the app, and `single-instance` does
-/// not cover them, so two processes may race here.
+/// Written to a temporary file and renamed, the shape `whisper::download_model`
+/// already uses: `rec` and `process` can run beside the app, and
+/// `single-instance` does not cover them, so two processes may race here.
 fn model_path() -> Result<&'static PathBuf, VadError> {
     static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
@@ -149,21 +152,38 @@ fn model_path() -> Result<&'static PathBuf, VadError> {
             return Ok(target);
         }
 
-        // `.part`, then rename: a reader can never observe a half-written file,
-        // and a loser in a race overwrites with identical bytes.
-        let part = dir.join(format!("{MODEL_FILE}.{}.part", std::process::id()));
-        std::fs::write(&part, MODEL).map_err(|e| e.to_string())?;
+        let bytes = crate::whisper::fetch(MODEL_URL).map_err(|e| e.to_string())?;
 
-        if digest_of(&part).as_deref() != Some(MODEL_SHA256) {
-            let _ = std::fs::remove_file(&part);
-            return Err("the model written to disk does not match its digest".into());
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let got = hex(&hasher.finalize());
+        if got != MODEL_SHA256 {
+            return Err(format!(
+                "the downloaded model does not match its digest (expected {MODEL_SHA256}, got {got})"
+            ));
         }
 
+        // `.part`, then rename: a reader can never observe a half-written file,
+        // and a loser in a race overwrites with identical, verified bytes.
+        let part = dir.join(format!("{MODEL_FILE}.{}.part", std::process::id()));
+        std::fs::write(&part, &bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&part, &target).map_err(|e| e.to_string())?;
+
         Ok(target)
     })
     .as_ref()
     .map_err(|e| VadError::Model(e.clone()))
+}
+
+/// Fetch the model now, so the first meeting does not wait for it.
+///
+/// Called at startup and deliberately ignores its result: without the model,
+/// transcription falls back to the whole track, which is slower but correct. A
+/// machine that is offline at launch must still be able to record a meeting.
+pub fn prefetch() {
+    if let Err(e) = model_path() {
+        eprintln!("[vad] {e}");
+    }
 }
 
 fn digest_of(path: &PathBuf) -> Option<String> {
@@ -333,15 +353,13 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_model_matches_its_pinned_digest() {
-        let mut hasher = Sha256::new();
-        hasher.update(MODEL);
-        assert_eq!(
-            hex(&hasher.finalize()),
-            MODEL_SHA256,
-            "the bundled VAD model is not the file its digest was taken from"
-        );
-        assert_eq!(MODEL.len(), 885_098);
+    fn the_pinned_digest_is_well_formed() {
+        // Not a substitute for the download-time check, which is where the real
+        // verification happens — this only catches a typo in the constant,
+        // which would otherwise present as every machine failing to fetch it.
+        assert_eq!(MODEL_SHA256.len(), 64);
+        assert!(MODEL_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(MODEL_SHA256, MODEL_SHA256.to_ascii_lowercase());
     }
 
     #[test]

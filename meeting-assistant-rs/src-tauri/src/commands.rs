@@ -821,6 +821,12 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         emit_status("checking_folder");
         let folder_ok = std::fs::create_dir_all(&config.output_folder).is_ok();
 
+        // 885 KB, once, so the first meeting does not stop to fetch it. Its
+        // result is ignored on purpose: without it transcription falls back to
+        // the whole track, which is slower but correct, and a machine that is
+        // offline at launch must still be able to record.
+        crate::vad::prefetch();
+
         // Probe Ollama only when it is the configured provider. Launching a
         // local server for someone who chose a remote endpoint is both
         // surprising and slow, and its "not running" state would be reported

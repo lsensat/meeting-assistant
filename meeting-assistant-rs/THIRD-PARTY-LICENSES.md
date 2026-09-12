@@ -1,50 +1,31 @@
 # Third-party components redistributed in the binary
 
-Rust dependencies are fetched at build time and their licences travel with them
-in `Cargo.lock`; `cargo audit` runs in CI. This file records what is **copied
-into the shipped binary**, where the obligation is ours rather than the build
-system's.
+This file exists because of what is **compiled into the shipped executable**,
+where the obligation is ours rather than the user's package manager's.
 
-## Silero VAD weights
+It is easy to assume nothing is redistributed, since the Whisper and VAD models
+are both downloaded at run time and never travel with the app. But
+`whisper-rs-sys` builds whisper.cpp from source and links it **statically**:
 
-`src-tauri/assets/ggml-silero-v5.1.2.bin` (885,098 bytes) is embedded in the
-executable by `src-tauri/src/vad.rs` and written beside the Whisper weights on
-first use.
+```
+cargo:rustc-link-lib=static=whisper
+cargo:rustc-link-lib=static=ggml
+cargo:rustc-link-lib=static=ggml-base
+cargo:rustc-link-lib=static=ggml-cpu
+cargo:rustc-link-lib=static=ggml-blas
+```
 
-Two upstreams, both MIT: the model itself, and the ggml conversion obtained via
-[`ggml-org/whisper-vad`](https://huggingface.co/ggml-org/whisper-vad), which
-declares MIT.
+So every `.dmg` and `.exe` contains that MIT-licensed C++, and so does every
+Rust crate in `Cargo.lock` — Tauri, cpal, serde, reqwest and the rest, nearly
+all MIT or Apache-2.0. This predates any single feature; it has been true since
+the first build.
 
 MIT requires the copyright notice **and the permission notice** to accompany
-copies, so both are reproduced in full below rather than merely named.
+copies, so the text is reproduced rather than named.
 
-### silero-vad — https://github.com/snakers4/silero-vad
+## whisper.cpp and ggml — https://github.com/ggml-org/whisper.cpp
 
-```
-MIT License
-
-Copyright (c) 2020-present Silero Team
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### whisper.cpp — https://github.com/ggml-org/whisper.cpp
+Compiled from source by `whisper-rs-sys` and linked statically into the binary.
 
 ```
 MIT License
@@ -70,24 +51,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Why bundled rather than downloaded
+## Rust dependencies
 
-The alternative was worse in three specific ways: the file lives in a different
-Hugging Face repository from the Whisper weights, it would have needed an entry
-in `whisper::MODELS` and would then have appeared in the model picker as
-something to transcribe with, and whisper.cpp's `models/README.md` lists no
-silero row — so the second-publisher SHA-1 that every other model entry carries
-does not exist for it. Bundling replaces that run-time check with a build-time
-one: `vad.rs` pins the SHA-256 and a unit test hashes the embedded bytes.
+Every crate in `Cargo.lock` is statically linked too. Their licences are not
+transcribed here by hand — that list changes with every dependency update and a
+stale copy is worse than none. Generate it:
 
-The cost of that choice is this file. Downloading put the copy in the user's
-hands directly; bundling means we distribute it, and MIT attaches the notice
-requirement above to distribution.
+```bash
+cargo install cargo-about   # once
+cargo about generate about.hbs > THIRD-PARTY-RUST.html
+```
 
-## Whisper models
+**Not yet wired into the release**, and it should be before the app is handed to
+anyone outside this repository.
 
-The GGML weights under `whisper::MODELS` are **not** redistributed. They are
-downloaded on demand from
-[`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) and
-verified against two independently published digests before use. The models
-originate from OpenAI's Whisper (MIT).
+## What is *not* redistributed
+
+- **Whisper weights** — downloaded on demand from
+  [`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) and
+  verified against two independently published digests.
+- **Silero VAD weights** — downloaded once at first launch from
+  [`ggml-org/whisper-vad`](https://huggingface.co/ggml-org/whisper-vad) and
+  verified against a pinned SHA-256.
+
+Both were briefly considered for bundling. Downloading puts the copy in the
+user's hands directly, so no notice obligation attaches to them — which is the
+whole reason the VAD model is fetched rather than embedded, at 885 KB where the
+size argument alone would not have decided it.
+
+## Reaching the user
+
+A notice in the repository is not a notice delivered with the binary. This file
+still needs to travel with the app — as a bundled resource, or an
+"Acknowledgements" section in Settings — before the installers are distributed
+outside this repository.

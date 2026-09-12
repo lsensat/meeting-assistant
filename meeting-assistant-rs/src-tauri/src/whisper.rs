@@ -467,6 +467,30 @@ fn download_client() -> Result<&'static reqwest::blocking::Client, WhisperError>
         .map_err(|e| WhisperError::Download(e.clone()))
 }
 
+/// Fetch a small file whole, verifying nothing — the caller checks the digest.
+///
+/// Separate from `download_model`, which streams with progress reporting and
+/// abort checks because it moves up to 3.1 GB. The VAD model is 885 KB; a
+/// progress bar for it would be noise.
+pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, WhisperError> {
+    let response = download_client()?
+        .get(url)
+        .send()
+        .map_err(|e| WhisperError::Download(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(WhisperError::Download(format!(
+            "{url} returned status {}",
+            response.status()
+        )));
+    }
+
+    response
+        .bytes()
+        .map(|b| b.to_vec())
+        .map_err(|e| WhisperError::Download(e.to_string()))
+}
+
 /// Download a model, reporting progress as a percentage.
 ///
 /// Downloads to a temporary file and renames on success, so an interrupted
