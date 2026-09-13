@@ -93,11 +93,29 @@ samples went to zero within ~300 ms and came back immediately on release, which
 is the real scenario (a call app already holds the microphone when the user
 mutes).
 
-What this does not cover: conferencing apps capture through Voice-Processing IO,
-which wraps the device in a private aggregate. Whether device mute reaches that
-path is untested, and it is the open question behind any report that a call was
-unaffected. The Mac's own input meter and the orange dot are **not** evidence
-either way — the app keeps the device open while receiving zeros.
+**Conferencing apps are covered too.** They do not capture the way a recorder
+does: FaceTime, Teams and Zoom instantiate `kAudioUnitSubType_VoiceProcessingIO`
+for echo cancellation, and that unit wraps the device in a private aggregate, so
+a mute that works for an ordinary client might not reach them. Measured through
+a VPIO listener, it does — flipped mid-stream, the samples went to exactly zero
+and came back on release, same as the plain path.
+
+Two things to know if that listener is ever rebuilt: `AudioUnit::new` returns an
+*initialised* unit and every property below refuses with "Initialized", so it has
+to be uninitialised first and initialised again after; and VPIO is duplex, so it
+will not initialise unless the output element is enabled as well. It also refused
+to initialise while a tone was already playing, so start the listener first.
+
+The echo canceller is bypassed for the measurement, because it would remove a
+tone coming from this Mac's own speakers and a suppressed tone cannot be told
+apart from a working mute. The capture path under test is unchanged by that.
+
+**What no measurement here can tell you** is what the conferencing app *displays*.
+FaceTime's mute button shows FaceTime's own state, which this app does not touch
+and cannot read; the orange recording dot and the input meter in Sound settings
+likewise stay active, because the app still holds the device and is simply
+handed zeros. A user looking at either will conclude they are not muted. The only
+witness that settles it is the person on the other end.
 
 The device's own properties are worth dumping before drawing conclusions: on
 this machine `mute` and `volume` are settable on element 0 only, and channels
