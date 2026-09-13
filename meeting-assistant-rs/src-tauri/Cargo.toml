@@ -96,6 +96,15 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 
 # The Tauri app. `rec` and `process` are the Phase M2/M3 CLI drivers; they stay
 # because they exercise the audio and pipeline layers without the UI in the way.
+# The title bar is drawn by Windows, not by the webview, so matching it to the
+# app's background needs a DWM call. Pinned to the same major the Tauri tree
+# already resolves, so no second copy of `windows` is built.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+] }
+
 [[bin]]
 name = "meeting-assistant"
 path = "src/main.rs"
