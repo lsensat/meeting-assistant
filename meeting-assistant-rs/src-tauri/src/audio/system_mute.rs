@@ -268,7 +268,10 @@ mod platform {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
     };
-    use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
+    // `Win32::Foundation`, not `UI::Shell::PropertiesSystem` where the rest of
+    // the property-store API lives. Wrong in the first draft, and caught by
+    // compiling this module for a Windows target from the Mac.
+    use windows::Win32::Foundation::PROPERTYKEY;
 
     /// `PKEY_Device_FriendlyName` — the name the user sees in Sound settings,
     /// and the one stored in `Config`.

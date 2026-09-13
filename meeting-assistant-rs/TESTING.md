@@ -45,6 +45,57 @@ own recording. Both were invisible to `cargo test` and to clippy.
 
 ---
 
+## The system mute, and the Windows half of it
+
+The mute is the one thing this app changes **outside itself**, so its tests run
+against real hardware rather than a fake. They set the device, read the state
+back from the OS, and restore whatever they found:
+
+```bash
+# macOS: use the exact name from System Settings → Sound → Input.
+MUTE_TEST_DEVICE="MacBook Air Microphone" \
+  cargo test -p meeting-assistant --lib audio::system_mute -- --ignored --nocapture
+```
+
+Three of them, and the third is the point: it spawns a child process, has it
+take the mute, and kills it with `abort` so no destructor runs — the crash the
+`Drop` guard cannot cover. It then asserts the device is still muted, that the
+flag on disk names it, and that `restore_after_crash` puts it back. The expected
+output ends:
+
+```
+crashed  child died with signal: 6 (SIGABRT)
+stranded the OS agrees, and the flag names the device
+restored the OS agrees
+```
+
+### Type-checking the Windows path from a Mac
+
+`cargo check --target x86_64-pc-windows-msvc` on the whole app fails, because
+whisper.cpp needs a C++ cross-compiler. But `audio::system_mute`'s Windows module
+is pure Rust over the `windows` crate, and `cargo check` links nothing, so it can
+be compiled in an isolated crate with the same dependency:
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+# A scratch crate: the module's source, `MuteError`, and the `windows`
+# dependency copied verbatim from src-tauri/Cargo.toml.
+cargo check --target x86_64-pc-windows-msvc
+```
+
+**This found two errors that would each have failed the first Windows build**: a
+missing set of `windows` features (`IPropertyStore::GetValue` is gated behind
+`Win32_System_Com_StructuredStorage` and `Win32_System_Variant`, which is not
+guessable from the call), and `PROPERTYKEY` imported from
+`UI::Shell::PropertiesSystem` where the rest of that API lives, rather than from
+`Win32::Foundation` where it actually is. Worth doing before any release that
+carries new Windows code, because the alternative is finding out a build later.
+
+What it does **not** prove is that the calls work — only that they exist and
+type-check. The device mute still needs a Windows machine.
+
+---
+
 ## What still needs a person, and why
 
 Everything below is either driven by a GUI or needs hardware this machine does
