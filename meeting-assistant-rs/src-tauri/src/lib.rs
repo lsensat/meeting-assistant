@@ -10,6 +10,8 @@ pub mod commands;
 pub mod diagnostics;
 pub mod ollama;
 pub mod openai;
+pub mod library;
+pub mod markdown;
 pub mod pipeline;
 pub mod queue;
 pub mod platform;

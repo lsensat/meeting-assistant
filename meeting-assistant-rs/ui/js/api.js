@@ -50,6 +50,28 @@ export const appVersion = () => invoke("app_version");
 export const thirdPartyLicenses = () => invoke("third_party_licenses");
 export const openLicenses = () => invoke("open_licenses");
 
+// --- the markdown library ---------------------------------------------------
+
+/** @returns {Promise<{id:string,title:string,preview:string,duration_seconds:number|null}[]>} */
+export const listLibrary = () => invoke("list_library");
+/** A meeting's summary as a token stream. @param {string} id */
+export const readSummary = (id) => invoke("read_summary", { id });
+/** Absolute path of a meeting's **folder**, for "open in the default app". */
+export const libraryFolder = (id) => invoke("library_folder", { id });
+/** @param {string} [id] meeting to select on open */
+export const openLibrary = (id) => invoke("open_library", { id: id ?? null });
+/**
+ * Hand a link to the system browser.
+ *
+ * A plain `<a href>` navigates the webview and replaces the app; this does not.
+ * The scheme is re-checked in Rust, so this call is not the thing keeping
+ * `javascript:` out.
+ *
+ * @param {string} url
+ */
+export const openExternalUrl = (url) => invoke("open_external_url", { url });
+
+
 /** @returns {Promise<{microphones: Device[], system: Device[]}>} */
 export const listDevices = () => invoke("list_devices");
 export const refreshDevices = () => invoke("refresh_devices");
@@ -142,6 +164,7 @@ export const browseFolder = () => open({ directory: true, multiple: false });
  */
 export const EVENTS = {
   configChanged: "config_changed",
+  librarySelect: "library_select",
   captureDamage: "capture_damage",
   startupStatus: "startup_status",
   startupResult: "startup_result",
