@@ -275,8 +275,22 @@ pub fn speech_runs(
         samples
     };
 
+    // A diagnostic, not a setting. Sweeping this is what proved the threshold
+    // was *not* why two recordings lost most of their speech: even at 0.15,
+    // very permissive, only 25.1s of 60.7s came back. A signal scoring that far
+    // below the line is not marginal — silero simply did not think it was
+    // speech, and both files turned out to be a loudspeaker playing video
+    // across a desk rather than anyone talking into the microphone.
+    let mut vad_params = WhisperVadParams::new();
+    if let Some(threshold) = std::env::var("MEETING_ASSISTANT_VAD_THRESHOLD")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+    {
+        vad_params.set_threshold(threshold);
+    }
+
     let segments = context
-        .segments_from_samples(WhisperVadParams::new(), for_detection)
+        .segments_from_samples(vad_params, for_detection)
         .map_err(|e| VadError::Detect(format!("{e:?}")))?;
 
     // Centiseconds, at 16 kHz, per `samples_to_cs` in whisper.cpp.
