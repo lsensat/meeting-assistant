@@ -88,8 +88,40 @@ impl AppState {
         self.queue.has_outstanding()
     }
 
+    /// Persist which microphone this app has muted system-wide, or that it
+    /// holds none.
+    ///
+    /// Written straight to disk rather than batched: the only reader is the
+    /// **next launch after a crash**, so a value that never reached the file is
+    /// a value that does not exist. A failed write is logged and otherwise
+    /// ignored — it means the next launch will not restore the mute, which the
+    /// user can do from Sound settings, and it is no reason to fail a recording.
+    pub fn remember_system_mute(&self, device: Option<&str>) {
+        let mut config = self.config.lock().expect("config poisoned");
+        config.system_mic_muted = device.map(str::to_string);
+
+        if let Err(e) = std::fs::write(&self.config_file, config.to_json()) {
+            eprintln!("[mute] could not record the system mute: {e}");
+        }
+    }
+
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::Relaxed)
+    }
+
+    /// Whether the microphone is muted for **every** application right now.
+    ///
+    /// Distinct from [`is_muted`](Self::is_muted), which is this app's own flag:
+    /// the button can be down while the system mute was refused by the device,
+    /// and the tray has to be able to tell those apart. The guard lives on the
+    /// session, so this is false whenever nothing is recording.
+    pub fn holds_system_mute(&self) -> bool {
+        self.session
+            .lock()
+            .expect("session poisoned")
+            .as_ref()
+            .map(|s| s.holds_system_mute())
+            .unwrap_or(false)
     }
 
     /// Returns the new state.

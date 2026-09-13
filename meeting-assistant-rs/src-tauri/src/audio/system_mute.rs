@@ -433,4 +433,237 @@ mod live {
         // Leave the machine as it was found, whatever that was.
         set(&device, before).expect("restore");
     }
+
+    /// The child half of the crash test: mute, then die without unwinding.
+    ///
+    /// Runs only when the parent asks, because its whole job is to kill the test
+    /// process. `process::abort` rather than a panic: a panic would unwind and
+    /// run `Drop`, which is the exact thing this has to prevent.
+    #[test]
+    #[ignore = "child of crash_while_muted_leaves_the_device_muted; kills its own process"]
+    fn dies_while_holding_the_mute() {
+        if std::env::var("MUTE_TEST_DIE").is_err() {
+            return;
+        }
+        let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
+        let flag = std::env::var("MUTE_TEST_FLAG").expect("set MUTE_TEST_FLAG");
+
+        let guard = MuteGuard::acquire(&device, move |d| {
+            // Stands in for `Config::system_mic_muted`: written before the
+            // device is touched, cleared on release. The real one goes through
+            // `AppState::remember_system_mute`, which this crate cannot build
+            // inside a test.
+            match d {
+                Some(name) => std::fs::write(&flag, name).expect("write the flag"),
+                None => {
+                    std::fs::remove_file(&flag).ok();
+                }
+            }
+        })
+        .expect("acquire");
+
+        assert!(is_muted(&device).expect("read back"), "the child must mute");
+
+        // Not `drop(guard)`, not a panic, not an early return: a hard kill.
+        std::mem::forget(guard);
+        std::process::abort();
+    }
+
+    /// The crash path, by actually crashing.
+    ///
+    /// The plan called for `kill -9` on the running app. This is the same event
+    /// with the GUI removed: a process holding a live `MuteGuard` dies without
+    /// running destructors, and what has to be true afterwards is that the
+    /// device is still muted, the flag on disk says which device, and the next
+    /// launch's `restore_after_crash` puts it back.
+    ///
+    /// Worth having as a test rather than a manual run because it is the one
+    /// path no ordinary use exercises, and the one the user was rightly worried
+    /// about.
+    #[test]
+    #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
+    fn crash_while_muted_leaves_the_device_muted() {
+        let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
+        let before = is_muted(&device).expect("read the mute state");
+
+        let flag = std::env::temp_dir().join(format!("ma-mute-flag-{}", std::process::id()));
+        std::fs::remove_file(&flag).ok();
+
+        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
+            .args([
+                "--exact",
+                "audio::system_mute::live::dies_while_holding_the_mute",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MUTE_TEST_DIE", "1")
+            .env("MUTE_TEST_DEVICE", &device)
+            .env("MUTE_TEST_FLAG", &flag)
+            .status()
+            .expect("spawn the child");
+
+        assert!(
+            !status.success(),
+            "the child was supposed to abort, not exit cleanly"
+        );
+        println!("crashed  child died with {status}");
+
+        // The state a user would find: microphone dead, and a record of it.
+        assert!(
+            is_muted(&device).expect("read back"),
+            "a hard kill must leave the device muted — otherwise there is nothing to restore"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&flag).expect("the flag must survive the crash"),
+            device,
+            "the flag must name the device, since the configured microphone may change"
+        );
+        println!("stranded the OS agrees, and the flag names the device");
+
+        // What the next launch does.
+        assert!(
+            restore_after_crash(&device),
+            "the restore must report that it acted"
+        );
+        assert!(
+            !is_muted(&device).expect("read back"),
+            "the next launch must unmute"
+        );
+        println!("restored the OS agrees");
+
+        // And is a no-op the second time, which is what protects a user who has
+        // already unmuted themselves from being overridden.
+        assert!(
+            !restore_after_crash(&device),
+            "nothing to undo must report nothing done"
+        );
+
+        std::fs::remove_file(&flag).ok();
+        set(&device, before).expect("restore");
+    }
+
+    /// The guard hands the microphone back when it is dropped.
+    ///
+    /// This is the property the whole design rests on: every way out of a
+    /// recording drops the session, and dropping the session must unmute. A
+    /// test that only checked `set` would not have covered it.
+    #[test]
+    #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
+    fn dropping_the_guard_unmutes() {
+        let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
+        let before = is_muted(&device).expect("read the mute state");
+
+        let remembered: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&remembered);
+
+        {
+            let _guard = MuteGuard::acquire(&device, move |d| {
+                sink.lock().unwrap().push(d.map(str::to_string));
+            })
+            .expect("acquire");
+
+            assert!(is_muted(&device).expect("read back"), "the guard must mute");
+            println!("held     the OS agrees");
+        }
+
+        assert!(
+            !is_muted(&device).expect("read back"),
+            "dropping the guard must unmute"
+        );
+        println!("dropped  the OS agrees");
+
+        // The flag is written before the device is touched and cleared after it
+        // is released, so the file is never more optimistic than the device.
+        let calls = remembered.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec![Some(device.clone()), None],
+            "the flag must be set before muting and cleared after releasing"
+        );
+
+        set(&device, before).expect("restore");
+    }
+}
+
+/// Holds a system-wide mute for as long as this value lives.
+///
+/// # Why a guard and not "remember to unmute"
+///
+/// The same reasoning as `queue::RecordingHold`, which this copies. Every way
+/// out of a recording has to release the mute: the `?` returns in
+/// `stop_recording` and `cancel_recording`, an early return, a panic in
+/// whichever thread owns the session. Written as a rule to follow, that is one
+/// refactor away from leaving a microphone dead.
+///
+/// Owned by `RecordingSession`, so the mute's lifetime **is** the recording's.
+///
+/// Taking the guard is what writes `Config::system_mic_muted`; dropping it is
+/// what clears it. The file is therefore never more optimistic than the device:
+/// it is written before the mute is taken and cleared after it is released, so
+/// a crash at any point leaves a flag that says "possibly muted", which the next
+/// launch verifies rather than trusts.
+/// How the guard reports what it is holding, so this module needs to know
+/// nothing about `Config`. Called with the device name before the mute is
+/// taken, and with `None` once it has been released.
+type Remember = Box<dyn Fn(Option<&str>) + Send + Sync>;
+
+pub struct MuteGuard {
+    device: String,
+    on_release: Remember,
+}
+
+impl MuteGuard {
+    /// Mute `device` system-wide, and record that we did.
+    ///
+    /// `remember` is called with the device name before the device is touched,
+    /// and with `None` once it has been released — the app supplies a closure
+    /// that persists it, so this module needs to know nothing about `Config`.
+    ///
+    /// Returns `Err` with the device left alone if the OS refuses; the caller
+    /// falls back to silencing the recording only.
+    pub fn acquire(
+        device: &str,
+        remember: impl Fn(Option<&str>) + Send + Sync + 'static,
+    ) -> Result<Self, MuteError> {
+        // Written first. A flag claiming a mute that was never taken costs one
+        // redundant check at the next launch; a mute with no flag is a
+        // microphone nobody knows to restore.
+        remember(Some(device));
+
+        match set(device, true) {
+            Ok(()) => Ok(Self {
+                device: device.to_string(),
+                on_release: Box::new(remember),
+            }),
+            Err(e) => {
+                remember(None);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+}
+
+impl Drop for MuteGuard {
+    fn drop(&mut self) {
+        let _ = set(&self.device, false);
+        (self.on_release)(None);
+    }
+}
+
+/// Undo a mute left behind by a previous run.
+///
+/// Checks before acting: someone who has already unmuted themselves — from
+/// Sound settings, from Control Center, from the headset's own button — should
+/// not have the app assert itself over that. Returns whether it actually
+/// unmuted anything, for the log line.
+pub fn restore_after_crash(device: &str) -> bool {
+    match is_muted(device) {
+        Ok(true) => set(device, false).is_ok(),
+        _ => false,
+    }
 }

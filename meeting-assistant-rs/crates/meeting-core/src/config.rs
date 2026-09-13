@@ -222,6 +222,17 @@ pub struct Config {
     /// quitting the app — resetting it on launch would silently start the very
     /// work the user postponed.
     pub processing_paused: bool,
+    /// The microphone this app muted **system-wide**, if it holds a mute.
+    ///
+    /// Written before the device is touched and cleared after it is released,
+    /// so the file is never more optimistic than the device. If the app dies
+    /// while a recording is muted, this is the only record that the microphone
+    /// was left that way — and the next launch checks it rather than trusting
+    /// it, because the user may already have unmuted themselves.
+    ///
+    /// The **device name**, not a boolean: restoring needs to know which device,
+    /// and `microphone_name` may have changed by then.
+    pub system_mic_muted: Option<String>,
     /// Whether the first-run wizard has been completed.
     ///
     /// First run is really "no config file exists"; this flag additionally
@@ -275,6 +286,7 @@ impl Config {
             // take space the user did not ask for.
             queue_expanded: false,
             processing_paused: false,
+            system_mic_muted: None,
             summary_provider: SummaryProvider::Ollama,
             api_base_url: String::new(),
             api_model: String::new(),
@@ -343,6 +355,7 @@ impl Config {
             devices_expanded: raw.devices_expanded.unwrap_or(defaults.devices_expanded),
             queue_expanded: raw.queue_expanded.unwrap_or(defaults.queue_expanded),
             processing_paused: raw.processing_paused.unwrap_or(defaults.processing_paused),
+            system_mic_muted: raw.system_mic_muted,
 
             summary_provider: raw
                 .summary_provider
@@ -381,6 +394,7 @@ impl Config {
             devices_expanded: Some(self.devices_expanded),
             queue_expanded: Some(self.queue_expanded),
             processing_paused: Some(self.processing_paused),
+            system_mic_muted: self.system_mic_muted.clone(),
             summary_provider: Some(self.summary_provider.as_str().to_string()),
             api_base_url: Some(self.api_base_url.clone()),
             api_model: Some(self.api_model.clone()),
@@ -420,6 +434,7 @@ struct RawConfig {
     devices_expanded: Option<bool>,
     queue_expanded: Option<bool>,
     processing_paused: Option<bool>,
+    system_mic_muted: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
