@@ -104,10 +104,35 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # The title bar is drawn by Windows, not by the webview, so matching it to the
 # app's background needs a DWM call. Pinned to the same major the Tauri tree
 # already resolves, so no second copy of `windows` is built.
+# Core Audio, for muting the microphone system-wide. Already in the tree via
+# cpal; named here because a transitive dependency is not an import.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = "0.3.2"
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+
 [target.'cfg(windows)'.dependencies]
+# The audio features are for `audio::system_mute`, which mutes the capture
+# endpoint through `IAudioEndpointVolume`. The three beyond the obvious two are
+# not optional and not guessable: `IPropertyStore::GetValue` — how a device's
+# friendly name is read — is gated on `Win32_System_Com_StructuredStorage` and
+# `Win32_System_Variant` because it returns a `PROPVARIANT`, and `IMMDevice`'s
+# property store lives under `Win32_UI_Shell_PropertiesSystem`. Without them the
+# module does not compile at all.
+#
+# Established by compiling that module for `x86_64-pc-windows-msvc` from a Mac
+# in an isolated crate — `cargo check` needs no linker and the `windows` crate is
+# pure Rust, so the whole feature set is verifiable without a Windows machine.
+# Worth knowing: the first Windows build would otherwise have failed on an
+# unresolved import.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
 
 [[bin]]

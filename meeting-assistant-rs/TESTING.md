@@ -45,6 +45,109 @@ own recording. Both were invisible to `cargo test` and to clippy.
 
 ---
 
+## The system mute, and the Windows half of it
+
+The mute is the one thing this app changes **outside itself**, so its tests run
+against real hardware rather than a fake. They set the device, read the state
+back from the OS, and restore whatever they found:
+
+```bash
+# macOS: use the exact name from System Settings → Sound → Input.
+MUTE_TEST_DEVICE="MacBook Air Microphone" \
+  cargo test -p meeting-assistant --lib audio::system_mute -- --ignored --nocapture
+```
+
+Three of them, and the third is the point: it spawns a child process, has it
+take the mute, and kills it with `abort` so no destructor runs — the crash the
+`Drop` guard cannot cover. It then asserts the device is still muted, that the
+flag on disk names it, and that `restore_after_crash` puts it back. The expected
+output ends:
+
+```
+crashed  child died with signal: 6 (SIGABRT)
+stranded the OS agrees, and the flag names the device
+restored the OS agrees
+```
+
+### Does the mute actually silence anything? (measured, macOS)
+
+`set` returning `Ok` and `is_muted` agreeing prove only that Core Audio recorded
+the request. They do **not** prove a single sample went quiet — a real call
+appeared unaffected while the property read back as muted, and that gap is what
+this measurement closes.
+
+The listener is a separate process using plain HAL capture (cpal), with a tone
+playing through the speakers so the microphone always has signal. Measured on a
+MacBook Air's built-in microphone:
+
+| lever | peak heard by another process |
+|---|---|
+| nothing (baseline) | `-30.5 dBFS` |
+| `kAudioDevicePropertyMute` = 1 | **`-120 dBFS` — digital silence** |
+| `kAudioDevicePropertyVolumeScalar` = 0 | `-43.4 dBFS` — ~13 dB down, still audible |
+
+Two things follow. **Volume-0 is not a mute** — it attenuates, so it is not a
+usable fallback, which settles a question raised early in the design. And the
+mute works **mid-stream**: flipped while the listener was already capturing, the
+samples went to zero within ~300 ms and came back immediately on release, which
+is the real scenario (a call app already holds the microphone when the user
+mutes).
+
+**Conferencing apps are covered too.** They do not capture the way a recorder
+does: FaceTime, Teams and Zoom instantiate `kAudioUnitSubType_VoiceProcessingIO`
+for echo cancellation, and that unit wraps the device in a private aggregate, so
+a mute that works for an ordinary client might not reach them. Measured through
+a VPIO listener, it does — flipped mid-stream, the samples went to exactly zero
+and came back on release, same as the plain path.
+
+Two things to know if that listener is ever rebuilt: `AudioUnit::new` returns an
+*initialised* unit and every property below refuses with "Initialized", so it has
+to be uninitialised first and initialised again after; and VPIO is duplex, so it
+will not initialise unless the output element is enabled as well. It also refused
+to initialise while a tone was already playing, so start the listener first.
+
+The echo canceller is bypassed for the measurement, because it would remove a
+tone coming from this Mac's own speakers and a suppressed tone cannot be told
+apart from a working mute. The capture path under test is unchanged by that.
+
+**What no measurement here can tell you** is what the conferencing app *displays*.
+FaceTime's mute button shows FaceTime's own state, which this app does not touch
+and cannot read; the orange recording dot and the input meter in Sound settings
+likewise stay active, because the app still holds the device and is simply
+handed zeros. A user looking at either will conclude they are not muted. The only
+witness that settles it is the person on the other end.
+
+The device's own properties are worth dumping before drawing conclusions: on
+this machine `mute` and `volume` are settable on element 0 only, and channels
+1-3 refuse both, so element 0 is the only target that exists.
+
+### Type-checking the Windows path from a Mac
+
+`cargo check --target x86_64-pc-windows-msvc` on the whole app fails, because
+whisper.cpp needs a C++ cross-compiler. But `audio::system_mute`'s Windows module
+is pure Rust over the `windows` crate, and `cargo check` links nothing, so it can
+be compiled in an isolated crate with the same dependency:
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+# A scratch crate: the module's source, `MuteError`, and the `windows`
+# dependency copied verbatim from src-tauri/Cargo.toml.
+cargo check --target x86_64-pc-windows-msvc
+```
+
+**This found two errors that would each have failed the first Windows build**: a
+missing set of `windows` features (`IPropertyStore::GetValue` is gated behind
+`Win32_System_Com_StructuredStorage` and `Win32_System_Variant`, which is not
+guessable from the call), and `PROPERTYKEY` imported from
+`UI::Shell::PropertiesSystem` where the rest of that API lives, rather than from
+`Win32::Foundation` where it actually is. Worth doing before any release that
+carries new Windows code, because the alternative is finding out a build later.
+
+What it does **not** prove is that the calls work — only that they exist and
+type-check. The device mute still needs a Windows machine.
+
+---
+
 ## What still needs a person, and why
 
 Everything below is either driven by a GUI or needs hardware this machine does

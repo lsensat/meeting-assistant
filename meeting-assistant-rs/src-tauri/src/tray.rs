@@ -145,12 +145,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let cancel = MenuItem::with_id(app, ID_CANCEL, tr("tray_cancel"), recording, None::<&str>)?;
 
     // Mute is available at rest as well as mid-meeting, matching the window.
+    //
+    // Three states, not two, because the mute now reaches outside this app. A
+    // tick alone would not say whether the microphone is dead for everyone or
+    // merely absent from this recording, and that is the difference the user
+    // needs from a menu they may open precisely because nobody can hear them.
+    let muted = state.is_muted();
     let mute = CheckMenuItem::with_id(
         app,
         ID_MUTE,
-        tr("tray_mute"),
+        tr(mute_label_key(muted, state.holds_system_mute())),
         true,
-        state.is_muted(),
+        muted,
         None::<&str>,
     )?;
 
@@ -197,6 +203,24 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &quit,
         ],
     )
+}
+
+/// Which of the three mute strings the menu should carry.
+///
+/// Pulled out of `build_menu` because it is the only part of that function with
+/// a wrong answer: a tray built with a stale label is the thing that makes the
+/// indicator untrustworthy, and the indicator is the whole mitigation for a
+/// mute that outlives the app. Building a real tray to check a string is not
+/// possible in a test; this is.
+fn mute_label_key(muted: bool, system_wide: bool) -> &'static str {
+    match (muted, system_wide) {
+        (true, true) => "tray_muted_everywhere",
+        // Muted, but the device is not: either nothing is recording or it
+        // refused. Both mean the same thing to the user — the recording is
+        // silent and the call is not — so both read the same.
+        (true, false) => "tray_muted_recording_only",
+        (false, _) => "tray_mute",
+    }
 }
 
 /// A submenu of devices with the current one ticked.
@@ -343,5 +367,47 @@ pub fn show_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meeting_core::config::Language;
+
+    #[test]
+    fn the_mute_item_distinguishes_system_wide_from_recording_only() {
+        assert_eq!(mute_label_key(false, false), "tray_mute");
+        assert_eq!(mute_label_key(true, true), "tray_muted_everywhere");
+        assert_eq!(mute_label_key(true, false), "tray_muted_recording_only");
+
+        // Not muted cannot be holding the device: the guard is taken by the
+        // toggle and released by the same toggle, so this combination is
+        // unreachable. It reads as "not muted" rather than asserting, because a
+        // tray that panics is worse than a tray that is a beat behind.
+        assert_eq!(mute_label_key(false, true), "tray_mute");
+    }
+
+    /// `i18n::tr` falls back to returning the key when a string is missing, so a
+    /// typo here would put `tray_muted_everywhere` in the menu rather than fail
+    /// anywhere. This is what catches that.
+    #[test]
+    fn every_mute_string_exists_in_both_languages() {
+        for key in [
+            "tray_mute",
+            "tray_muted_everywhere",
+            "tray_muted_recording_only",
+            "mute_recording_only",
+            "tooltip_mute",
+        ] {
+            for language in [Language::En, Language::Es] {
+                let text = meeting_core::i18n::tr(language, key);
+                assert_ne!(
+                    text, key,
+                    "{key} is missing from {}, so the UI would show the key",
+                    language.as_str()
+                );
+            }
+        }
     }
 }

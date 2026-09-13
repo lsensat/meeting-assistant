@@ -1112,6 +1112,24 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // offline at launch must still be able to record.
         crate::vad::prefetch();
 
+        // Undo a system mute left behind by a previous run. Only a hard kill
+        // during a muted recording can leave one — every ordinary exit drops
+        // the guard — but when it happens this is what puts the microphone
+        // back. `restore_after_crash` checks before acting, so someone who has
+        // already unmuted themselves is left alone.
+        if let Some(device) = config.system_mic_muted.clone() {
+            let restored = crate::audio::system_mute::restore_after_crash(&device);
+            let _ = app.emit(
+                EV_LOG,
+                if restored {
+                    format!("unmuted \"{device}\" — it was left muted by a previous run")
+                } else {
+                    format!("\"{device}\" was flagged as muted but is not; nothing to undo")
+                },
+            );
+            app.state::<AppState>().remember_system_mute(None);
+        }
+
         // Probe Ollama only when it is the configured provider. Launching a
         // local server for someone who chose a remote endpoint is both
         // surprising and slow, and its "not running" state would be reported
@@ -1250,6 +1268,34 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     *state.current_folder.lock().expect("folder poisoned") = Some(folder);
     *state.session.lock().expect("session poisoned") = Some(session);
 
+    // Muting before you press record is in force on the first sample — that is
+    // what `toggle_mute` has always promised, and the flag was already honoured
+    // by the recorder. Now the device follows it too, which it could not while
+    // there was no session to own the guard.
+    if state.is_muted() {
+        let system = apply_system_mute(&app, &state, true);
+
+        // Logged, because this is the case a silent track is hardest to explain
+        // from the audio alone: the microphone was muted before the first sample
+        // ever arrived, so there is no before-and-after in the waveform to read.
+        if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+            log.line(&match &system {
+                SystemMute::Held => {
+                    "started while MUTED, system-wide — the microphone track is silence by request"
+                        .into()
+                }
+                SystemMute::RecordingOnly(why) => format!(
+                    "started while MUTED, recording only — the device refused: {why}"
+                ),
+                SystemMute::NotRecording => {
+                    "started while MUTED — the microphone track is silence by request".into()
+                }
+            });
+        }
+
+        crate::tray::rebuild(&app);
+    }
+
     emit_recording_state(&app, true, false);
     Ok(())
 }
@@ -1263,19 +1309,94 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
     let muted = state.toggle_muted();
 
+    // Silence the device for every application, not only this recording — but
+    // only while a recording is running. Muting at rest sets the flag alone;
+    // `start_recording` takes the system mute if the flag is still set, which
+    // keeps this command's promise that muting before you press record is in
+    // force on the very first sample.
+    let system = apply_system_mute(&app, &state, muted);
+
     // Into the meeting's log as well. A muted microphone writes silence through
     // the same path a dead device does, so a track that goes quiet at 40s looks
     // identical to one that lost its device there — unless the log says which.
     if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
-        log.line(if muted {
-            "microphone MUTED by the user — silence from here is deliberate"
-        } else {
-            "microphone unmuted by the user"
+        log.line(&match (muted, &system) {
+            (true, SystemMute::Held) => {
+                "microphone MUTED by the user, system-wide — silence from here is deliberate".into()
+            }
+            (true, SystemMute::RecordingOnly(why)) => format!(
+                "microphone MUTED by the user, recording only — the device refused: {why}"
+            ),
+            (true, SystemMute::NotRecording) => {
+                "microphone MUTED by the user — silence from here is deliberate".into()
+            }
+            (false, _) => "microphone unmuted by the user".to_string(),
         });
     }
 
+    // The tray carries a checkbox for this and never refreshed, so muting from
+    // the main window left it showing the opposite. That matters more now: the
+    // tray is where a mute left behind by a crash becomes visible and
+    // undoable, and an indicator that lies is worse than none.
+    crate::tray::rebuild(&app);
+
     let _ = app.emit(EV_MUTE_STATE, muted);
+
+    // A refusal has to reach the person, not only the log. The button is down
+    // and the glyph has the bar through it, which on every other device means
+    // nobody can hear them; on this one it means only the file is silent, and
+    // that is the one difference they cannot see. Emitted after the mute-state
+    // event so it is not immediately overwritten by the status that follows it.
+    if let SystemMute::RecordingOnly(_) = &system {
+        let language = state.config_snapshot().language;
+        let _ = app.emit(EV_STATUS, i18n::tr(language, "mute_recording_only"));
+    }
+
     muted
+}
+
+/// What became of a request to mute the device itself.
+pub enum SystemMute {
+    /// The device is muted for every application.
+    Held,
+    /// The device refused, so only the recording is silenced. The button must
+    /// say so rather than claim more than it did.
+    RecordingOnly(String),
+    /// No recording is running, so there is nothing to hold the mute.
+    NotRecording,
+}
+
+/// Take or release the system-wide mute, if a recording is running.
+fn apply_system_mute(app: &AppHandle, state: &State<AppState>, muted: bool) -> SystemMute {
+    let device = state.config_snapshot().microphone_name;
+    if device.is_empty() {
+        return SystemMute::NotRecording;
+    }
+
+    let session = state.session.lock().expect("session poisoned");
+    let Some(session) = session.as_ref() else {
+        return SystemMute::NotRecording;
+    };
+
+    // The closure persists the flag. `system_mute` knows nothing about `Config`
+    // — it is handed a way to remember and a way to forget.
+    let handle = app.clone();
+    let remember = move |device: Option<&str>| {
+        handle
+            .state::<AppState>()
+            .remember_system_mute(device);
+    };
+
+    match session.set_system_mute(muted, &device, remember) {
+        Ok(()) => {
+            if muted {
+                SystemMute::Held
+            } else {
+                SystemMute::NotRecording
+            }
+        }
+        Err(e) => SystemMute::RecordingOnly(e.to_string()),
+    }
 }
 
 /// Announce the recording state to every window and to the tray.

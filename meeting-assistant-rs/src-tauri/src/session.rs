@@ -26,6 +26,16 @@ pub struct RecordingSession {
     tracks: Vec<Recorder>,
     /// Kept so the caller can drain UI events while recording.
     pub events: Receiver<Event>,
+    /// The system-wide microphone mute, while this recording holds one.
+    ///
+    /// A field rather than something the commands take and release, for the
+    /// reason spelled out on `_queue_hold` below: every way out of a recording
+    /// drops this session, and dropping it hands the microphone back.
+    ///
+    /// Listed before `_queue_hold` so it drops first. Nothing depends on the
+    /// order, but releasing the user's microphone is the more urgent of the two.
+    system_mute: std::sync::Mutex<Option<crate::audio::system_mute::MuteGuard>>,
+
     /// Stops the processing queue for as long as this session exists.
     ///
     /// A field rather than something the commands acquire and release, so the
@@ -46,6 +56,48 @@ pub struct RecordingSession {
     /// the queue any earlier would let transcription start while this
     /// recording's own files were still being flushed.
     _queue_hold: crate::queue::RecordingHold,
+}
+
+impl RecordingSession {
+    /// Take or release the system-wide microphone mute.
+    ///
+    /// Separate from [`set_muted`](Self::set_muted), which silences the samples
+    /// this recording writes. This one silences the device for **every**
+    /// application, and is only ever held while a recording is running — the
+    /// guard is a field of this session, so every way out of a recording
+    /// releases it.
+    ///
+    /// Returns the error when the OS refuses, so the caller can say the mute is
+    /// recording-only rather than let the button claim more than it did.
+    pub fn set_system_mute(
+        &self,
+        muted: bool,
+        device: &str,
+        remember: impl Fn(Option<&str>) + Send + Sync + 'static,
+    ) -> Result<(), crate::audio::system_mute::MuteError> {
+        let mut slot = self.system_mute.lock().expect("system mute poisoned");
+
+        if !muted {
+            // Dropping the guard is what unmutes and clears the flag.
+            *slot = None;
+            return Ok(());
+        }
+
+        if slot.is_some() {
+            return Ok(());
+        }
+
+        *slot = Some(crate::audio::system_mute::MuteGuard::acquire(device, remember)?);
+        Ok(())
+    }
+
+    /// Whether this recording currently holds a system-wide mute.
+    pub fn holds_system_mute(&self) -> bool {
+        self.system_mute
+            .lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug)]
@@ -143,6 +195,7 @@ impl RecordingSession {
             folder,
             tracks,
             events,
+            system_mute: std::sync::Mutex::new(None),
             _queue_hold: queue_hold,
         })
     }
