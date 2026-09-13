@@ -69,6 +69,40 @@ stranded the OS agrees, and the flag names the device
 restored the OS agrees
 ```
 
+### Does the mute actually silence anything? (measured, macOS)
+
+`set` returning `Ok` and `is_muted` agreeing prove only that Core Audio recorded
+the request. They do **not** prove a single sample went quiet — a real call
+appeared unaffected while the property read back as muted, and that gap is what
+this measurement closes.
+
+The listener is a separate process using plain HAL capture (cpal), with a tone
+playing through the speakers so the microphone always has signal. Measured on a
+MacBook Air's built-in microphone:
+
+| lever | peak heard by another process |
+|---|---|
+| nothing (baseline) | `-30.5 dBFS` |
+| `kAudioDevicePropertyMute` = 1 | **`-120 dBFS` — digital silence** |
+| `kAudioDevicePropertyVolumeScalar` = 0 | `-43.4 dBFS` — ~13 dB down, still audible |
+
+Two things follow. **Volume-0 is not a mute** — it attenuates, so it is not a
+usable fallback, which settles a question raised early in the design. And the
+mute works **mid-stream**: flipped while the listener was already capturing, the
+samples went to zero within ~300 ms and came back immediately on release, which
+is the real scenario (a call app already holds the microphone when the user
+mutes).
+
+What this does not cover: conferencing apps capture through Voice-Processing IO,
+which wraps the device in a private aggregate. Whether device mute reaches that
+path is untested, and it is the open question behind any report that a call was
+unaffected. The Mac's own input meter and the orange dot are **not** evidence
+either way — the app keeps the device open while receiving zeros.
+
+The device's own properties are worth dumping before drawing conclusions: on
+this machine `mute` and `volume` are settable on element 0 only, and channels
+1-3 refuse both, so element 0 is the only target that exists.
+
 ### Type-checking the Windows path from a Mac
 
 `cargo check --target x86_64-pc-windows-msvc` on the whole app fails, because
