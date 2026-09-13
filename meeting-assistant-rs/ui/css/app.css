@@ -137,10 +137,30 @@ html, body {
   color: var(--ink-invert);
   font-family: var(--font);
   font-size: 13px;
-  /* Both windows are fixed size and the layout has no responsive fallback. */
+  /* The app windows are fixed size and the layout has no responsive fallback.
+     The library is the exception and scrolls its own document area. */
   overflow: hidden;
+  /* Chrome should not feel like a web page: no accidental selection of button
+     labels or panel headings while dragging. Anything that is a **document**
+     opts back in below — a summary you cannot copy out of is half a viewer. */
   user-select: none;
   -webkit-user-select: none;
+}
+
+/*
+ * Documents, as opposed to chrome.
+ *
+ * The rule above is inherited by everything, so a reader could not select a
+ * sentence of their own meeting summary, or a line of a licence they are
+ * obliged to be able to read. Both are text to be taken away, not furniture.
+ */
+.library-body,
+.library-head h1,
+.library-head-meta,
+#licenses-text {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
 }
 
 /* ---------------------------------------------------------------- buttons */
@@ -1286,7 +1306,7 @@ input[type="password"] { cursor: text; }
   gap: 8px;
   margin: 4px 12px 6px;
   padding: 8px 10px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--amber);
   border-radius: var(--radius-panel);
   background: var(--panel);
   color: var(--ink);
@@ -1317,7 +1337,9 @@ input[type="password"] { cursor: text; }
 
 .library-list {
   overflow-y: auto;
-  border-right: var(--border);
+  /* No divider. It was a straight rule running into the document panel's
+     rounded corners, and the two could not meet — the gap between them read as
+     a rendering fault. Dark against cream is boundary enough. */
   background: var(--app-bg);
   padding: 6px;
 }
@@ -1341,7 +1363,7 @@ input[type="password"] { cursor: text; }
 
 .library-row.is-selected {
   background: var(--panel);
-  border-color: var(--accent);
+  border-color: var(--amber);
   color: var(--ink);
 }
 
@@ -1385,6 +1407,11 @@ input[type="password"] { cursor: text; }
   min-width: 0;
   background: var(--panel);
   color: var(--ink);
+  /* All four corners. `overflow: hidden` is what makes the radius real —
+     without it the header's own background paints square corners straight
+     over it. */
+  border-radius: var(--radius-card);
+  overflow: hidden;
 }
 
 .library-head {
@@ -1415,6 +1442,10 @@ input[type="password"] { cursor: text; }
   border: var(--border);
   border-radius: var(--radius-card);
   background: var(--app-bg);
+  /* `.library-doc` sets `--ink` for its cream header, and this panel is dark —
+     inheriting that made the text `#2B2D2E` on `#2B2D2E`, the same colour, so
+     every summary rendered as an empty box. Not dim: identical. */
+  color: var(--ink-invert);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1489,7 +1520,7 @@ input[type="password"] { cursor: text; }
 /* The block form already has padding of its own. */
 .library-body pre code { padding: 0; background: none; font: inherit; }
 
-.library-body a { color: var(--accent); }
+.library-body a { color: var(--amber); }
 
 /* A link whose destination Rust refused, or a relative one. The words are part
    of the document and stay; there is simply nowhere to go. */

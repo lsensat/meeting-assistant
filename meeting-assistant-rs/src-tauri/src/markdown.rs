@@ -483,3 +483,25 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod live_tokens {
+    /// Tokenise a real summary and say what came out.
+    ///
+    /// ```text
+    /// MD_FILE=~/Documents/.../summary.md cargo test -p meeting-assistant \
+    ///     --lib markdown::live_tokens -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs MD_FILE"]
+    fn tokenise_a_real_summary() {
+        let path = std::env::var("MD_FILE").expect("set MD_FILE");
+        let text = std::fs::read_to_string(&path).expect("read");
+        println!("{} bytes of markdown", text.len());
+        let tokens = super::to_tokens(&text);
+        println!("{} tokens", tokens.len());
+        for t in tokens.iter().take(8) {
+            println!("  {}", serde_json::to_string(t).unwrap());
+        }
+    }
+}

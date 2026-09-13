@@ -58,6 +58,8 @@ export const listLibrary = () => invoke("list_library");
 export const readSummary = (id) => invoke("read_summary", { id });
 /** Absolute path of a meeting's **folder**, for "open in the default app". */
 export const libraryFolder = (id) => invoke("library_folder", { id });
+/** Absolute path of a meeting's transcript. */
+export const libraryTranscript = (id) => invoke("library_transcript", { id });
 /** @param {string} [id] meeting to select on open */
 export const openLibrary = (id) => invoke("open_library", { id: id ?? null });
 /**

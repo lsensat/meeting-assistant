@@ -482,6 +482,7 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
     let Ok(handle) = window.hwnd() else {
         return;
     };
+    let hwnd = HWND(handle.0 as *mut _);
 
     // COLORREF is 0x00BBGGRR — byte-reversed from the `#RRGGBB` in the
     // stylesheet. Writing it the familiar way round would tint the bar a
@@ -494,7 +495,7 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
     // function does.
     unsafe {
         let _ = DwmSetWindowAttribute(
-            HWND(handle.0 as *mut _),
+            hwnd,
             DWMWA_CAPTION_COLOR,
             &APP_BG as *const u32 as *const std::ffi::c_void,
             std::mem::size_of::<u32>() as u32,
@@ -946,6 +947,19 @@ pub fn library_folder(id: String, state: State<AppState>) -> Result<String, Stri
     Ok(folder.to_string_lossy().into_owned())
 }
 
+/// The absolute path of a meeting's transcript.
+///
+/// The transcript button used to live in the main window, where it could only
+/// ever reach the meeting that had just finished. Here it is per meeting, so it
+/// works for every one of them.
+#[tauri::command(async)]
+pub fn library_transcript(id: String, state: State<AppState>) -> Result<String, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::transcript_path(&root, &id)
+        .ok_or("no transcript for that meeting")?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Percent-encode a value for use in a query string.
 ///
 /// # Why this is needed, contrary to an earlier comment here
@@ -1004,7 +1018,7 @@ pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
     } else {
         let window =
             tauri::WebviewWindowBuilder::new(&app, "library", tauri::WebviewUrl::App(url.into()))
-                .title("Summaries")
+                .title("Library")
                 // Unlike Settings and the wizard, this one holds a document.
                 .inner_size(900.0, 640.0)
                 .theme(Some(tauri::Theme::Dark))

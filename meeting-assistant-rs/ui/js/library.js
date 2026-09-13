@@ -24,6 +24,7 @@ const ui = {
   meta: el("doc-meta"),
   body: el("doc-body"),
   empty: el("library-empty"),
+  openTranscript: el("open-transcript"),
   openFolder: el("open-folder"),
 };
 
@@ -184,6 +185,18 @@ async function main() {
     api.openPath(path).catch((error) => {
       throw error;
     });
+  });
+
+  // A meeting recorded before transcripts were kept, or one whose run failed,
+  // has no transcript — the command says so and the message reaches the user
+  // rather than the console.
+  ui.openTranscript.addEventListener("click", async () => {
+    if (!selectedId) return;
+    try {
+      api.openPath(await api.libraryTranscript(selectedId));
+    } catch (error) {
+      ui.meta.textContent = String(error);
+    }
   });
 
   await refresh();

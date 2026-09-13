@@ -50,6 +50,7 @@ fn main() {
             commands::list_library,
             commands::read_summary,
             commands::library_folder,
+            commands::library_transcript,
             commands::open_external_url,
             commands::ui_log,
             commands::list_devices,

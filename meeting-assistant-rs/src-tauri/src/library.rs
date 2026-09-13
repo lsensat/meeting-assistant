@@ -106,6 +106,20 @@ pub fn summary_path(output_folder: &Path, id: &str) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// Resolve a library id to its transcript file.
+///
+/// Deliberately built on [`summary_path`] rather than repeating the id
+/// validation: that check is the only thing standing between a string from the
+/// frontend and an arbitrary path, and two copies of it is one copy too many.
+/// A meeting with no summary is not in the library, so refusing it here costs
+/// nothing.
+pub fn transcript_path(output_folder: &Path, id: &str) -> Option<PathBuf> {
+    let candidate = summary_path(output_folder, id)?
+        .parent()?
+        .join(crate::pipeline::TRANSCRIPT_FILENAME);
+    candidate.is_file().then_some(candidate)
+}
+
 /// The first line worth showing as a preview.
 ///
 /// Skips headings, bullets and the bold-only lines the summary prompt produces
