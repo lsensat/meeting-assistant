@@ -99,6 +99,13 @@ fn main() {
             // and a horizon that long has to survive closing the app.
             state.queue.set_paused(config.processing_paused);
 
+            // The main window is built from `tauri.conf.json` rather than by a
+            // `WebviewWindowBuilder`, so it misses the hook the other three get
+            // on construction — and it is the window people actually look at.
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                commands::match_title_bar(&window);
+            }
+
             commands::spawn_worker(app.handle().clone());
             Ok(())
         })

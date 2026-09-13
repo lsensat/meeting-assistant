@@ -458,6 +458,52 @@ fn debug_inspect(window: &tauri::WebviewWindow) {
     }
 }
 
+/// Paint the Windows title bar in the app's own background colour.
+///
+/// The title bar is drawn by the OS, not the webview, so no amount of CSS
+/// reaches it: on Windows it followed the system theme and sat white above a
+/// dark app. macOS already blends, because the window's appearance follows the
+/// `"theme": "Dark"` now set in `tauri.conf.json` — and that alone gets Windows
+/// most of the way, from white to Windows' own dark grey.
+///
+/// This closes the last gap: `DWMWA_CAPTION_COLOR` takes an exact colour, so
+/// the bar becomes `--body` rather than merely dark.
+///
+/// Windows 11 build 22000 and later. Earlier versions return an error, which is
+/// ignored — they keep the themed dark bar, which is the previous behaviour and
+/// perfectly reasonable. A cosmetic call is never worth failing a window over.
+#[cfg(target_os = "windows")]
+pub fn match_title_bar(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR};
+
+    let Ok(handle) = window.hwnd() else {
+        return;
+    };
+
+    // COLORREF is 0x00BBGGRR — byte-reversed from the `#RRGGBB` in the
+    // stylesheet. Writing it the familiar way round would tint the bar a
+    // different colour entirely, and plausibly enough to look deliberate.
+    const APP_BG: u32 = 0x002E2D2B; // --body, #2B2D2E
+
+    // SAFETY: `handle` is a live window handle owned by Tauri, and the
+    // attribute takes a `u32` by pointer with its size, both of which are
+    // correct here. The call cannot outlive the window: it returns before this
+    // function does.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            HWND(handle.0 as *mut _),
+            DWMWA_CAPTION_COLOR,
+            &APP_BG as *const u32 as *const std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+/// No-op off Windows: macOS follows the window theme and needs nothing.
+#[cfg(not(target_os = "windows"))]
+pub fn match_title_bar(_window: &tauri::WebviewWindow) {}
+
 /// # `(async)` is load-bearing, not a style choice
 ///
 /// `WebviewWindowBuilder::new` carries this warning in Tauri's own source
@@ -492,10 +538,15 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
             .resizable(false)
             .maximizable(false)
             .center()
+            // Windows 10 has no caption-colour attribute, so the theme is what
+            // keeps this window's title bar dark there. `tauri.conf.json`
+            // covers the main window; a builder does not read that list.
+            .theme(Some(tauri::Theme::Dark))
             .build()
             .map_err(|e| e.to_string())?;
 
     debug_inspect(&window);
+    match_title_bar(&window);
     Ok(())
 }
 
@@ -722,10 +773,15 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .inner_size(590.0, 610.0)
     .resizable(false)
     .maximizable(false)
+    // Windows 10 has no caption-colour attribute, so the theme is what keeps
+    // this window's title bar dark there. `tauri.conf.json` covers the main
+    // window; a builder does not read that list.
+    .theme(Some(tauri::Theme::Dark))
     .build()
     .map_err(|e| e.to_string())?;
 
     debug_inspect(&window);
+    match_title_bar(&window);
     Ok(())
 }
 
@@ -753,10 +809,15 @@ pub fn open_licenses(app: AppHandle) -> Result<(), String> {
     )
     .title("Acknowledgements")
     .inner_size(640.0, 620.0)
+    // Windows 10 has no caption-colour attribute, so the theme is what keeps
+    // this window's title bar dark there. `tauri.conf.json` covers the main
+    // window; a builder does not read that list.
+    .theme(Some(tauri::Theme::Dark))
     .build()
     .map_err(|e| e.to_string())?;
 
     debug_inspect(&window);
+    match_title_bar(&window);
     Ok(())
 }
 

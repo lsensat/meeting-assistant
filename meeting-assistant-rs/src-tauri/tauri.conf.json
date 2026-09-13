@@ -12,6 +12,7 @@
       {
         "label": "main",
         "title": "Meeting Assistant",
+        "theme": "Dark",
         "width": 375,
         "height": 275,
         "resizable": true,
