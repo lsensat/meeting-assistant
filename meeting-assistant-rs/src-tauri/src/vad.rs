@@ -85,6 +85,46 @@ const MIN_RUN_SECONDS: f64 = 0.1;
 /// Four is whisper.cpp's own default for VAD.
 const VAD_THREADS: i32 = 4;
 
+/// The level VAD input is lifted to before detection.
+///
+/// Not full scale: headroom, so a transient does not clip and change the shape
+/// of what silero is asked to classify.
+const DETECTION_PEAK: f32 = 0.5;
+
+/// The most the detection copy is amplified.
+///
+/// A track of pure noise would otherwise be lifted to speech level and
+/// confidently classified as nothing, at the cost of an enormous multiplier
+/// applied to a signal that carries no information. The measured cases needed
+/// x9.4 and x18.4.
+const MAX_DETECTION_GAIN: f32 = 32.0;
+
+/// How much to amplify `peak` for detection.
+///
+/// # Why this is needed at all
+///
+/// silero's threshold is **absolute**; whisper's is not. `whisper.cpp`
+/// normalises its mel spectrogram internally, so transcription is indifferent to
+/// how loud a recording is — which is why quiet audio transcribes fine and had
+/// never been a problem before VAD existed.
+///
+/// A real headset track, measured: RMS -45 to -59 dBFS, overall peak 0.0529,
+/// roughly **20 dB below normal speech level**. silero found its first speech at
+/// 15.36s and VAD threw away the opening — four sentences, including the speaker
+/// introducing themselves — which whisper transcribes perfectly when asked. That
+/// is the failure this function exists to prevent, and it is worse than any
+/// amount of wasted time.
+///
+/// Lifting the level instead of lowering the threshold keeps the question the
+/// right way round: "is this speech-shaped" should not depend on the gain of the
+/// microphone that recorded it.
+fn detection_gain(peak: f32) -> f32 {
+    if peak <= 0.0 || peak >= DETECTION_PEAK {
+        return 1.0;
+    }
+    (DETECTION_PEAK / peak).min(MAX_DETECTION_GAIN)
+}
+
 /// A stretch of audio to hand to whisper, as sample indices into the track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run {
@@ -217,8 +257,26 @@ pub fn speech_runs(
     let mut context = WhisperVadContext::new(path, params)
         .map_err(|e| VadError::Model(format!("{e:?}")))?;
 
+    // Detection sees a level-corrected copy; **whisper still gets the original
+    // samples**. Nothing about the transcript changes, only where the speech is
+    // judged to be.
+    //
+    // The copy costs the track's size again, briefly — about 230 MB per hour at
+    // 16 kHz f32 — and is dropped as soon as the segments are out. Scaling in
+    // place and scaling back would avoid it, but float multiplication does not
+    // round-trip exactly and whisper would then transcribe samples we had
+    // altered.
+    let gain = detection_gain(meeting_core::convert::peak(samples));
+    let scaled: Vec<f32>;
+    let for_detection = if gain > 1.0 {
+        scaled = samples.iter().map(|s| s * gain).collect();
+        &scaled[..]
+    } else {
+        samples
+    };
+
     let segments = context
-        .segments_from_samples(WhisperVadParams::new(), samples)
+        .segments_from_samples(WhisperVadParams::new(), for_detection)
         .map_err(|e| VadError::Detect(format!("{e:?}")))?;
 
     // Centiseconds, at 16 kHz, per `samples_to_cs` in whisper.cpp.
@@ -360,6 +418,34 @@ mod tests {
         assert_eq!(MODEL_SHA256.len(), 64);
         assert!(MODEL_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(MODEL_SHA256, MODEL_SHA256.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn a_quiet_recording_is_lifted_before_detection() {
+        // The measured case: a headset track peaking at 0.0529, about 20 dB
+        // below normal speech. Left alone, silero found its first speech at
+        // 15.36s and the opening four sentences were thrown away.
+        assert!((detection_gain(0.0529) - 9.45).abs() < 0.01);
+
+        // The 96%-silent track. Amplifying it does **not** resurrect the
+        // hallucinations — measured: still zero speech segments at x18.4 — so
+        // the lift is safe to apply unconditionally.
+        assert!((detection_gain(0.0271) - 18.45).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_normal_recording_is_left_alone() {
+        assert_eq!(detection_gain(0.5), 1.0);
+        assert_eq!(detection_gain(0.9), 1.0);
+    }
+
+    #[test]
+    fn the_gain_is_bounded_and_safe_at_zero() {
+        // Pure noise must not be lifted to speech level by an unbounded
+        // multiplier, and a digitally silent track must not divide by zero —
+        // though `SILENCE_PEAK` should have returned long before here.
+        assert_eq!(detection_gain(0.0001), MAX_DETECTION_GAIN);
+        assert_eq!(detection_gain(0.0), 1.0);
     }
 
     #[test]
