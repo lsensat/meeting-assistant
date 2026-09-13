@@ -104,6 +104,12 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # The title bar is drawn by Windows, not by the webview, so matching it to the
 # app's background needs a DWM call. Pinned to the same major the Tauri tree
 # already resolves, so no second copy of `windows` is built.
+# Core Audio, for muting the microphone system-wide. Already in the tree via
+# cpal; named here because a transitive dependency is not an import.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = "0.3.2"
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
