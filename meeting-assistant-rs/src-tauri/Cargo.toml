@@ -1,6 +1,6 @@
 [package]
 name = "meeting-assistant"
-version = "0.2.14"
+version = "0.2.15"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
