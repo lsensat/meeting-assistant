@@ -1405,8 +1405,11 @@ input[type="password"] { cursor: text; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--panel);
-  color: var(--ink);
+  /* Dark, so the document below reads as a page laid on the app's chrome
+     rather than as more chrome. The header, the margin around the document and
+     the empty-state message all inherit this. */
+  background: var(--app-bg);
+  color: var(--ink-invert);
   /* All four corners. `overflow: hidden` is what makes the radius real —
      without it the header's own background paints square corners straight
      over it. */
@@ -1441,11 +1444,16 @@ input[type="password"] { cursor: text; }
   padding: 14px 16px 22px;
   border: var(--border);
   border-radius: var(--radius-card);
-  background: var(--app-bg);
-  /* `.library-doc` sets `--ink` for its cream header, and this panel is dark —
-     inheriting that made the text `#2B2D2E` on `#2B2D2E`, the same colour, so
-     every summary rendered as an empty box. Not dim: identical. */
-  color: var(--ink-invert);
+  /* Light, and the only light surface in the app: a summary is a document, and
+     several paragraphs of prose are easier on a light ground than a dark one.
+     `#2B2D2E` on `#D9DBDA` is about 11:1.
+
+     Both halves of this pair have to move together. An earlier version set the
+     surface without the ink and rendered `#2B2D2E` on `#2B2D2E` — every summary
+     an empty box, not dim but identical. Hence both lines, and hence the two
+     rules below that were tuned for the dark ground this replaced. */
+  background: var(--panel);
+  color: var(--ink);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1479,7 +1487,9 @@ input[type="password"] { cursor: text; }
 .library-body blockquote {
   margin: 0 0 10px;
   padding-left: 10px;
-  border-left: 2px solid var(--faceplate-2);
+  /* Was `--faceplate-2`, which was a cream rule on a dark ground. On the light
+     ground it is `#E3D9C0` on `#D9DBDA` — there, but not visibly. */
+  border-left: 2px solid var(--steel);
   opacity: 0.85;
 }
 .library-body pre {
@@ -1520,7 +1530,15 @@ input[type="password"] { cursor: text; }
 /* The block form already has padding of its own. */
 .library-body pre code { padding: 0; background: none; font: inherit; }
 
-.library-body a { color: var(--amber); }
+/* Amber is a light on a dark ground; on `#D9DBDA` it is about 1.25:1, which is
+   not a colour text can be. The link keeps the accent as its underline and takes
+   the body's ink for the words themselves. */
+.library-body a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--amber-dark);
+  text-underline-offset: 2px;
+}
 
 /* A link whose destination Rust refused, or a relative one. The words are part
    of the document and stay; there is simply nowhere to go. */
