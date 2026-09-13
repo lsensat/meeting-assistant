@@ -6,7 +6,8 @@
     "main",
     "settings",
     "setup",
-    "licenses"
+    "licenses",
+    "library"
   ],
   "permissions": [
     "core:default",

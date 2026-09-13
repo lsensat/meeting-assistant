@@ -173,6 +173,13 @@ pub struct PipelineOutput {
     pub segment_count: usize,
 }
 
+/// The transcript a finished meeting leaves beside its summary.
+///
+/// Named here rather than spelled twice: `library::transcript_path` resolves the
+/// same file for the viewer, and a literal in two modules is a rename waiting to
+/// go wrong.
+pub const TRANSCRIPT_FILENAME: &str = "transcript.txt";
+
 /// Run the whole post-recording pipeline.
 ///
 /// `on_progress` is called from this thread; the caller forwards it to the UI.
@@ -212,7 +219,7 @@ pub fn run(
 
     let mic_file = folder.join(MIC_FILENAME);
     let system_file = folder.join(SYSTEM_FILENAME);
-    let transcript_file = folder.join("transcript.txt");
+    let transcript_file = folder.join(TRANSCRIPT_FILENAME);
     let summary_file = folder.join("summary.md");
 
     on_progress(Progress::Stage(Stage::Audio, StageState::Done));

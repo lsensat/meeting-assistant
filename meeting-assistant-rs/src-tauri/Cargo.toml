@@ -92,6 +92,11 @@ serde_json = "1"
 # a machine without the loader — so it is a decision, not a default.
 # CoreML is a further opt-in that also requires converting the model.
 whisper-rs = "0.16"
+
+# CommonMark, for rendering a meeting summary in the library window. No default
+# features: the HTML writer is not used — the parser is driven directly so the
+# app builds the DOM itself and never touches `innerHTML`.
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["simd"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 
 # The Tauri app. `rec` and `process` are the Phase M2/M3 CLI drivers; they stay

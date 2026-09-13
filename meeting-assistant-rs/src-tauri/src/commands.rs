@@ -55,6 +55,8 @@ pub const EV_WHISPER_PROGRESS: &str = "whisper_progress";
 /// The queue changed: a job was added, finished, failed or was removed, or the
 /// pause switch moved. Carries no payload — the frontend asks for a snapshot.
 pub const EV_QUEUE_CHANGED: &str = "queue_changed";
+/// Tell an already-open library window which meeting to show.
+pub const EV_LIBRARY_SELECT: &str = "library_select";
 /// Settings were saved. Every window re-reads the config and re-applies
 /// anything derived from it — the language above all.
 ///
@@ -480,6 +482,7 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
     let Ok(handle) = window.hwnd() else {
         return;
     };
+    let hwnd = HWND(handle.0 as *mut _);
 
     // COLORREF is 0x00BBGGRR — byte-reversed from the `#RRGGBB` in the
     // stylesheet. Writing it the familiar way round would tint the bar a
@@ -492,7 +495,7 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
     // function does.
     unsafe {
         let _ = DwmSetWindowAttribute(
-            HWND(handle.0 as *mut _),
+            hwnd,
             DWMWA_CAPTION_COLOR,
             &APP_BG as *const u32 as *const std::ffi::c_void,
             std::mem::size_of::<u32>() as u32,
@@ -901,6 +904,185 @@ pub fn open_sound_settings(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(uri, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// Every meeting with a summary, newest first.
+#[tauri::command(async)]
+pub fn list_library(state: State<AppState>) -> Vec<crate::library::LibraryEntry> {
+    crate::library::entries(&state.config_snapshot().output_folder)
+}
+
+/// One meeting's summary, as a token stream for the frontend's DOM builder.
+///
+/// Takes an **id**, not a path. Every other file-touching command here derives
+/// its path from an id and this one keeps that property — see
+/// `library::summary_path`, which matches the id against a folder name so `..`,
+/// an absolute path or a separator simply fails to resolve.
+#[tauri::command(async)]
+pub fn read_summary(
+    id: String,
+    state: State<AppState>,
+) -> Result<Vec<crate::markdown::Token>, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(crate::markdown::to_tokens(&text))
+}
+
+/// The absolute path of a meeting's folder, for "open in the default app".
+#[tauri::command(async)]
+pub fn library_folder(id: String, state: State<AppState>) -> Result<String, String> {
+    let root = state.config_snapshot().output_folder;
+    let summary = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+
+    // The **folder**, not the file. This returned the summary's own path, so
+    // "Open this meeting's folder" handed `summary.md` to the OS and opened it
+    // in a text editor — next to the audio and the transcript the user was
+    // actually looking for.
+    let folder = summary
+        .parent()
+        .ok_or("that summary has no folder")?
+        .to_path_buf();
+
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// The absolute path of a meeting's transcript.
+///
+/// The transcript button used to live in the main window, where it could only
+/// ever reach the meeting that had just finished. Here it is per meeting, so it
+/// works for every one of them.
+#[tauri::command(async)]
+pub fn library_transcript(id: String, state: State<AppState>) -> Result<String, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::transcript_path(&root, &id)
+        .ok_or("no transcript for that meeting")?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Percent-encode a value for use in a query string.
+///
+/// # Why this is needed, contrary to an earlier comment here
+///
+/// A previous version said encoding was unnecessary because an id is
+/// "`[A-Za-z0-9_-]`-ish". It is not. A meeting folder is
+/// `{timestamp}_{sanitised title}`, and `text::sanitize_name` strips only
+/// `<>:"/\|?*` — so `&`, `#`, `%` and `+` all survive into the folder name and
+/// therefore into the id.
+///
+/// Each of them breaks the URL in its own way, and the symptom is the same: the
+/// frontend's `URLSearchParams.get("id")` returns something that matches no
+/// meeting, so the Summary button silently opens the newest meeting instead of
+/// the one the user pressed it for.
+///
+/// | title | id fragment | what the query does |
+/// |---|---|---|
+/// | `Q3 #plan` | `..._Q3_#plan` | `#` begins a fragment; the id is truncated |
+/// | `Sales & Ops` | `..._Sales_&_Ops` | `&` begins another parameter |
+/// | `100% done` | `..._100%_done` | `%_d` is a malformed escape |
+/// | `a + b` | `..._a_+_b` | `+` decodes to a space |
+///
+/// Unreserved characters are per RFC 3986, so the output is stable across
+/// decoders.
+fn encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Open, or focus, the library window, optionally on a given meeting.
+///
+/// The id travels two ways on purpose. As a query string it is there before the
+/// page's first line runs, which covers opening the window. As an event it
+/// reaches a window that is **already open** — where the URL is fixed and
+/// re-navigating would throw away the reader's scroll position.
+#[tauri::command(async)]
+pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    let already_open = app.get_webview_window("library").is_some();
+
+    let url = match id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) if !already_open => format!("library.html?id={}", encode_query_value(id)),
+        _ => "library.html".to_string(),
+    };
+
+    if let Some(existing) = app.get_webview_window("library") {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        let window =
+            tauri::WebviewWindowBuilder::new(&app, "library", tauri::WebviewUrl::App(url.into()))
+                .title("Library")
+                // Unlike Settings and the wizard, this one holds a document.
+                .inner_size(900.0, 640.0)
+                .theme(Some(tauri::Theme::Dark))
+                .build()
+                .map_err(|e| e.to_string())?;
+
+        debug_inspect(&window);
+        match_title_bar(&window);
+    }
+
+    if already_open {
+        if let Some(id) = id {
+            let _ = app.emit(EV_LIBRARY_SELECT, id);
+        }
+    }
+    Ok(())
+}
+
+/// Hand a link from a rendered document to the system browser.
+///
+/// # Why a link cannot simply be a link
+///
+/// In a Tauri webview an `<a href>` does not open a browser. It **navigates the
+/// webview**, replacing the app's interface with that page, in a window with no
+/// address bar and no back button. So the frontend cancels the click and calls
+/// this instead.
+///
+/// # Why this command and not `opener:allow-open-url`
+///
+/// That permission is scoped to `https://ollama.com/*` on purpose: unscoped, any
+/// string the frontend can build becomes a URL the OS opens. Widening it for
+/// links in a document would hand over every scheme the OS honours, which on
+/// both platforms includes ones that launch applications.
+///
+/// This is the narrower door. The scheme is checked **here**, in Rust, not in
+/// the JavaScript that calls it — `javascript:`, `file:` and `data:` are refused
+/// whatever the frontend believes it is sending.
+#[tauri::command(async)]
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target = permitted_url(&url).ok_or_else(|| format!("refused to open {}", url.trim()))?;
+
+    app.opener()
+        .open_url(target, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// The schemes a document may ask the OS to open.
+///
+/// Separated from the command so it can be tested without a running app, which
+/// is the whole reason this check is worth having.
+///
+/// `javascript:` is the obvious exclusion. `file:` and `data:` matter as much:
+/// the first makes a document a probe for local paths, and the second can carry
+/// a payload inline. Anything not listed is refused, so a scheme nobody
+/// considered cannot arrive by default.
+fn permitted_url(url: &str) -> Option<&str> {
+    let trimmed = url.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|scheme| lowered.starts_with(scheme))
+        .then_some(trimmed)
 }
 
 // --- startup -----------------------------------------------------------

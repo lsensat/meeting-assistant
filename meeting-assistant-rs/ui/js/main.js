@@ -30,7 +30,6 @@ const ui = {
   start: el("start-button"),
   stop: el("stop-button"),
   mute: el("mute-button"),
-  transcript: el("transcript-button"),
   summary: el("summary-button"),
   folder: el("folder-button"),
   settings: el("settings-button"),
@@ -127,10 +126,11 @@ function isAvailable(button) {
  * Was `resetStages`, which also drove three chips that no longer exist.
  */
 function resetResults() {
-  setAvailable(ui.transcript, false);
-  setAvailable(ui.summary, false);
-  // The folder button stays available: the output folder exists whether or not
-  // a meeting has run, and "show me where recordings go" is useful at rest.
+  // Nothing to disable any more. The Summaries button browses *past* meetings,
+  // so gating it on having just recorded one put the library out of reach
+  // exactly when it was most wanted — on a fresh launch, with a folder full of
+  // meetings. The folder button was already always available for the same
+  // reason: the output folder exists whether or not a meeting has run.
 }
 
 /** Heroicons outline, 24x24. */
@@ -1037,8 +1037,9 @@ function wireEvents() {
     // Enabled here rather than when each stage reported done. The paths these
     // buttons open arrive with THIS event, so enabling them earlier left them
     // clickable while `results` still pointed at the previous meeting.
-    setAvailable(ui.transcript, true);
-    setAvailable(ui.summary, true);
+    // Nothing to enable: both remaining buttons are always available. `results`
+    // still matters — it is how the Summaries button knows which meeting to
+    // open on — but it no longer gates the button.
     setStatus(
       tr(payload.quiet_recording ? "processed_ok_quiet" : "processed_ok"),
       payload.quiet_recording ? tr("processed_ok_quiet_detail") : undefined,
@@ -1137,11 +1138,16 @@ function wireControls() {
 
   ui.mute.addEventListener("click", () => api.toggleMute());
 
-  ui.transcript.addEventListener("click", () => {
-    if (isAvailable(ui.transcript)) api.openPath(results.transcript_file);
-  });
+  // Opens the library rather than handing summary.md to the OS. On Windows
+  // that meant Notepad showing raw `#` and `*`; "open in the default app" is
+  // still there, inside the viewer, for anyone who wants their own tool.
   ui.summary.addEventListener("click", () => {
-    if (isAvailable(ui.summary)) api.openPath(results.summary_file);
+    // The library keys on the folder name, which is the meeting's id. Empty
+    // before the first meeting of the session, which the library reads as
+    // "open on the newest" — the right answer for someone who just wants to
+    // look at their summaries.
+    const id = String(results.folder ?? "").split(/[/\\]/).filter(Boolean).pop() ?? "";
+    api.openLibrary(id).catch((error) => setStatus(String(error)));
   });
   // Falls back to the configured output folder, so this works before any
   // meeting has been recorded as well as after one.
