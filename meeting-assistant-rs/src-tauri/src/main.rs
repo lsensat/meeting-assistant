@@ -123,6 +123,21 @@ fn main() {
 
             meeting_assistant::tray::init(app.handle())?;
 
+            // A recording the app never got to finish is adopted first, so the
+            // scan below can see it. Without this its audio sits in a folder
+            // the app cannot reach — see `queue::adopt_interrupted` for why it
+            // refuses folders that already have a summary.
+            let adopted = meeting_assistant::queue::adopt_interrupted(
+                &config.output_folder,
+                // `Config` has no `Serialize` derive on purpose — see
+                // `config.rs` — so it goes through `to_json`, exactly as
+                // `stop_recording` builds the same field.
+                &serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+            );
+            if !adopted.is_empty() {
+                eprintln!("[recover] {} interrupted recording(s) adopted", adopted.len());
+            }
+
             // Pick up anything left unfinished, before the worker starts looking.
             //
             // Meetings survive a quit because their audio and their state file

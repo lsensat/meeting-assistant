@@ -318,6 +318,72 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
 }
 
 #[cfg(test)]
+mod adopt_tests {
+    use super::*;
+
+    fn wav(path: &Path, frames: usize) {
+        let mut w = crate::audio::wav::TrackWriter::create(path).expect("create");
+        w.write_samples(&vec![0.1f32; frames]).expect("write");
+        w.finalize().expect("finalize");
+    }
+
+    /// The two things this has to get right, in one test: adopt the interrupted
+    /// recording, and **refuse the finished one**.
+    ///
+    /// The refusal is the load-bearing half. Meetings recorded before
+    /// `meeting.json` existed have no state file either — on a real library, 14
+    /// of 17 folders had a summary and only 7 had state — so a rule of "no state
+    /// file means adopt it" would re-transcribe the user's whole history on the
+    /// next launch, silently, at minutes per meeting.
+    #[test]
+    fn it_adopts_an_interrupted_recording_and_leaves_a_finished_one_alone() {
+        let root = std::env::temp_dir().join(format!("ma-adopt-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+
+        // Killed mid-recording: audio, nothing else.
+        let killed = root.join("2026-09-14_16-02-33");
+        std::fs::create_dir_all(&killed).expect("mkdir");
+        wav(&killed.join(crate::session::MIC_FILENAME), 4_800);
+
+        // Recorded before the state file existed, and already summarised.
+        let legacy = root.join("2026-09-03_18-02-10");
+        std::fs::create_dir_all(&legacy).expect("mkdir");
+        wav(&legacy.join(crate::session::MIC_FILENAME), 4_800);
+        std::fs::write(legacy.join("summary.md"), "# done\n").expect("write");
+
+        // Already known to the queue.
+        let known = root.join("2026-09-14_16-01-49");
+        std::fs::create_dir_all(&known).expect("mkdir");
+        wav(&known.join(crate::session::MIC_FILENAME), 4_800);
+        save(&known, &MeetingState::new("2026-09-14_16-01-49".into(), String::new(), serde_json::Value::Null))
+            .expect("save");
+
+        // Not a meeting at all.
+        std::fs::create_dir_all(root.join("notes")).expect("mkdir");
+
+        let adopted = adopt_interrupted(&root, &serde_json::Value::Null);
+
+        assert_eq!(adopted, vec![killed.clone()], "only the interrupted one");
+        assert!(state_path(&killed).exists(), "it now has a state file");
+        assert!(!state_path(&legacy).exists(), "a finished meeting must be left alone");
+
+        let state = load(&killed).expect("state");
+        assert_eq!(state.stage, Stage::Queued);
+        assert_eq!(state.id, "2026-09-14_16-02-33", "the id is the folder's own name");
+        assert!(state.duration_seconds.unwrap_or(0.0) > 0.0, "its length is known");
+
+        // Running twice must not queue it twice, nor disturb what it wrote.
+        assert!(adopt_interrupted(&root, &serde_json::Value::Null).is_empty());
+
+        // And the scan now sees it, which is the whole point.
+        let ids: Vec<String> = scan(&root).into_iter().map(|(_, s)| s.id).collect();
+        assert!(ids.contains(&"2026-09-14_16-02-33".to_string()));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1211,3 +1277,87 @@ mod queue_tests {
     }
 }
 
+
+/// Meetings whose recording was interrupted, given a state file so they can be
+/// reached again.
+///
+/// # The state this exists for
+///
+/// A process killed while recording — Task Manager, a panic, a power cut —
+/// never writes `meeting.json`, because that is written when the recording
+/// stops. The folder is left holding minutes of audio that [`scan`] cannot see,
+/// [`crate::library`] will not list, and the user has no way to open. The
+/// recording is not lost; it is unreachable, which to the person who recorded it
+/// is the same thing. Two such folders were found on a real machine after a
+/// crash test.
+///
+/// The WAVs from such a kill also carry an unfinalised header claiming zero
+/// samples, so each is repaired first — see
+/// [`crate::audio::wav::repair_unfinalised`].
+///
+/// # What it refuses to adopt, and why that matters more than what it adopts
+///
+/// A folder qualifies only if it has audio, **no** `meeting.json`, and **no**
+/// `summary.md` or `transcript.txt`.
+///
+/// That last condition is not tidiness. Meetings recorded before `meeting.json`
+/// existed also have no state file — on a real library, 14 of 17 folders had a
+/// summary and only 7 had state — and adopting those would re-transcribe the
+/// user's entire history on the next launch, silently, at minutes per meeting.
+/// Having outputs is the evidence that a meeting was already finished.
+pub fn adopt_interrupted(output_folder: &Path, config: &serde_json::Value) -> Vec<PathBuf> {
+    let mut adopted = Vec::new();
+
+    for found in walk(output_folder) {
+        if found.state.is_some() || state_path(&found.path).exists() {
+            continue;
+        }
+        // Already processed, by a version that predates this state file.
+        if found.path.join("summary.md").exists()
+            || found.path.join(crate::pipeline::TRANSCRIPT_FILENAME).exists()
+        {
+            continue;
+        }
+
+        let mic = found.path.join(crate::session::MIC_FILENAME);
+        let system = found.path.join(crate::session::SYSTEM_FILENAME);
+        if !mic.is_file() && !system.is_file() {
+            continue;
+        }
+
+        for track in [&mic, &system] {
+            if track.is_file() {
+                match crate::audio::wav::repair_unfinalised(track) {
+                    Ok(Some(bytes)) => eprintln!(
+                        "[recover] repaired {} — {bytes} bytes of audio the header had hidden",
+                        track.display()
+                    ),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("[recover] could not repair {}: {e}", track.display()),
+                }
+            }
+        }
+
+        let id = found
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+
+        let mut state = MeetingState::new(id, String::new(), config.clone());
+        state.duration_seconds = crate::pipeline::wav_duration(&mic);
+
+        match save(&found.path, &state) {
+            Ok(()) => {
+                eprintln!("[recover] adopted {} — it was interrupted", found.path.display());
+                adopted.push(found.path);
+            }
+            Err(e) => eprintln!("[recover] could not adopt {}: {e}", found.path.display()),
+        }
+    }
+
+    adopted
+}
