@@ -399,6 +399,12 @@ mod tests {
             "tray_muted_recording_only",
             "mute_recording_only",
             "tooltip_mute",
+            // The summary written when a meeting has no speech in it. If these
+            // are missing the file says `summary_no_speech_title`, which is the
+            // one artifact the user keeps from that meeting.
+            "summary_no_speech_title",
+            "summary_no_speech_body",
+            "queue_stage_recording",
         ] {
             for language in [Language::En, Language::Es] {
                 let text = meeting_core::i18n::tr(language, key);

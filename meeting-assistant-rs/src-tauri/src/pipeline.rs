@@ -51,8 +51,6 @@ pub enum Progress {
 
 #[derive(Debug)]
 pub enum PipelineError {
-    /// The recording contained no speech at all.
-    NoVoice,
     Whisper(whisper::WhisperError),
     Summary(SummaryError),
     Io(std::io::Error),
@@ -61,7 +59,6 @@ pub enum PipelineError {
 impl std::fmt::Display for PipelineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoVoice => write!(f, "No speech was detected in the recording."),
             Self::Whisper(e) => write!(f, "{e}"),
             Self::Summary(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -167,6 +164,9 @@ pub struct PipelineOutput {
     /// the likely explanation for a poor transcript. Reported rather than acted
     /// on: amplifying a quiet track mostly amplifies the noise beside it.
     pub quiet_recording: bool,
+    /// Nothing was said: the transcript came back empty. Not an error — see the
+    /// emptiness check in [`run`] — but the caller may want to say so.
+    pub no_speech: bool,
     pub folder: PathBuf,
     pub transcript_file: PathBuf,
     pub summary_file: PathBuf,
@@ -370,10 +370,41 @@ pub fn run(
     // (`app.py:2343` vs `2348`), leaving a stray empty file behind on that
     // path. That is deferred fix #5. Since writing the file at all is the bug,
     // and this is the ordering the register already records as wrong, the file
-    // is written after the check — the observable difference is only that a
-    // failed run leaves no empty artifact.
+    // is written after the check — the observable difference is only that an
+    // empty run leaves no empty artifact.
+    //
+    // # A meeting with nothing said in it is finished, not failed
+    //
+    // This used to return `PipelineError::NoVoice`, which put the meeting in the
+    // queue as **Failed**, in red, offering a retry that could only ever produce
+    // the same nothing. But nothing failed: the user muted the microphone, or
+    // said nothing, and the app did exactly what it was asked.
+    //
+    // So it writes a summary saying so and finishes. The meeting then behaves
+    // like any other — it is in the library, it can be opened, and it says why
+    // it is empty — instead of looking like a bug in the app.
     if transcript.trim().is_empty() {
-        return Err(PipelineError::NoVoice);
+        let note = format!(
+            "# {}\n\n{}\n",
+            i18n::tr(config.language, "summary_no_speech_title"),
+            i18n::tr(config.language, "summary_no_speech_body"),
+        );
+        std::fs::write(&summary_file, &note)?;
+
+        let _ = std::fs::remove_file(&partial_segments_file);
+        let _ = std::fs::remove_file(&partial_summary_file);
+
+        on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
+        on_progress(Progress::Stage(Stage::Summary, StageState::Done));
+
+        return Ok(RunOutcome::Finished(PipelineOutput {
+            quiet_recording,
+            folder,
+            transcript_file,
+            summary_file,
+            segment_count: 0,
+            no_speech: true,
+        }));
     }
 
     std::fs::write(&transcript_file, &transcript)?;
@@ -421,6 +452,7 @@ pub fn run(
             transcript_file,
             summary_file,
             quiet_recording,
+            no_speech: false,
             segment_count: segments.len(),
         }));
     }
@@ -459,6 +491,7 @@ pub fn run(
 
     Ok(RunOutcome::Finished(PipelineOutput {
         quiet_recording,
+        no_speech: false,
         folder,
         transcript_file,
         summary_file,

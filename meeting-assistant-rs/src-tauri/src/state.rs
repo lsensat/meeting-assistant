@@ -33,9 +33,18 @@ pub struct AppState {
     /// Microphone mute.
     ///
     /// Lives here rather than inside the session so it can be set before a
-    /// recording starts and stays set across one. The Python reset
-    /// `mic_muted = False` on every stop (`app.py:3962`), which silently threw
-    /// the user's choice away.
+    /// recording starts and stays in force for the whole of it.
+    ///
+    /// **Cleared when a recording stops**, which reverses an earlier decision
+    /// here. The Python cleared it too (`app.py:3962`) and this code called that
+    /// "silently throwing the user's choice away" — but the choice belongs to a
+    /// meeting, not to the app, and keeping it had a much worse failure: mute
+    /// once, forget, and the *next* meeting records silent from its first
+    /// sample, with the system mute taken automatically. A mute that has to be
+    /// re-pressed costs one click. A meeting lost to a click made an hour ago
+    /// cannot be recovered at all.
+    ///
+    /// So "still muted" now means "muted for this meeting, deliberately".
     pub muted: Arc<AtomicBool>,
     /// Set while a Whisper model download is running. Both the setup wizard and
     /// the settings window can start one, and two downloads of the same model

@@ -1566,6 +1566,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
             ),
         );
         *state.current_folder.lock().expect("folder poisoned") = None;
+        clear_mute_after_recording(&app, &state);
         // The recording is over, so the queue is no longer held.
         emit_queue_changed(&app);
         emit_recording_state(&app, false, false);
@@ -1580,10 +1581,32 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
     }
 
     *state.current_folder.lock().expect("folder poisoned") = None;
+    clear_mute_after_recording(&app, &state);
     // Same as the early return above: the session is gone, so is the hold.
     emit_queue_changed(&app);
     emit_recording_state(&app, false, false);
     Ok(())
+}
+
+/// The mute belongs to the meeting that just ended, so it ends with it.
+///
+/// It used to persist across recordings, on the reasoning that clearing it threw
+/// the user's choice away. The opposite failure is far worse: mute once, forget,
+/// and the *next* meeting records silent from its first sample — and now takes
+/// the system mute with it, so nobody on that call hears the user either.
+/// Re-pressing mute costs a click. A meeting lost to a click made an hour ago
+/// cannot be recovered at all.
+///
+/// The system mute was already released when the session dropped; this is the
+/// app's own flag catching up. Called from every way a recording can end —
+/// stopping, and both of `cancel_recording`'s exits — because the one that is
+/// forgotten is the one that strands the next meeting.
+fn clear_mute_after_recording(app: &AppHandle, state: &State<AppState>) {
+    if !state.is_muted() {
+        return;
+    }
+    state.toggle_muted();
+    let _ = app.emit(EV_MUTE_STATE, false);
 }
 
 /// Stop recording and run the pipeline.
@@ -1661,6 +1684,8 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
         let _ = app.emit(EV_LOG, damage.detail.clone());
         let _ = app.emit(EV_CAPTURE_DAMAGE, damage);
     }
+
+    clear_mute_after_recording(&app, &state);
 
     *state.pending.lock().expect("pending poisoned") = Some(summary);
     emit_recording_state(&app, false, state.is_processing());
