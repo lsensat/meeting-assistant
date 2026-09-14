@@ -1112,22 +1112,23 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // offline at launch must still be able to record.
         crate::vad::prefetch();
 
-        // Undo a system mute left behind by a previous run. Only a hard kill
-        // during a muted recording can leave one — every ordinary exit drops
-        // the guard — but when it happens this is what puts the microphone
-        // back. `restore_after_crash` checks before acting, so someone who has
-        // already unmuted themselves is left alone.
-        if let Some(device) = config.system_mic_muted.clone() {
-            let restored = crate::audio::system_mute::restore_after_crash(&device);
-            let _ = app.emit(
-                EV_LOG,
-                if restored {
-                    format!("unmuted \"{device}\" — it was left muted by a previous run")
-                } else {
-                    format!("\"{device}\" was flagged as muted but is not; nothing to undo")
-                },
-            );
-            app.state::<AppState>().remember_system_mute(None);
+        // The restore already happened, in `setup`, before this command existed
+        // to be called. All that is left is to say so.
+        //
+        // It used to run *here*, behind the folder check and `vad::prefetch`
+        // above — and this is a command the frontend invokes, so a microphone
+        // left muted by a crash stayed muted until the webview had booted and
+        // asked. A Windows test caught it: after relaunching, the endpoint still
+        // read MUTED and `system_mic_muted` was still set. Undoing that cannot
+        // wait on a model download.
+        if let Some(message) = app
+            .state::<AppState>()
+            .startup_mute_restore
+            .lock()
+            .expect("startup restore poisoned")
+            .take()
+        {
+            let _ = app.emit(EV_LOG, message);
         }
 
         // Probe Ollama only when it is the configured provider. Launching a

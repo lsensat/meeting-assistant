@@ -54,6 +54,18 @@ pub struct AppState {
     /// into the same file the recorder threads were writing to, after the
     /// session itself has been consumed by `stop`.
     pub meeting_log: Mutex<Option<std::sync::Arc<crate::diagnostics::MeetingLog>>>,
+    /// What the startup mute restore did, waiting for a window to tell.
+    ///
+    /// The restore runs in `setup`, before anything else: a microphone left
+    /// muted by a crash is the most urgent thing the app can undo, and it used
+    /// to queue behind a VAD model prefetch inside `startup_check` — a command
+    /// the *frontend* calls, so the microphone stayed muted until the webview
+    /// had booted and asked. A Windows test caught it: after relaunch the
+    /// endpoint still read MUTED and `system_mic_muted` was still set.
+    ///
+    /// There is no UI at `setup` time, so the outcome parks here and
+    /// `startup_check` emits it once somebody can read it.
+    pub startup_mute_restore: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -68,6 +80,7 @@ impl AppState {
             downloading: Arc::new(AtomicBool::new(false)),
             pending: Mutex::new(None),
             meeting_log: Mutex::new(None),
+            startup_mute_restore: Mutex::new(None),
         }
     }
 
