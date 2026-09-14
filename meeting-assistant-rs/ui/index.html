@@ -9,9 +9,9 @@
 <body>
   <!--
     Every user-visible string carries `data-i18n`. `applyLanguage()` walks
-    `[data-i18n]` and re-sets textContent, which replaces the 154 lines of
-    `refresh_ui_language()` (`app.py:4110`) that hand-set ~40 widget texts one
-    by one. This is the single biggest reason the port needs no UI framework.
+    `[data-i18n]` and re-sets textContent, so nothing has to keep a list of the
+    widgets — which is the single biggest reason this UI needs no framework. A
+    label added without the attribute is the one that stays in the old language.
   -->
   <main>
     <section class="session-card">
@@ -241,7 +241,7 @@
   </main>
 
   <!--
-    Meeting-title prompt, replacing the Python's `simpledialog`.
+    Meeting-title prompt.
 
     Deliberately not `window.prompt()`: WKWebView only shows a JS text-input
     panel if the host app implements the corresponding delegate, and Tauri does

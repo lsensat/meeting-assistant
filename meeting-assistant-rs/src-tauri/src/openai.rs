@@ -115,8 +115,8 @@ struct ChatResponse {
 /// One `/chat/completions` round trip.
 ///
 /// The system/user split matches the Ollama path exactly, so the prompts in
-/// `meeting-core::prompts` — which are byte-identical to the Python's — are
-/// used unchanged regardless of provider.
+/// `meeting-core::prompts` are used unchanged regardless of provider. A summary
+/// must not depend on which engine produced it.
 pub fn chat(
     base_url: &str,
     api_key: &str,

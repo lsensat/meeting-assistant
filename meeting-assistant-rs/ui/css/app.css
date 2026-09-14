@@ -167,9 +167,9 @@ html, body {
 
 /*
  * Five variants over one base. Hover moves background, text and icon together —
- * that is the defining detail of this theme and the reason the Python carried
- * 735 lines of custom widget code. The icon follows for free because it is SVG
- * with `currentColor`.
+ * that is the defining detail of this theme, and the reason it is worth having
+ * a single base rather than five hand-painted buttons. The icon follows for
+ * free because it is SVG with `currentColor`.
  */
 .btn {
   display: inline-flex;
@@ -276,8 +276,8 @@ html, body {
 /*
  * Result buttons have a third state. Until their stage reaches `done` they are
  * unavailable: flat steel, muted glyph, no pointer and no bevel — a key that is
- * not there to be pressed. The Python painted this by hand while keeping the
- * widget "normal" (`app.py:3044-3080`) purely to control the look.
+ * not there to be pressed. A real `disabled` attribute, rather than a look
+ * painted on top of an enabled control, so it cannot be clicked either.
  */
 /*
  * Glyph is --body on --steel = 4.14:1. That clears the 3.0 icons need but not
@@ -541,8 +541,8 @@ html, body {
 
 /*
  * The circular transport buttons are a border-radius element containing a
- * glyph. The Python shipped six 56x56 PNGs — two buttons, three states each —
- * only because Tk cannot draw a smooth circle.
+ * glyph, rather than one image per state: six PNGs for two buttons is six
+ * things to regenerate whenever a colour moves.
  */
 .transport button {
   width: 54px;
@@ -694,9 +694,10 @@ html, body {
 .audio-panel.is-collapsed { padding-bottom: 7px; }
 
 /*
- * Result row: mute left, the three result controls centred, gear right. The
- * Python hand-builds a 3-column grid with a uniform group for the outer
- * columns; space-between with a centred middle group is the same thing.
+ * Result row: mute left, the three result controls centred, gear right.
+ * `space-between` with a centred middle group, rather than a three-column grid
+ * with the outer columns forced to equal widths — same result, and it survives
+ * one of the outer controls changing width.
  */
 /*
  * The window is sized to the content by `resizeToContent`, but that needs JS,
@@ -809,10 +810,10 @@ main {
 }
 
 /*
- * Inputs are cream faceplate insets on the dark chrome, with a steel hairline.
- * The Python fakes these borders with a nested-frame trick
- * (`BorderedContainer`) because CustomTkinter's own border rendering is blurry
- * at 1px.
+ * Inputs are cream faceplate insets on the dark chrome, with a steel hairline —
+ * a real 1px border, which is worth stating because faking a hairline with a
+ * nested container is how the same effect is usually achieved when the toolkit
+ * cannot render one crisply.
  *
  * Widths are relative, not the fixed 490px from the styling doc. That number
  * assumed a 590px window; hardcoding it means any window-size change silently

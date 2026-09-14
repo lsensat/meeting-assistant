@@ -1,11 +1,9 @@
 //! The IPC surface: 14 commands and 11 events.
 //!
-//! Events are deliberately one-to-one with the Python's queue tags
-//! (`app.py`'s `messages.put((tag, payload))`) so the port can be diffed
-//! against current behaviour rather than guessed at.
-//!
-//! `queue.Queue` plus `root.after(100, poll_messages)` becomes `app.emit()`;
-//! the flow is still strictly one-way, worker → UI.
+//! Every event is emitted by the backend and consumed by a window: the flow is
+//! strictly one-way, worker → UI. Nothing here reads UI state back, which is
+//! what lets a worker thread run without touching anything the user is
+//! interacting with.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -198,9 +196,9 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
     std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
     std::fs::write(&state.config_file, parsed.to_json()).map_err(|e| e.to_string())?;
 
-    // Replace wholesale rather than mutating field by field. The Python did
-    // `config.clear()` then `update()` while worker threads read the same dict
-    // (deferred fix #2); here the lock makes the swap atomic.
+    // Replace wholesale rather than mutating field by field: clearing and
+    // repopulating in place would let a worker thread read a half-written
+    // config. The lock makes the swap atomic.
     *state.config.lock().expect("config poisoned") = parsed;
 
     // The tray menu bakes in the language and the selected devices, and unlike
@@ -539,6 +537,13 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
             .title("Welcome to Meeting Assistant")
             .inner_size(620.0, 560.0)
             .resizable(false)
+            // Floating, because the main window is.
+            //
+            // A window level outranks ordering *within* a level, so a normal
+            // window of this same app is drawn behind the always-on-top main
+            // window even while it is focused. Without this, opening Settings
+            // over the main window hides half of Settings.
+            .always_on_top(true)
             .maximizable(false)
             .center()
             // Windows 10 has no caption-colour attribute, so the theme is what
@@ -775,6 +780,8 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .title("Settings")
     .inner_size(590.0, 610.0)
     .resizable(false)
+    // Floating for the same reason as the main window — see `open_setup`.
+    .always_on_top(true)
     .maximizable(false)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
     // this window's title bar dark there. `tauri.conf.json` covers the main
@@ -812,6 +819,8 @@ pub fn open_licenses(app: AppHandle) -> Result<(), String> {
     )
     .title("Acknowledgements")
     .inner_size(640.0, 620.0)
+    // Floating for the same reason as the main window — see `open_setup`.
+    .always_on_top(true)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
     // this window's title bar dark there. `tauri.conf.json` covers the main
     // window; a builder does not read that list.
@@ -1019,6 +1028,9 @@ pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
         let window =
             tauri::WebviewWindowBuilder::new(&app, "library", tauri::WebviewUrl::App(url.into()))
                 .title("Library")
+                // Floating for the same reason as the main window — see
+                // `open_setup`.
+                .always_on_top(true)
                 // Unlike Settings and the wizard, this one holds a document.
                 .inner_size(900.0, 640.0)
                 .theme(Some(tauri::Theme::Dark))
@@ -1087,11 +1099,10 @@ fn permitted_url(url: &str) -> Option<&str> {
 
 // --- startup -----------------------------------------------------------
 
-/// The startup probe. Port of the checks around `app.py:894-911`.
+/// The startup probe.
 ///
 /// Runs off the UI thread because reaching Ollama can block for seconds when it
-/// is cold — the Python's version blocked in a thread that was never joined or
-/// cancelled on quit (deferred fix #10).
+/// is cold, and the window must be usable while that happens.
 #[tauri::command]
 pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let config = state.config_snapshot();
@@ -1112,22 +1123,23 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         // offline at launch must still be able to record.
         crate::vad::prefetch();
 
-        // Undo a system mute left behind by a previous run. Only a hard kill
-        // during a muted recording can leave one — every ordinary exit drops
-        // the guard — but when it happens this is what puts the microphone
-        // back. `restore_after_crash` checks before acting, so someone who has
-        // already unmuted themselves is left alone.
-        if let Some(device) = config.system_mic_muted.clone() {
-            let restored = crate::audio::system_mute::restore_after_crash(&device);
-            let _ = app.emit(
-                EV_LOG,
-                if restored {
-                    format!("unmuted \"{device}\" — it was left muted by a previous run")
-                } else {
-                    format!("\"{device}\" was flagged as muted but is not; nothing to undo")
-                },
-            );
-            app.state::<AppState>().remember_system_mute(None);
+        // The restore already happened, in `setup`, before this command existed
+        // to be called. All that is left is to say so.
+        //
+        // It used to run *here*, behind the folder check and `vad::prefetch`
+        // above — and this is a command the frontend invokes, so a microphone
+        // left muted by a crash stayed muted until the webview had booted and
+        // asked. A Windows test caught it: after relaunching, the endpoint still
+        // read MUTED and `system_mic_muted` was still set. Undoing that cannot
+        // wait on a model download.
+        if let Some(message) = app
+            .state::<AppState>()
+            .startup_mute_restore
+            .lock()
+            .expect("startup restore poisoned")
+            .take()
+        {
+            let _ = app.emit(EV_LOG, message);
         }
 
         // Probe Ollama only when it is the configured provider. Launching a
@@ -1143,10 +1155,9 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         emit_status("checking_ollama");
             let status = list_ollama_models();
 
-            // The Python auto-started Ollama when it was installed but not
-            // running, then told the user to reopen the app if it had to
-            // (`app.py:200`). Reopening is no longer the remedy: this waits for
-            // it properly, and the main window offers a retry if it still fails.
+            // Ollama is started when it is installed but not running, and
+            // then waited for properly rather than asking the user to reopen
+            // the app. The main window offers a retry if it still fails.
             if !status.running && ollama_installed && platform::start_ollama().is_ok() {
                 wait_for_ollama()
             } else {
@@ -1216,6 +1227,32 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
         Arc::clone(&state.queue),
     )
     .map_err(|e| e.to_string())?;
+
+    // Say on disk what is happening, before anything can go wrong.
+    //
+    // `meeting.json` used to be written only when a recording *stopped*, so a
+    // process killed mid-meeting left a folder holding audio and nothing else:
+    // invisible to the queue, absent from the library, unreachable by the
+    // person who recorded it. Two such folders were found on a real machine.
+    //
+    // Writing it here costs one small atomic write per meeting and turns
+    // recovery from a guess into a fact — the file says the recording was
+    // running, so the next launch knows exactly what it found. `stop_recording`
+    // overwrites it with the real state, and `cancel_recording` takes the
+    // folder with it.
+    //
+    // A failure here is logged and otherwise ignored: it costs recoverability
+    // if the app then dies, which is no reason to refuse to record.
+    let started_state = queue::MeetingState::recording(
+        folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+    );
+    if let Err(e) = queue::save(&folder, &started_state) {
+        eprintln!("[recover] could not record that a meeting started: {e}");
+    }
 
     // The queue is now held, so its cards stop moving. `startQueuePolling`
     // re-renders only while something is running, so without this the view
@@ -1539,6 +1576,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
             ),
         );
         *state.current_folder.lock().expect("folder poisoned") = None;
+        clear_mute_after_recording(&app, &state);
         // The recording is over, so the queue is no longer held.
         emit_queue_changed(&app);
         emit_recording_state(&app, false, false);
@@ -1553,10 +1591,32 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
     }
 
     *state.current_folder.lock().expect("folder poisoned") = None;
+    clear_mute_after_recording(&app, &state);
     // Same as the early return above: the session is gone, so is the hold.
     emit_queue_changed(&app);
     emit_recording_state(&app, false, false);
     Ok(())
+}
+
+/// The mute belongs to the meeting that just ended, so it ends with it.
+///
+/// It used to persist across recordings, on the reasoning that clearing it threw
+/// the user's choice away. The opposite failure is far worse: mute once, forget,
+/// and the *next* meeting records silent from its first sample — and now takes
+/// the system mute with it, so nobody on that call hears the user either.
+/// Re-pressing mute costs a click. A meeting lost to a click made an hour ago
+/// cannot be recovered at all.
+///
+/// The system mute was already released when the session dropped; this is the
+/// app's own flag catching up. Called from every way a recording can end —
+/// stopping, and both of `cancel_recording`'s exits — because the one that is
+/// forgotten is the one that strands the next meeting.
+fn clear_mute_after_recording(app: &AppHandle, state: &State<AppState>) {
+    if !state.is_muted() {
+        return;
+    }
+    state.toggle_muted();
+    let _ = app.emit(EV_MUTE_STATE, false);
 }
 
 /// Stop recording and run the pipeline.
@@ -1634,6 +1694,8 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
         let _ = app.emit(EV_LOG, damage.detail.clone());
         let _ = app.emit(EV_CAPTURE_DAMAGE, damage);
     }
+
+    clear_mute_after_recording(&app, &state);
 
     *state.pending.lock().expect("pending poisoned") = Some(summary);
     emit_recording_state(&app, false, state.is_processing());
@@ -1735,8 +1797,8 @@ fn assess_capture(
 /// Separate from stopping on purpose. The two used to be one command taking the
 /// title, which meant capture continued for as long as the title dialog was
 /// open — recording the user typing a name onto the end of the meeting, with
-/// the timer still counting up. The Python has the same split: `stop_event.set()`
-/// fires before `simpledialog.askstring` (`app.py:3958` vs `3968`).
+/// the timer still counting up — the recording has to end when the user says
+/// so, not when they have finished naming it.
 #[tauri::command]
 pub fn finalize_meeting(
     app: AppHandle,
@@ -1988,6 +2050,28 @@ fn run_job(
                     Stage::Summary => queue::Stage::Summary,
                 },
             );
+            // And onto disk, not just into the queue's memory.
+            //
+            // `set_stage` above is display state: it drives the card and is
+            // gone if the process dies. Writing it here means `meeting.json`
+            // says what the meeting was *doing* — transcribing, summarising —
+            // rather than what it was doing when it was enqueued, so a crash
+            // mid-run leaves a file that says where to pick up instead of one
+            // that says "waiting".
+            //
+            // The folder may have been renamed by the audio stage, so the
+            // renamed path wins when there is one.
+            if let Some(job) = queue_for_stage.job(&stage_id) {
+                let folder = renamed_sink
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+                    .unwrap_or(job.folder);
+                if let Err(e) = queue::save(&folder, &job.state) {
+                    eprintln!("[queue] could not record the stage of {stage_id}: {e}");
+                }
+            }
+
             queue_for_stage.set_percent(match stage {
                 Stage::Audio => PERCENT_AUDIO,
                 Stage::Whisper => PERCENT_WHISPER_START,
@@ -2168,7 +2252,7 @@ pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(
 }
 
 
-/// `YYYY-MM-DD_HH-MM-SS` in **local** time, matching the Python's folder naming.
+/// `YYYY-MM-DD_HH-MM-SS` in **local** time.
 ///
 /// # Why this is local and the timings below are not
 ///

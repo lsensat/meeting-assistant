@@ -95,9 +95,12 @@ fn device_name(device: &Device) -> Option<String> {
 }
 
 /// The stable key for a device. On macOS this is the Core Audio device UID; on
-/// Windows it is the WASAPI endpoint id. Both survive reboots and hotplug,
-/// unlike the PortAudio integer index the Python used — which renumbers exactly
-/// when the failover code runs. See Windows risk R3.
+/// Windows it is the WASAPI endpoint id.
+///
+/// Both survive reboots and hotplug, which a positional index does not: the
+/// devices renumber exactly when something is unplugged, which is exactly when
+/// the failover code runs and needs to know which device it is looking at. See
+/// Windows risk R3.
 fn device_id(device: &Device) -> Option<String> {
     device.id().ok().map(|id| id.to_string())
 }

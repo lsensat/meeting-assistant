@@ -1,19 +1,18 @@
-//! Audio-device selection policy. Port of `audio_policy.py`.
+//! Audio-device selection policy.
 //!
 //! No audio backend is referenced here, so the selection logic is testable
-//! without real hardware — same rationale as the Python module's docstring.
+//! without real hardware — which matters because the interesting cases are
+//! devices disappearing mid-recording.
 //!
-//! The one structural change from Python: devices are keyed by a string `id`
-//! rather than a PortAudio integer index. PortAudio indices renumber on
-//! hotplug, which is exactly when this code runs; cpal's `DeviceId` is stable.
-//! Tests pass stringified integers so they read like the Python originals.
+//! Devices are keyed by a string `id` rather than a positional index. Indices
+//! renumber on hotplug, which is exactly when this code runs; cpal's `DeviceId`
+//! is stable. Tests pass stringified integers, which is only a convenience.
 
 /// Substrings that mark a built-in microphone. Preferred over arbitrary inputs
 /// when the configured and default devices are both unavailable.
 ///
 /// Locale-coupled on purpose: the first group matches Spanish Windows device
-/// names, which is what the Windows target machines run. Ported verbatim from
-/// `audio_policy.py`.
+/// names, which is what the Windows machines this targets run.
 ///
 /// The macOS group is appended rather than kept in a separate list. Matching is
 /// substring-based and these strings cannot occur in a Windows endpoint name,
@@ -40,7 +39,10 @@ pub const INTERNAL_MIC_TERMS: &[&str] = &[
 
 /// Loopback devices preferred when nothing is configured.
 ///
-/// Hardcodes one specific headset — see deferred fix #8. Kept as-is for parity.
+/// Hardcodes one specific headset, which is not defensible as a general rule —
+/// it is here because it is the hardware this was built against, and removing it
+/// would change which device an existing user records from. Worth replacing with
+/// a real rule before anyone else relies on it.
 pub const DEFAULT_SYSTEM_PREFERRED_TERMS: &[&str] = &["acme headset 3225 series"];
 
 /// An audio endpoint, either a capture device or a loopback-capable render device.
@@ -70,7 +72,8 @@ impl Device {
     }
 }
 
-/// Deduplicate by id, preserving first-seen order. Port of `_unique_by_index`.
+/// Deduplicate by id, preserving first-seen order: the order *is* the
+/// preference, so a device seen twice must keep its earliest position.
 fn unique_by_id(devices: Vec<&Device>) -> Vec<Device> {
     let mut seen: Vec<&str> = Vec::new();
     let mut result = Vec::new();
@@ -86,8 +89,8 @@ fn unique_by_id(devices: Vec<&Device>) -> Vec<Device> {
     result
 }
 
-/// Port of `_find_by_name`. An empty name never matches, mirroring Python's
-/// `if not name: return None` — otherwise a device with an empty name would.
+/// An empty name never matches. Without that guard, a device that reports an
+/// empty name would match a configuration that names nothing at all.
 fn find_by_name<'a>(devices: &'a [Device], name: &str) -> Option<&'a Device> {
     if name.is_empty() {
         return None;
@@ -95,15 +98,15 @@ fn find_by_name<'a>(devices: &'a [Device], name: &str) -> Option<&'a Device> {
     devices.iter().find(|d| d.name == name)
 }
 
-/// Port of `_find_by_index`.
+/// The device with this id, if it is still present.
 fn find_by_id<'a>(devices: &'a [Device], id: Option<&str>) -> Option<&'a Device> {
     let id = id?;
     devices.iter().find(|d| d.id == id)
 }
 
 /// Build the ordered preference list, shared by both the mic and system paths.
-/// They differ only in which substrings get promoted, so Python's two
-/// near-identical functions collapse into one here.
+/// They differ only in which substrings get promoted, which is not enough to
+/// justify two near-identical copies of the ordering rules.
 fn ordered_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -133,7 +136,7 @@ fn ordered_candidates(
 }
 
 /// Microphone preference order: configured device, then OS default, then any
-/// built-in mic, then everything else. Port of `ordered_microphone_candidates`.
+/// built-in mic, then everything else.
 pub fn ordered_microphone_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -142,7 +145,7 @@ pub fn ordered_microphone_candidates(
     ordered_candidates(devices, selected_name, default_id, INTERNAL_MIC_TERMS)
 }
 
-/// Loopback preference order. Port of `ordered_system_candidates`.
+/// Loopback preference order.
 pub fn ordered_system_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -159,9 +162,10 @@ pub fn ordered_system_candidates(
 /// Outcome of a failover decision.
 ///
 /// `changed` drives the UI's "(automatic)" suffix: it means the recorder is on
-/// a device the user did not pick. Note the Python quirk this preserves — when
-/// no device at all is available, `changed` is `true` only if we *had* a device
-/// before, so a meeting that never acquired one does not claim it fell back.
+/// a device the user did not pick. One subtlety worth keeping — when no device
+/// at all is available, `changed` is `true` only if we *had* a device before, so
+/// a meeting that never acquired one does not claim it fell back from
+/// something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failover {
     pub device: Option<Device>,
@@ -199,7 +203,7 @@ fn choose_failover(
     }
 }
 
-/// Pick a microphone during recording. Port of `choose_microphone_failover`.
+/// Pick a microphone during recording.
 pub fn choose_microphone_failover(
     devices: &[Device],
     current_name: &str,
@@ -215,7 +219,7 @@ pub fn choose_microphone_failover(
     )
 }
 
-/// Pick a loopback device during recording. Port of `choose_system_failover`.
+/// Pick a loopback device during recording.
 pub fn choose_system_failover(
     devices: &[Device],
     current_name: &str,
@@ -290,7 +294,7 @@ pub fn whisper_threads(available: usize) -> i32 {
 /// How many samples of silence cover a gap of `gap_seconds`.
 ///
 /// This is what keeps the two tracks time-aligned across a device disconnect.
-/// Port of `silence_frames_for_gap`; negative gaps clamp to zero.
+/// Negative gaps clamp to zero.
 pub fn silence_frames_for_gap(gap_seconds: f64, sample_rate: u32) -> usize {
     let gap_seconds = gap_seconds.max(0.0);
     let sample_rate = sample_rate.max(1) as f64;
@@ -341,7 +345,7 @@ pub fn split_lead_in(frames: usize, sample_rate: u32, open_seconds: f64) -> (u64
 mod tests {
     use super::*;
 
-    /// Mirrors the `dev()` helper in tests/test_audio_policy.py.
+    /// A device with a synthetic id, so tests read as a list of names.
     fn dev(index: u32, name: &str) -> Device {
         Device::new(index.to_string(), name, 48_000, 2)
     }

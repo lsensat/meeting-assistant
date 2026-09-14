@@ -1,4 +1,4 @@
-//! Audio format conversion. Port of `audio_stream_utils.py`.
+//! Audio format conversion.
 //!
 //! Keeping these outside the recorder threads lets the same conversion logic
 //! the real capture path uses be verified without hardware.
@@ -6,7 +6,6 @@
 pub const TARGET_SAMPLE_RATE: u32 = 48_000;
 
 /// Downmix interleaved samples to mono by averaging channels.
-/// Port of `to_mono_float`.
 pub fn to_mono_float(samples: &[f32], channels: u16) -> Vec<f32> {
     let channels = channels.max(1) as usize;
 
@@ -14,7 +13,8 @@ pub fn to_mono_float(samples: &[f32], channels: u16) -> Vec<f32> {
         return samples.to_vec();
     }
 
-    // Drop a trailing partial frame, as the Python does via its `usable` slice.
+    // Drop a trailing partial frame: an incomplete frame would average fewer
+    // channels than the rest and land as a click.
     samples
         .chunks_exact(channels)
         .map(|frame| frame.iter().sum::<f32>() / channels as f32)
@@ -22,11 +22,8 @@ pub fn to_mono_float(samples: &[f32], channels: u16) -> Vec<f32> {
 }
 
 /// Decode interleaved little-endian PCM16 bytes to mono f32 in [-1, 1).
-/// Port of `pcm16_bytes_to_mono_float`.
-///
-/// Note the divisor is 32768, while [`f32_to_i16`] multiplies by 32767. That
-/// asymmetry exists in the Python today and is deliberate here — see the note
-/// on [`f32_to_i16`].
+/// Note the divisor is 32768, while [`f32_to_i16`] multiplies by 32767. The
+/// asymmetry is deliberate — see the note on [`f32_to_i16`].
 pub fn pcm16_bytes_to_mono_float(data: &[u8], channels: u16) -> Vec<f32> {
     let samples: Vec<f32> = data
         .chunks_exact(2)
@@ -43,23 +40,22 @@ pub fn pcm16_bytes_to_mono_float(data: &[u8], channels: u16) -> Vec<f32> {
 ///
 /// libsndfile scales by **32767** and rounds to nearest-even (it uses `lrintf`,
 /// which follows the default IEEE rounding mode). Do not "fix" the mismatch
-/// with [`pcm16_bytes_to_mono_float`]'s 32768 divisor into a matched pair — the
-/// asymmetry is what the existing WAV files were written with, and matching
-/// them up would shift every sample by one LSB against the reference files used
-/// for byte-diff parity testing.
+/// with [`pcm16_bytes_to_mono_float`]'s 32768 divisor into a matched pair — but
+/// 32767 is what every existing recording was written with, and matching them up
+/// would shift every sample by one LSB against files already on disk.
 ///
-/// The 32767 factor should still be confirmed empirically against a real
-/// `soundfile`-written WAV before any byte comparison is trusted.
+/// 32768 is also the value that clips: a full-scale +1.0 sample scaled by 32768
+/// does not fit in an `i16`.
 pub fn f32_to_i16(sample: f32) -> i16 {
     let scaled = (sample as f64 * 32767.0).round_ties_even();
     scaled.clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
-/// Linearly resample mono audio. Port of `resample_mono`.
+/// Linearly resample mono audio.
 ///
-/// # Parity contract — do not "improve" this
+/// # Do not "improve" this
 ///
-/// Two properties are load-bearing and are relied on by the rest of the port:
+/// Two properties are load-bearing and relied on elsewhere:
 ///
 /// 1. **No-op when the rates match.** On the common Windows setup (48 kHz mic,
 ///    48 kHz loopback) no resampling happens at all, which is why a higher
@@ -71,9 +67,10 @@ pub fn f32_to_i16(sample: f32) -> i16 {
 ///    boundary. Sample *counts* still come out right, so there is no cumulative
 ///    length drift — and Whisper has evidently tolerated the artifact all along.
 ///
-/// Because of (2), chunk size is part of the output contract. The recorder
-/// re-packetises into 1024-sample units before calling this so that output can
-/// be diffed against the Python app's WAVs.
+/// Because of (2), chunk size is part of the output contract: the same audio
+/// resampled in different-sized pieces does not produce the same bytes. The
+/// recorder re-packetises into 1024-sample units before calling this so the
+/// output is reproducible.
 pub fn resample_mono(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -122,10 +119,10 @@ pub const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
 /// Resample audio for whisper.cpp, low-passing first so nothing aliases.
 ///
-/// # This function has no Python counterpart, and that is the point
+/// # Why this exists at all
 ///
-/// faster-whisper took a *file path* and resampled internally. whisper.cpp does
-/// not: `full()` assumes the slice it is given is already 16 kHz mono. Hand it
+/// whisper.cpp does no resampling of its own: `full()` assumes the slice it is
+/// given is already 16 kHz mono. Hand it
 /// 48 kHz and there is no crash and no error — you get a fluent, confidently
 /// wrong transcript with plausible timestamps. That is Windows risk R2, and it
 /// is the most likely silent-wrong-output bug in the whole port.
@@ -218,7 +215,7 @@ fn low_pass(samples: &[f32], sample_rate: u32, cutoff_hz: f64) -> Vec<f32> {
         .collect()
 }
 
-/// A block of silence covering `duration_seconds`. Port of `silent_samples`.
+/// A block of silence covering `duration_seconds`.
 /// The loudest sample in a buffer, as an absolute amplitude in 0.0..=1.0.
 ///
 /// Peak rather than average on purpose: this is used to decide whether a track
@@ -344,7 +341,7 @@ mod tests {
     // (peak's own tests are grouped with the rest below)
     use super::*;
 
-    // --- ported from tests/test_audio_stream_utils.py ---------------------
+    // --- the conversions themselves ---------------------------------------
 
     #[test]
     fn block_at_44100_resamples_to_48000_duration() {
@@ -373,7 +370,7 @@ mod tests {
         assert!(result.iter().all(|s| *s == 0.0));
     }
 
-    // --- additional coverage for the parity contract ----------------------
+    // --- the properties the rest of the app relies on ---------------------
 
     #[test]
     fn matching_rates_are_a_no_op() {

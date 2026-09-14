@@ -15,7 +15,7 @@ fn main() {
     // A missing or malformed file yields pure defaults rather than failing to
     // start — the app must always open, even with a corrupted config.
     // Recordings default under the user's Documents, not beside the binary.
-    // See `Config::defaults` for why this diverges from the Python.
+    // See `Config::defaults` for why.
     let documents = platform::documents_dir();
     let config = std::fs::read_to_string(&config_file)
         .map(|text| Config::from_json(&text, &documents))
@@ -87,7 +87,56 @@ fn main() {
             commands::retry_job,
         ])
         .setup(|app| {
+            let state = tauri::Manager::state::<AppState>(app);
+            let config = state.config_snapshot();
+
+            // Give the microphone back first, before anything else.
+            //
+            // Only a hard kill during a muted recording can leave one muted —
+            // every ordinary exit drops the guard — and when it happens the
+            // user's microphone is dead for every application on the machine
+            // until this runs. So it runs before the tray, before the queue,
+            // and before any window exists.
+            //
+            // It used to live in `startup_check`, which is a command the
+            // frontend invokes, behind a folder check and `vad::prefetch` — so
+            // the fix for a dead microphone waited on the webview booting and
+            // possibly on a model download. A Windows test caught it: after
+            // relaunching, the endpoint still read MUTED and the flag was still
+            // set. `restore_after_crash` checks before acting, so a user who
+            // has already unmuted themselves is left alone.
+            if let Some(device) = config.system_mic_muted.clone() {
+                let restored =
+                    meeting_assistant::audio::system_mute::restore_after_crash(&device);
+                let message = if restored {
+                    format!("unmuted \"{device}\" — it was left muted by a previous run")
+                } else {
+                    format!("\"{device}\" was flagged as muted but is not; nothing to undo")
+                };
+                eprintln!("[mute] {message}");
+                *state
+                    .startup_mute_restore
+                    .lock()
+                    .expect("startup restore poisoned") = Some(message);
+                state.remember_system_mute(None);
+            }
+
             meeting_assistant::tray::init(app.handle())?;
+
+            // A recording the app never got to finish is adopted first, so the
+            // scan below can see it. Without this its audio sits in a folder
+            // the app cannot reach — see `queue::adopt_interrupted` for why it
+            // refuses folders that already have a summary.
+            let adopted = meeting_assistant::queue::adopt_interrupted(
+                &config.output_folder,
+                // `Config` has no `Serialize` derive on purpose — see
+                // `config.rs` — so it goes through `to_json`, exactly as
+                // `stop_recording` builds the same field.
+                &serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+            );
+            if !adopted.is_empty() {
+                eprintln!("[recover] {} interrupted recording(s) adopted", adopted.len());
+            }
 
             // Pick up anything left unfinished, before the worker starts looking.
             //
@@ -95,8 +144,6 @@ fn main() {
             // are both on disk from the moment recording stops. Without this the
             // work would simply be forgotten — and worse, silently: the folder
             // would sit there looking like a finished meeting with no summary.
-            let state = tauri::Manager::state::<AppState>(app);
-            let config = state.config_snapshot();
             state
                 .queue
                 .absorb(meeting_assistant::queue::scan(&config.output_folder));

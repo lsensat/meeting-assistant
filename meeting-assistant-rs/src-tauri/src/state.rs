@@ -1,9 +1,10 @@
 //! Shared application state.
 //!
-//! The Python kept ~20 module-level globals mutated from four threads with no
-//! synchronization (deferred fixes #1 and #2). Here there is exactly one piece
-//! of shared mutable state — the current session — behind one mutex, and
-//! everything a worker thread needs is snapshotted and moved into it at start.
+//! There is exactly one piece of shared mutable state — the current session —
+//! behind one mutex, and everything a worker thread needs is snapshotted and
+//! moved into it at start. Shared mutable globals reachable from the recording
+//! threads, the queue worker and the UI at once are the shape this deliberately
+//! does not have.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,9 +34,19 @@ pub struct AppState {
     /// Microphone mute.
     ///
     /// Lives here rather than inside the session so it can be set before a
-    /// recording starts and stays set across one. The Python reset
-    /// `mic_muted = False` on every stop (`app.py:3962`), which silently threw
-    /// the user's choice away.
+    /// recording starts and stays in force for the whole of it.
+    ///
+    /// **Cleared when a recording stops**, which reverses an earlier decision
+    /// here. Keeping it was once described as respecting the user's choice,
+    /// where clearing it "silently threw the choice away" — but the choice
+    /// belongs to a
+    /// meeting, not to the app, and keeping it had a much worse failure: mute
+    /// once, forget, and the *next* meeting records silent from its first
+    /// sample, with the system mute taken automatically. A mute that has to be
+    /// re-pressed costs one click. A meeting lost to a click made an hour ago
+    /// cannot be recovered at all.
+    ///
+    /// So "still muted" now means "muted for this meeting, deliberately".
     pub muted: Arc<AtomicBool>,
     /// Set while a Whisper model download is running. Both the setup wizard and
     /// the settings window can start one, and two downloads of the same model
@@ -54,6 +65,18 @@ pub struct AppState {
     /// into the same file the recorder threads were writing to, after the
     /// session itself has been consumed by `stop`.
     pub meeting_log: Mutex<Option<std::sync::Arc<crate::diagnostics::MeetingLog>>>,
+    /// What the startup mute restore did, waiting for a window to tell.
+    ///
+    /// The restore runs in `setup`, before anything else: a microphone left
+    /// muted by a crash is the most urgent thing the app can undo, and it used
+    /// to queue behind a VAD model prefetch inside `startup_check` — a command
+    /// the *frontend* calls, so the microphone stayed muted until the webview
+    /// had booted and asked. A Windows test caught it: after relaunch the
+    /// endpoint still read MUTED and `system_mic_muted` was still set.
+    ///
+    /// There is no UI at `setup` time, so the outcome parks here and
+    /// `startup_check` emits it once somebody can read it.
+    pub startup_mute_restore: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -68,6 +91,7 @@ impl AppState {
             downloading: Arc::new(AtomicBool::new(false)),
             pending: Mutex::new(None),
             meeting_log: Mutex::new(None),
+            startup_mute_restore: Mutex::new(None),
         }
     }
 

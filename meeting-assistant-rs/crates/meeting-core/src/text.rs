@@ -1,10 +1,10 @@
 //! Text helpers: filenames, timestamps, transcript assembly and chunking.
-//! Ports of `sanitize_name`, `format_time`, `split_transcript` and the
-//! transcript-building loop in `process_meeting` (`app.py:2333-2341`).
 
-/// Characters Windows forbids in a filename. Ported exactly from
-/// `app.py:675` — do not widen this set, it is what existing folder names
-/// were sanitised against.
+/// Characters Windows forbids in a filename.
+///
+/// Do not widen this set: it is what every existing folder name was sanitised
+/// against, and a name that sanitises differently today is a meeting the app
+/// can no longer find.
 const ILLEGAL_FILENAME_CHARS: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 /// Maximum length of a sanitised meeting name, before trailing trim.
@@ -15,12 +15,11 @@ pub const DEFAULT_CHUNK_CHARS: usize = 10_000;
 
 /// Make a user-supplied meeting name safe for a folder name.
 ///
-/// Port of `sanitize_name` (`app.py:670`): trim, drop Windows-illegal
-/// characters, collapse whitespace runs to `_`, truncate to 80, then strip
-/// leading and trailing `.`, `_` and `-`.
+/// Trim, drop Windows-illegal characters, collapse whitespace runs to `_`,
+/// truncate to 80, then strip leading and trailing `.`, `_` and `-`.
 ///
-/// The truncation counts **characters, not bytes**, so accented names are not
-/// cut mid-character — Python sliced a `str`, which is also by character.
+/// The truncation counts **characters, not bytes**, so an accented name is not
+/// cut mid-character into something no filesystem will accept.
 pub fn sanitize_name(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -51,7 +50,7 @@ pub fn sanitize_name(value: &str) -> String {
     truncated.trim_matches(['.', '_', '-']).to_string()
 }
 
-/// Format seconds as `HH:MM:SS`. Port of `format_time` (`app.py:662`).
+/// Format seconds as `HH:MM:SS`.
 /// Negative input clamps to zero; hours are not capped at 24.
 pub fn format_time(seconds: f64) -> String {
     let seconds = seconds.max(0.0);
@@ -79,11 +78,11 @@ pub struct Segment {
 
 /// Merge both tracks into the final transcript.
 ///
-/// Port of `app.py:2330-2341`. Segments are sorted by start time and rendered
-/// as `[HH:MM:SS] SPEAKER: text`, blank-line separated. The sort must be
-/// **stable**, so that when the two tracks produce identically-timed segments
-/// the microphone's come first, matching Python's `list.sort()` on a list built
-/// as `mic_segments + system_segments`.
+/// Segments are sorted by start time and rendered as `[HH:MM:SS] SPEAKER: text`,
+/// blank-line separated. The sort must be **stable**: when the two tracks
+/// produce identically-timed segments, the microphone's come first because the
+/// list is built microphone-then-system, and an unstable sort would reorder
+/// those two arbitrarily between runs of the same recording.
 pub fn build_transcript(segments: &mut [Segment]) -> String {
     segments.sort_by(|a, b| a.start.total_cmp(&b.start));
 
@@ -96,16 +95,16 @@ pub fn build_transcript(segments: &mut [Segment]) -> String {
 
 /// Split a transcript into chunks for the map step of summarisation.
 ///
-/// Port of `split_transcript` (`app.py:1939`). Splits only on line boundaries,
-/// so a single line longer than `max_chars` becomes an oversized chunk rather
-/// than being cut mid-sentence — deliberate, and preserved.
+/// Splits only on line boundaries, so a single line longer than `max_chars`
+/// becomes an oversized chunk rather than being cut mid-sentence. Deliberate: a
+/// sentence cut in half is summarised as two different claims.
 pub fn split_transcript(text: &str, max_chars: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current: Vec<&str> = Vec::new();
     let mut current_size = 0usize;
 
     for line in text.lines() {
-        // Python counts len(line) + 1 for the newline it will rejoin with.
+        // Plus one for the newline this line will be rejoined with.
         let size = line.chars().count() + 1;
 
         if !current.is_empty() && current_size + size > max_chars {
@@ -164,12 +163,11 @@ mod tests {
     /// characters collapses to empty, and that is `strip("._-")` doing exactly
     /// what it is meant to.
     ///
-    /// Written after a report of the Python app hanging on "Saving audio..."
-    /// with a hyphenated title. The hyphen turned out to be unrelated — the
-    /// real cause was the unbounded blocking `stream.read(CHUNK)` at
-    /// `app.py:1587` wedging a recorder thread, so `join()` never returned and
-    /// the WAV was never finalized. These cases pin down the innocent half so
-    /// the question does not get re-litigated.
+    /// Written after a report of the app hanging on "Saving audio..." with a
+    /// hyphenated meeting title. The hyphen turned out to be innocent: the real
+    /// cause was a blocking read wedging a recorder thread, so the join never
+    /// returned and the WAV was never finalised. These cases pin down the
+    /// innocent half so the question does not get re-litigated.
     #[test]
     fn hyphens_inside_a_name_survive() {
         assert_eq!(sanitize_name("daily-standup"), "daily-standup");
@@ -223,7 +221,8 @@ mod tests {
 
     #[test]
     fn truncates_rather_than_rounds() {
-        // int(seconds) in Python truncates toward zero.
+        // Truncated toward zero, not rounded: 59.9 seconds has not yet become
+        // a minute, and a clock that reads 01:00 at 59.9 is wrong.
         assert_eq!(format_time(59.9), "00:00:59");
     }
 
@@ -305,8 +304,8 @@ mod tests {
 
     #[test]
     fn a_single_oversized_line_is_not_cut() {
-        // Parity: Python only breaks between lines, so one long line overflows
-        // rather than being split mid-sentence.
+        // Chunks break between lines only, so one long line overflows rather
+        // than being split mid-sentence.
         let long = "x".repeat(50);
         let chunks = split_transcript(&long, 10);
         assert_eq!(chunks, vec![long]);

@@ -1,10 +1,10 @@
 //! One generic recorder, instantiated twice.
 //!
-//! Port of `record_microphone` (`app.py:1470`) and `record_system_audio`
-//! (`app.py:1651`), which are ~360 lines of near-duplicate Python differing
-//! only in which enumerator they call and which events they emit. Here that
-//! difference is a [`SourceKind`] and an [`Events`] mapping, so there is one
-//! loop to reason about instead of two that must be kept in sync.
+//! The microphone and the system-audio capture differ only in which enumerator
+//! they call and which events they emit, so that difference is a [`SourceKind`]
+//! and an [`Events`] mapping. One loop to reason about, rather than two
+//! near-identical ones that have to be kept in step — and every fix to the
+//! device-failover logic below would otherwise have to be made twice.
 //!
 //! # Threading
 //!
@@ -21,11 +21,10 @@
 //!
 //! # Why the config is snapshotted
 //!
-//! The Python recorder threads call `settings_mic_var.get()` (`app.py:1471`) —
-//! a Tcl call from a non-main thread — and read the global `config` while the
-//! main thread may be running `config.clear()` in `write_config()`
-//! (`app.py:655`). Deferred fixes #1 and #2. Here every thread is handed an
-//! owned [`RecorderConfig`] at start and never reads live UI state again.
+//! Every thread is handed an owned [`RecorderConfig`] at start and never reads
+//! live UI state again. A recorder thread reaching back into shared settings
+//! while the user is editing them in another window is a data race that shows
+//! up as a recording on the wrong device.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -42,14 +41,16 @@ use meeting_core::policy;
 use super::devices::{self, AudioError, SourceKind};
 use super::wav::{TrackWriter, WavError};
 
-/// Verbatim parity with the Python constants (`app.py:65-67`).
+/// The unit everything downstream is chunked into. See `Repacketiser`.
 const CHUNK: usize = 1024;
 const HOTPLUG_CHECK: Duration = Duration::from_secs(1);
 const HOTPLUG_RETRY: Duration = Duration::from_millis(250);
 
-/// No data for this long means the device is wedged. New behaviour with no
-/// Python counterpart — the Python poll could only run *after* a successful
-/// blocking read, so a hung device also hung the detector.
+/// No data for this long means the device is wedged.
+///
+/// This runs on its own clock rather than after a successful read, which is the
+/// whole point: a detector that only ticks when audio arrives cannot notice that
+/// audio has stopped arriving.
 const DATA_WATCHDOG: Duration = Duration::from_secs(2);
 
 /// Bounded so a stalled writer cannot grow memory without limit. Sized for
@@ -86,7 +87,7 @@ impl StopEvent {
         *self.flag.lock().expect("stop flag poisoned")
     }
 
-    /// Port of `stop_event.wait(timeout)`. Returns true if stop was set.
+    /// Wait up to `timeout` for the stop flag. Returns true if stop was set.
     pub fn wait(&self, timeout: Duration) -> bool {
         let flag = self.flag.lock().expect("stop flag poisoned");
         if *flag {
@@ -100,8 +101,8 @@ impl StopEvent {
     }
 }
 
-/// UI-facing events. One-to-one with the Python queue tags so the port can be
-/// diffed against current behaviour.
+/// UI-facing events. Everything the recorder has to say goes through here, so
+/// there is one place to look for what a window can be told.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// Recording from this device; no failover happened.
@@ -199,10 +200,10 @@ pub struct Recorder {
 ///
 /// `resample_mono` resamples **each call independently**, mapping the input's
 /// first and last sample onto the output's first and last. Its output therefore
-/// depends on how the stream was chunked, not only on the samples. The Python
-/// always fed it exactly 1024 frames (`stream.read(CHUNK)`), so feeding it the
-/// 512-frame buffers macOS actually delivers would produce a different file
-/// from the same audio and make byte-diff parity testing impossible.
+/// depends on how the stream was chunked, not only on the samples. macOS
+/// delivers 512-frame buffers and Windows delivers something else again, so
+/// without re-packetising, the same audio on two machines produces two
+/// different files.
 ///
 /// Re-packetising removes chunk size as a confound. It is the reason the plan
 /// insists `resample_mono` must not be "fixed" to be stateful.
@@ -233,9 +234,8 @@ impl Repacketiser {
         Some(&self.scratch)
     }
 
-    /// Whatever is left at stop. The Python's final partial read is written
-    /// too, so dropping this would truncate every recording by up to 1023
-    /// samples.
+    /// Whatever is left at stop. Dropping it would truncate every recording by
+    /// up to 1023 samples.
     fn drain_remainder(&mut self) -> Option<&[f32]> {
         if self.pending.is_empty() {
             return None;
@@ -249,9 +249,8 @@ impl Repacketiser {
 /// Spawn one track's recorder.
 ///
 /// `started` is stamped **once by the caller, before either track is spawned**,
-/// and passed to both. The Python stamps `start_times` inside each thread
-/// (`app.py:1374-1393`), baking thread-spawn jitter into the alignment between
-/// the two files; one shared instant removes that nondeterminism.
+/// and passed to both. Stamping it inside each thread instead would bake
+/// thread-spawn jitter into the alignment between the two files.
 pub fn spawn(
     config: RecorderConfig,
     stop: Arc<StopEvent>,
@@ -267,8 +266,8 @@ pub fn spawn(
     Recorder { handle }
 }
 
-/// The recorder loop. Structure follows `record_microphone` closely on purpose,
-/// so the two can be read side by side during review.
+/// The recorder loop: open, pump, and four independent ways of noticing that
+/// the device has gone. Each detector is commented where it sits.
 fn run(
     config: RecorderConfig,
     stop: Arc<StopEvent>,
@@ -374,7 +373,7 @@ fn run(
             // Cover the outage *before* any new audio lands, so the samples
             // that follow sit at the right file position. This is the only
             // thing keeping the two tracks aligned across a disconnect, and it
-            // only ever manifests on a disconnect (`app.py:1557-1562`).
+            // only ever manifests on a disconnect.
             // The silence is deliberately NOT written here — it is written when
             // the first sample actually arrives. See the pump branch below.
             if gap_started_at.is_none() {
@@ -469,13 +468,11 @@ fn run(
                 // Measured on macOS: ~0.23 s lost per device transition, 0.457 s
                 // of skew across a plug-in plus an unplug in one 60 s run.
                 //
-                // This is a deliberate deviation from the Python, which writes
-                // the silence at open time (`app.py:1557-1562`). It is a more
-                // faithful implementation of that code's *intent* — advance the
-                // file by exactly the wall-clock time no audio was arriving —
-                // and the Python only gets away with the simpler version
-                // because its blocking `stream.read()` starts returning almost
-                // immediately after open.
+                // Writing the silence at open time instead is the obvious
+                // version and is wrong here: opening a device can take
+                // seconds — 18 of them were measured on Windows — and the file
+                // must advance by the wall-clock time no audio was arriving,
+                // which is not known until audio arrives.
                 if let Some(gap_start) = gap_started_at.take() {
                     let seconds = gap_start.elapsed().as_secs_f64();
                     let frames = policy::silence_frames_for_gap(seconds, TARGET_SAMPLE_RATE);
@@ -613,7 +610,8 @@ fn run(
 
         // --- detector 3: the device left the enumeration ----------------
         //
-        // Verbatim parity with HOTPLUG_CHECK_SECONDS (`app.py:1614`).
+        // Polled on its own clock, so it notices a device that left even if
+        // nothing is arriving to trigger it.
         if last_device_check.elapsed() >= HOTPLUG_CHECK {
             last_device_check = Instant::now();
 
@@ -774,11 +772,10 @@ fn run(
     // Draining first instead would keep pulling newly captured audio for as
     // long as the drain ran, writing past the moment the user pressed stop.
     //
-    // The drain itself is parity, not a new behaviour: the Python read the
-    // device with a *blocking* `stream.read(CHUNK)`, so everything produced up
-    // to the stop was consumed by construction. Our callback-plus-channel model
-    // can strand chunks that the realtime thread delivered microseconds before
-    // the stop flag was set, and dropping them would silently truncate every
+    // The drain matters because of how capture is wired here: a callback
+    // hands samples to a channel, so chunks can be stranded in it when the
+    // realtime thread delivered them microseconds before the stop flag was
+    // set. Dropping those would silently truncate every
     // recording by that much.
     //
     // The stream is dropped on this thread, the one that created it, because
@@ -812,7 +809,7 @@ fn run(
     }
 
     // A gap still open at stop is written too, so a track that lost its device
-    // and never got it back still ends at the right length (`app.py:1645`).
+    // and never got it back still ends at the right length.
     if let Some(gap_start) = gap_started_at.take() {
         let frames =
             policy::silence_frames_for_gap(gap_start.elapsed().as_secs_f64(), TARGET_SAMPLE_RATE);
@@ -845,7 +842,7 @@ fn run(
 }
 
 /// Mute is applied to the samples, not by pausing the stream, so the file keeps
-/// advancing at realtime and the tracks stay aligned (`app.py:1600`).
+/// advancing at realtime and the two tracks stay aligned.
 fn write_unit(
     writer: &mut TrackWriter,
     unit: &[f32],
@@ -1155,8 +1152,8 @@ mod tests {
     }
 
     /// The tail matters: dropping it truncates every recording by up to 1023
-    /// samples, which is small enough to look like nothing and still shift a
-    /// byte-diff parity test.
+    /// samples, which is small enough to look like nothing and still change
+    /// every byte of the file after it.
     #[test]
     fn repacketiser_drains_the_partial_tail() {
         let mut r = Repacketiser::new();

@@ -1,18 +1,16 @@
-//! Persisted settings. Port of `load_config` / `write_config` in `app.py`.
+//! Persisted settings.
 //!
-//! The Python reads the *widgets* as the source of truth when saving, so
-//! `write_config` can only run on the Tk main thread. Here the `Config` struct
-//! is the source of truth and the UI is just a view of it, which is what lets
-//! a recording thread take an owned snapshot instead of reaching back into the
-//! UI (deferred fixes #1 and #2).
+//! The `Config` struct is the source of truth and the UI is a view of it — not
+//! the other way round. Reading the widgets when saving would tie every write
+//! to the UI thread, and it is what lets a recording thread take an owned
+//! snapshot instead of reaching back into the UI.
 //!
-//! # Parity notes
+//! # Reading rules
 //!
-//! * A malformed or unreadable file falls back to **pure defaults**, silently,
-//!   exactly as the Python's bare `except Exception: pass` does.
-//! * Unknown keys in the file are ignored. The Python's `data.update(saved)`
-//!   would carry them into the in-memory dict, but nothing ever read them, and
-//!   they were dropped on the next save anyway.
+//! * A malformed or unreadable file falls back to **pure defaults**, silently.
+//!   The app must always open: a corrupt settings file is not a reason to be
+//!   unable to record.
+//! * Unknown keys are ignored, and dropped on the next save.
 //! * Out-of-range values clamp to defaults rather than failing the load.
 
 use std::path::{Path, PathBuf};
@@ -44,8 +42,7 @@ impl Language {
     }
 }
 
-/// Language forced on Whisper. `Auto` means let it detect, and maps to the
-/// Python's `selected_transcription_language = None`.
+/// Language forced on Whisper. `Auto` means let it detect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TranscriptionLanguage {
@@ -114,9 +111,9 @@ impl SummaryType {
     /// Resolve a stored value to a variant.
     ///
     /// Accepts current ids *and* the display labels that very old configs
-    /// stored, in both languages — port of the `old_summary_map` at
-    /// `app.py:462`. Anything unrecognised returns `None` and the caller
-    /// clamps to the default, matching the Python's final validation step.
+    /// stored, in both languages — those files exist on real machines, and a
+    /// setting silently reverting to the default is worse than a long match
+    /// arm. Anything unrecognised returns `None` and the caller clamps.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             // Current ids.
@@ -182,7 +179,7 @@ impl SummaryProvider {
     }
 }
 
-/// The English default custom prompt, from `DEFAULT_CONFIG` at `app.py:401`.
+/// The English default custom prompt.
 pub const DEFAULT_CUSTOM_PROMPT: &str = "Summarize the meeting clearly. Include only information present in the transcript and do not invent owners, dates, decisions or actions.";
 
 pub const DEFAULT_WHISPER_MODEL: &str = "small";
@@ -251,21 +248,19 @@ pub const KEYCHAIN_SERVICE: &str = "com.meetingassistant.app";
 pub const KEYCHAIN_ACCOUNT: &str = "summary-api-key";
 
 impl Config {
-    /// Defaults, matching `DEFAULT_CONFIG` at `app.py:391` except for the
-    /// output folder.
+    /// Defaults.
     ///
     /// `base` is the user's documents directory, and recordings default to
     /// `<base>/meeting-assistant/meetings`.
     ///
-    /// # Deliberate divergence from the Python
+    /// # Why recordings default under Documents, not beside the app
     ///
-    /// `app.py:397` uses `str(APP_FOLDER / "meetings")` — the directory the
-    /// script itself lives in. That is fine for a folder you unzip, but it
-    /// means the default output location follows wherever the app was put: on
-    /// the maintainer's machine it landed inside a OneDrive-synced folder, so
-    /// every meeting recording was silently uploaded to OneDrive.
+    /// Defaulting to a folder next to the binary makes the output location
+    /// follow wherever the app was put. On this project's own machine that
+    /// landed inside a OneDrive-synced folder, so every meeting recording was
+    /// silently uploaded to OneDrive.
     ///
-    /// It is also unworkable for a packaged app: the macOS `.app` bundle is
+    /// It is also unworkable for a packaged app: a macOS `.app` bundle is
     /// read-only in the general case, so `<bundle>/meetings` cannot be created
     /// at all. Documents is the conventional location on both platforms.
     pub fn defaults(base: &Path) -> Self {
@@ -335,9 +330,9 @@ impl Config {
 
             keep_audio: raw.keep_audio.unwrap_or(defaults.keep_audio),
 
-            // Legacy names carry backend-specific decoration; strip it on the
-            // way in so a config written by the Python app still matches a
-            // WASAPI endpoint name. See R3.
+            // Older configs stored names carrying backend-specific
+            // decoration; strip it on the way in so such a name still matches a
+            // WASAPI endpoint. See R3.
             microphone_name: raw
                 .microphone_name
                 .map(|n| strip_loopback_suffix(&n).to_string())
@@ -378,7 +373,8 @@ impl Config {
         }
     }
 
-    /// Serialize for disk. Matches the Python's `indent=2, ensure_ascii=False`.
+    /// Serialize for disk: indented, and with non-ASCII left as itself so a
+    /// device called `Micrófono` is readable in the file.
     pub fn to_json(&self) -> String {
         let raw = RawConfig {
             language: Some(self.language.as_str().to_string()),
@@ -406,8 +402,8 @@ impl Config {
     }
 }
 
-/// On-disk shape. Every field optional so a partial file keeps its defaults,
-/// mirroring the Python's `DEFAULT_CONFIG.copy()` then `update(saved)`.
+/// On-disk shape. Every field optional, so a file written by an older version —
+/// or edited by hand — keeps the defaults for whatever it does not mention.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -449,23 +445,23 @@ struct RawConfig {
 // Device-name migration (risk R3)
 // ---------------------------------------------------------------------------
 
-/// PyAudioWPatch decorates loopback endpoints with this suffix; WASAPI does not.
+/// Some Windows capture backends decorate loopback endpoints with this suffix;
+/// WASAPI does not.
 const LOOPBACK_SUFFIX: &str = " [Loopback]";
 
 /// Shortest overlap accepted as evidence of a truncated-name match.
 ///
-/// PortAudio truncated capture names to 31 characters, so a real truncation
-/// leaves plenty of shared prefix. Requiring a decent overlap stops a short
-/// saved name like `"Mic"` from matching half the device list.
+/// Names are truncated at 31 characters where they are truncated at all, so a
+/// real truncation leaves plenty of shared prefix. Requiring a decent overlap
+/// stops a short saved name like `"Mic"` from matching half the device list.
 const MIN_PREFIX_MATCH_LEN: usize = 8;
 
-/// Remove PyAudioWPatch's `" [Loopback]"` decoration.
+/// Remove the `" [Loopback]"` decoration some Windows capture backends append.
 ///
-/// Names saved by the Python app look like
-/// `"Audífono ... (Acme Headset 3225 Series) [Loopback]"`, while the
-/// same endpoint through WASAPI has no suffix. Without stripping it, every
-/// upgraded config silently fails to match and falls back to a different
-/// device on first launch.
+/// A saved name can read `"Audífono ... (Acme Headset 3225 Series) [Loopback]"`
+/// while the same endpoint through WASAPI has no suffix. Without stripping it,
+/// such a config silently fails to match and falls back to a different device on
+/// first launch.
 /// True when `value` is a path belonging to the *other* platform.
 ///
 /// # Why this matters more than it looks
@@ -514,11 +510,10 @@ pub fn strip_loopback_suffix(name: &str) -> &str {
 /// Three passes, most to least confident:
 ///
 /// 1. exact match
-/// 2. either name is a prefix of the other — PortAudio truncated capture device
-///    names to 31 characters, which is the entire reason
-///    `expand_microphone_display_name` (`app.py:980`) exists. A config written
-///    by the Python app can hold `"Micrófono de los auriculares co"` where
-///    WASAPI reports the full name.
+/// 2. either name is a prefix of the other. Some Windows capture backends
+///    truncate device names at 31 characters, so a saved name can read
+///    `"Micrófono de los auriculares co"` where WASAPI reports the whole thing.
+///    That truncation is the entire reason this pass exists.
 /// 3. give up, and let the caller fall back to the normal selection policy
 ///
 /// Both sides are normalised first, so a saved loopback name matches an
@@ -559,7 +554,7 @@ mod tests {
     // --- defaults ---------------------------------------------------------
 
     #[test]
-    fn defaults_match_the_python() {
+    fn the_defaults_are_what_a_first_launch_gets() {
         let c = Config::defaults(&app_folder());
         assert_eq!(c.language, Language::En);
         assert_eq!(c.transcription_language, TranscriptionLanguage::Auto);
@@ -786,9 +781,9 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_real_config_from_the_python_app() {
-        // Verbatim from the repo's config.json, including Windows paths and
-        // the decorated loopback name.
+    fn reads_a_real_config_from_an_older_version() {
+        // Verbatim from a config.json found on a real machine, including
+        // Windows paths and the decorated loopback name.
         let json = r#"{
   "language": "en",
   "transcription_language": "auto",
@@ -850,8 +845,8 @@ mod tests {
 
     #[test]
     fn truncated_saved_name_matches_full_endpoint() {
-        // Exactly the case in the repo's config.json: PortAudio truncated the
-        // capture device name, WASAPI reports it in full.
+        // Exactly the case found in a real config.json: the saved capture
+        // device name is truncated, WASAPI reports it in full.
         let available =
             vec!["Micrófono de los auriculares con micrófono (Acme)".to_string()];
         assert_eq!(

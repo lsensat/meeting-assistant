@@ -1,8 +1,9 @@
 /**
  * Main window controller.
  *
- * Replaces the Tk main loop plus `poll_messages` (`root.after(100, ...)`) with
- * event listeners; the data flow is the same one-way worker → UI it always was.
+ * Event listeners only — nothing here polls. The data flow is strictly one-way,
+ * worker → UI: the backend emits, this renders, and no view state is ever read
+ * back by the code doing the work.
  */
 
 // Installed before anything that can throw, so a failure in the modules

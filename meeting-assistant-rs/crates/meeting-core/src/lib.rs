@@ -1,17 +1,16 @@
 //! Hardware-independent logic for Meeting Assistant.
 //!
-//! Port of the Python modules `audio_policy.py`, `audio_stream_utils.py` and
-//! `progress_utils.py`. These are the parts that were already pure and unit
-//! tested on the Python side, so they port first and give the rest of the
-//! migration a green test suite to build against.
+//! Everything here is pure: device-selection policy, audio conversion, progress
+//! arithmetic, prompts and text handling. No audio backend, no filesystem, no
+//! Tauri — so all of it is testable without hardware, and the crate builds and
+//! its tests run on any platform.
 //!
-//! # Parity note: rounding
+//! # Rounding
 //!
-//! Python's built-in `round()` is round-half-to-even ("banker's rounding"), so
-//! `round(62.5) == 62`, not 63. Rust's `f64::round` rounds half away from zero
-//! and would give 63. Every rounding site ported from Python therefore uses
-//! [`f64::round_ties_even`], which matches Python exactly. At least one existing
-//! test (`test_progress_is_weighted_when_track_lengths_differ`) depends on this.
+//! Rounding sites use [`f64::round_ties_even`] — round-half-to-even — rather
+//! than `f64::round`, which rounds half away from zero. Exact halves are common
+//! here because durations and percentages divide evenly far more often than
+//! arbitrary measurements do, and at least one test depends on the choice.
 
 pub mod config;
 pub mod convert;
