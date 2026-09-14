@@ -39,6 +39,18 @@ pub const SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
+    /// The recording is running right now.
+    ///
+    /// Written when recording **starts**, not when it ends, so that a process
+    /// killed mid-meeting leaves a file saying what it was doing. Without it the
+    /// folder holds audio and nothing else, and recovery has to infer a meeting
+    /// from the presence of WAVs — a guess that cannot tell an interrupted
+    /// recording from a meeting recorded before this file existed.
+    ///
+    /// Never dispatched: [`is_outstanding`](Self::is_outstanding) excludes it,
+    /// so a stale one cannot be picked up as work. Startup converts it to
+    /// `Queued` after repairing the audio.
+    Recording,
     /// Captured and waiting. Nothing has been processed.
     Queued,
     /// The folder rename. Fast, but it is the point the folder path changes.
@@ -214,6 +226,18 @@ impl MeetingState {
             whisper_vad: None,
             error: None,
             config,
+        }
+    }
+}
+
+impl MeetingState {
+    /// The state written the moment recording starts.
+    ///
+    /// Its whole purpose is to exist before anything can go wrong.
+    pub fn recording(id: String, config: serde_json::Value) -> Self {
+        Self {
+            stage: Stage::Recording,
+            ..Self::new(id, String::new(), config)
         }
     }
 }
@@ -406,6 +430,48 @@ mod adopt_tests {
         let mut w = crate::audio::wav::TrackWriter::create(path).expect("create");
         w.write_samples(&vec![0.1f32; frames]).expect("write");
         w.finalize().expect("finalize");
+    }
+
+    /// The case the state-at-start file exists for: the app died mid-recording
+    /// and said so on disk.
+    ///
+    /// No inference, no heuristic — the file says `recording`, so the meeting is
+    /// moved on to `Queued` with its audio repaired. What it must NOT do is
+    /// invent a new state: the id and the config the recording was started with
+    /// are kept, because they are what the pipeline will run against.
+    #[test]
+    fn a_recording_that_was_interrupted_is_moved_on_to_queued() {
+        let root = std::env::temp_dir().join(format!("ma-interrupted-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+
+        let folder = root.join("2026-09-14_16-02-33");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        wav(&folder.join(crate::session::MIC_FILENAME), 4_800);
+        save(
+            &folder,
+            &MeetingState::recording(
+                "2026-09-14_16-02-33".into(),
+                serde_json::json!({"whisper_model": "small"}),
+            ),
+        )
+        .expect("save");
+
+        let adopted = adopt_interrupted(&root, &serde_json::Value::Null);
+        assert_eq!(adopted, vec![folder.clone()]);
+
+        let state = load(&folder).expect("state");
+        assert_eq!(state.stage, Stage::Queued, "it is work again");
+        assert_eq!(state.id, "2026-09-14_16-02-33");
+        assert_eq!(
+            state.config["whisper_model"], "small",
+            "the config it was recorded with is kept, not replaced"
+        );
+        assert!(state.duration_seconds.unwrap_or(0.0) > 0.0);
+
+        // Idempotent: a second launch finds nothing left to recover.
+        assert!(adopt_interrupted(&root, &serde_json::Value::Null).is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The two things this has to get right, in one test: adopt the interrupted
@@ -1406,14 +1472,24 @@ pub fn adopt_interrupted(output_folder: &Path, config: &serde_json::Value) -> Ve
     let mut adopted = Vec::new();
 
     for found in walk(output_folder) {
-        if found.state.is_some() || state_path(&found.path).exists() {
-            continue;
-        }
-        // Already processed, by a version that predates this state file.
-        if found.path.join("summary.md").exists()
-            || found.path.join(crate::pipeline::TRANSCRIPT_FILENAME).exists()
-        {
-            continue;
+        // Two ways in, and the first is the one that should normally fire.
+        //
+        // A meeting recorded by this version says `Recording` on disk from the
+        // moment it starts, so finding that at startup is not an inference: the
+        // app was recording and did not survive. The second way — audio with no
+        // state file at all — is for folders left by a version that only wrote
+        // the file when a recording *stopped*.
+        let interrupted = matches!(found.state.as_ref().map(|s| s.stage), Some(Stage::Recording));
+        if !interrupted {
+            if found.state.is_some() || state_path(&found.path).exists() {
+                continue;
+            }
+            // Already processed, by a version that predates this state file.
+            if found.path.join("summary.md").exists()
+                || found.path.join(crate::pipeline::TRANSCRIPT_FILENAME).exists()
+            {
+                continue;
+            }
         }
 
         let mic = found.path.join(crate::session::MIC_FILENAME);
@@ -1444,7 +1520,13 @@ pub fn adopt_interrupted(output_folder: &Path, config: &serde_json::Value) -> Ve
             continue;
         }
 
-        let mut state = MeetingState::new(id, String::new(), config.clone());
+        // Keep everything the interrupted meeting already knew — its id, its
+        // config, any offsets — and only move it on to `Queued`. Falling back to
+        // a fresh state is for the folders with no file at all.
+        let mut state = found
+            .state
+            .unwrap_or_else(|| MeetingState::new(id, String::new(), config.clone()));
+        state.stage = Stage::Queued;
         state.duration_seconds = crate::pipeline::wav_duration(&mic);
 
         match save(&found.path, &state) {

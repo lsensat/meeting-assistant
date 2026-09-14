@@ -1218,6 +1218,32 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
 
+    // Say on disk what is happening, before anything can go wrong.
+    //
+    // `meeting.json` used to be written only when a recording *stopped*, so a
+    // process killed mid-meeting left a folder holding audio and nothing else:
+    // invisible to the queue, absent from the library, unreachable by the
+    // person who recorded it. Two such folders were found on a real machine.
+    //
+    // Writing it here costs one small atomic write per meeting and turns
+    // recovery from a guess into a fact — the file says the recording was
+    // running, so the next launch knows exactly what it found. `stop_recording`
+    // overwrites it with the real state, and `cancel_recording` takes the
+    // folder with it.
+    //
+    // A failure here is logged and otherwise ignored: it costs recoverability
+    // if the app then dies, which is no reason to refuse to record.
+    let started_state = queue::MeetingState::recording(
+        folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
+    );
+    if let Err(e) = queue::save(&folder, &started_state) {
+        eprintln!("[recover] could not record that a meeting started: {e}");
+    }
+
     // The queue is now held, so its cards stop moving. `startQueuePolling`
     // re-renders only while something is running, so without this the view
     // freezes mid-meeting and every card reads "Waiting" with no explanation.
