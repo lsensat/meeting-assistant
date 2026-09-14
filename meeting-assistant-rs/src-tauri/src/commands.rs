@@ -1247,8 +1247,14 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
             let (name, payload) = match event {
-                RecorderEvent::Device(SourceKind::Microphone, name) => (EV_DEVICE_MIC, name),
-                RecorderEvent::Fallback(SourceKind::Microphone, name) => (EV_MIC_FALLBACK, name),
+                RecorderEvent::Device(SourceKind::Microphone, name) => {
+                    note_mic_device(&forwarder, &name);
+                    (EV_DEVICE_MIC, name)
+                }
+                RecorderEvent::Fallback(SourceKind::Microphone, name) => {
+                    note_mic_device(&forwarder, &name);
+                    (EV_MIC_FALLBACK, name)
+                }
                 RecorderEvent::Device(SourceKind::SystemAudio, name) => (EV_DEVICE_SYSTEM, name),
                 RecorderEvent::Fallback(SourceKind::SystemAudio, name) => {
                     (EV_SYSTEM_FALLBACK, name)
@@ -1355,6 +1361,51 @@ pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
     muted
 }
 
+/// The recording opened, or moved to, this microphone.
+///
+/// Two things follow from it, and both are why this is not just bookkeeping.
+/// A mute the user asked for **before** the stream opened has had nothing to act
+/// on until now — the device can take many seconds to appear, and 18 of them
+/// were measured on Windows. And a recording that follows a disconnect to
+/// another microphone must carry the mute across, or the user stays muted on a
+/// device nobody is recording from.
+fn note_mic_device(app: &AppHandle, name: &str) {
+    if name.is_empty() {
+        return;
+    }
+
+    let state = app.state::<AppState>();
+
+    let changed = {
+        let session = state.session.lock().expect("session poisoned");
+        match session.as_ref() {
+            Some(session) => session.note_mic_device(name),
+            // The pump outlives the session by a moment at either end.
+            None => return,
+        }
+    };
+
+    if !changed || !state.is_muted() {
+        return;
+    }
+
+    let outcome = apply_system_mute(app, &state, true);
+    if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+        log.line(&match &outcome {
+            SystemMute::Held => {
+                format!("system-wide mute now held on {name:?}, the device actually capturing")
+            }
+            SystemMute::RecordingOnly(why) => {
+                format!("still recording-only on {name:?} — the device refused: {why}")
+            }
+            SystemMute::NotRecording => {
+                format!("no system mute taken for {name:?}")
+            }
+        });
+    }
+    crate::tray::rebuild(app);
+}
+
 /// What became of a request to mute the device itself.
 pub enum SystemMute {
     /// The device is muted for every application.
@@ -1368,15 +1419,29 @@ pub enum SystemMute {
 
 /// Take or release the system-wide mute, if a recording is running.
 fn apply_system_mute(app: &AppHandle, state: &State<AppState>, muted: bool) -> SystemMute {
-    let device = state.config_snapshot().microphone_name;
-    if device.is_empty() {
-        return SystemMute::NotRecording;
-    }
-
     let session = state.session.lock().expect("session poisoned");
     let Some(session) = session.as_ref() else {
         return SystemMute::NotRecording;
     };
+
+    // The device **capturing**, not the device configured.
+    //
+    // A Windows recording fell back to the built-in microphone because the
+    // configured headset was not plugged in, and the mute — looking up the
+    // configured name — reported "no input device named ..." and silenced
+    // nothing, while the recording ran on a device it had never heard of. The
+    // mute exists to stop the microphone the meeting is being recorded from,
+    // and that is the only device it should ever touch.
+    //
+    // The configured name is the fallback for the window before the stream
+    // opens, which is not a rounding error: that open took 18 seconds on the
+    // machine this was found on.
+    let device = session
+        .mic_device()
+        .unwrap_or_else(|| state.config_snapshot().microphone_name);
+    if device.is_empty() {
+        return SystemMute::NotRecording;
+    }
 
     // The closure persists the flag. `system_mute` knows nothing about `Config`
     // — it is handed a way to remember and a way to forget.
