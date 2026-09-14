@@ -5,8 +5,7 @@ audio your computer is playing — transcribes both with whisper.cpp and
 summarizes the merged transcript with a local Ollama model. Everything runs
 offline.
 
-It is a rewrite of an earlier Python/CustomTkinter app, and targets **Windows
-and macOS from one codebase**.
+It targets **Windows and macOS from one codebase**.
 
 ## Layout
 
@@ -194,25 +193,31 @@ Must be installed and running; the app starts it if it can find it. Looked up on
 HTTP on `127.0.0.1:11434` — the client has no TLS support compiled in, because
 nothing here should ever leave the machine.
 
-## The Python original
+## Where the comments come from
 
-An earlier Python/CustomTkinter app was the blueprint for this one. It has been
-**deleted from the working tree** — it was no longer a target, and this app has
-since gained behaviour it never had: background processing with a pausable,
-resumable queue, single-instance enforcement, Whisper model management.
+This app grew out of an earlier prototype, and for a while its comments cited
+that prototype by file and line. Those citations are **gone**: the file they
+pointed at is not in this repository, so they could not be opened, and a line
+number nobody can look up is worse than no citation at all.
 
-**The `app.py:NNN` references throughout the code are deliberate and are staying.**
-There are 51 of them, and each records a decision: what was ported exactly, and
-what was changed on purpose. The notable divergence is that silence for a device
-outage is measured from the last sample actually received to the first sample of
-the new stream, rather than written at open time as `app.py:1557-1562` did — on
-macOS the simpler version loses roughly 0.14 s per device transition, because
-`stream.play()` returns long before a Core Audio tap starts delivering.
+The reasoning they carried was kept. Where a comment used to say "this matches
+X", it now says what the constraint is and why breaking it costs something —
+which is the part a maintainer needs, and the part that stays true when the
+surrounding code moves. A few examples of constraints that read as arbitrary
+until you know the reason:
 
-Those line numbers are **provenance, not links**: the file is not in this
-repository, so they cannot be opened. They are kept because the reasoning they
-carry is worth more than the broken reference costs.
+* Audio is re-packetised into 1024-sample units before resampling, because the
+  resampler maps each call's first and last sample onto the output's — so the
+  same audio chunked differently produces a different file.
+* `f32_to_i16` scales by 32767 while the reverse divides by 32768. The asymmetry
+  is deliberate: 32767 is what every recording already on disk was written with,
+  and 32768 clips a full-scale sample.
+* Silence for a device outage is measured from the last sample actually received
+  to the first sample of the new stream, not written when the device opens.
+  Opening can take seconds — 18 of them were measured on Windows — and the file
+  must advance by the wall-clock time no audio was arriving.
 
-What was given up in dropping parity is worth naming: the Python was a second,
-independent implementation to check a suspicious transcript against. Nothing
-replaces that, so a surprising result now has to be judged on its own.
+One thing was genuinely lost when the prototype was dropped, and it is worth
+naming: it was a second, independent implementation to check a suspicious
+transcript against. Nothing replaces that, so a surprising result now has to be
+judged on its own.

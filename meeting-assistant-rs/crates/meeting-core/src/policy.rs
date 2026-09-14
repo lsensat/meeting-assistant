@@ -12,8 +12,7 @@
 /// when the configured and default devices are both unavailable.
 ///
 /// Locale-coupled on purpose: the first group matches Spanish Windows device
-/// names, which is what the Windows target machines run. Ported verbatim from
-/// `audio_policy.py`.
+/// names, which is what the Windows machines this targets run.
 ///
 /// The macOS group is appended rather than kept in a separate list. Matching is
 /// substring-based and these strings cannot occur in a Windows endpoint name,
@@ -40,7 +39,10 @@ pub const INTERNAL_MIC_TERMS: &[&str] = &[
 
 /// Loopback devices preferred when nothing is configured.
 ///
-/// Hardcodes one specific headset — see deferred fix #8. Kept as-is for parity.
+/// Hardcodes one specific headset, which is not defensible as a general rule —
+/// it is here because it is the hardware this was built against, and removing it
+/// would change which device an existing user records from. Worth replacing with
+/// a real rule before anyone else relies on it.
 pub const DEFAULT_SYSTEM_PREFERRED_TERMS: &[&str] = &["acme headset 3225 series"];
 
 /// An audio endpoint, either a capture device or a loopback-capable render device.
@@ -70,7 +72,8 @@ impl Device {
     }
 }
 
-/// Deduplicate by id, preserving first-seen order. Port of `_unique_by_index`.
+/// Deduplicate by id, preserving first-seen order: the order *is* the
+/// preference, so a device seen twice must keep its earliest position.
 fn unique_by_id(devices: Vec<&Device>) -> Vec<Device> {
     let mut seen: Vec<&str> = Vec::new();
     let mut result = Vec::new();
@@ -95,7 +98,7 @@ fn find_by_name<'a>(devices: &'a [Device], name: &str) -> Option<&'a Device> {
     devices.iter().find(|d| d.name == name)
 }
 
-/// Port of `_find_by_index`.
+/// The device with this id, if it is still present.
 fn find_by_id<'a>(devices: &'a [Device], id: Option<&str>) -> Option<&'a Device> {
     let id = id?;
     devices.iter().find(|d| d.id == id)
@@ -133,7 +136,7 @@ fn ordered_candidates(
 }
 
 /// Microphone preference order: configured device, then OS default, then any
-/// built-in mic, then everything else. Port of `ordered_microphone_candidates`.
+/// built-in mic, then everything else.
 pub fn ordered_microphone_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -142,7 +145,7 @@ pub fn ordered_microphone_candidates(
     ordered_candidates(devices, selected_name, default_id, INTERNAL_MIC_TERMS)
 }
 
-/// Loopback preference order. Port of `ordered_system_candidates`.
+/// Loopback preference order.
 pub fn ordered_system_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -200,7 +203,7 @@ fn choose_failover(
     }
 }
 
-/// Pick a microphone during recording. Port of `choose_microphone_failover`.
+/// Pick a microphone during recording.
 pub fn choose_microphone_failover(
     devices: &[Device],
     current_name: &str,
@@ -216,7 +219,7 @@ pub fn choose_microphone_failover(
     )
 }
 
-/// Pick a loopback device during recording. Port of `choose_system_failover`.
+/// Pick a loopback device during recording.
 pub fn choose_system_failover(
     devices: &[Device],
     current_name: &str,
@@ -291,7 +294,7 @@ pub fn whisper_threads(available: usize) -> i32 {
 /// How many samples of silence cover a gap of `gap_seconds`.
 ///
 /// This is what keeps the two tracks time-aligned across a device disconnect.
-/// Port of `silence_frames_for_gap`; negative gaps clamp to zero.
+/// Negative gaps clamp to zero.
 pub fn silence_frames_for_gap(gap_seconds: f64, sample_rate: u32) -> usize {
     let gap_seconds = gap_seconds.max(0.0);
     let sample_rate = sample_rate.max(1) as f64;
@@ -342,7 +345,7 @@ pub fn split_lead_in(frames: usize, sample_rate: u32, open_seconds: f64) -> (u64
 mod tests {
     use super::*;
 
-    /// Mirrors the `dev()` helper in tests/test_audio_policy.py.
+    /// A device with a synthetic id, so tests read as a list of names.
     fn dev(index: u32, name: &str) -> Device {
         Device::new(index.to_string(), name, 48_000, 2)
     }

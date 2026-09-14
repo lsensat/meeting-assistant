@@ -87,7 +87,7 @@ impl StopEvent {
         *self.flag.lock().expect("stop flag poisoned")
     }
 
-    /// Port of `stop_event.wait(timeout)`. Returns true if stop was set.
+    /// Wait up to `timeout` for the stop flag. Returns true if stop was set.
     pub fn wait(&self, timeout: Duration) -> bool {
         let flag = self.flag.lock().expect("stop flag poisoned");
         if *flag {
@@ -266,8 +266,8 @@ pub fn spawn(
     Recorder { handle }
 }
 
-/// The recorder loop. Structure follows `record_microphone` closely on purpose,
-/// so the two can be read side by side during review.
+/// The recorder loop: open, pump, and four independent ways of noticing that
+/// the device has gone. Each detector is commented where it sits.
 fn run(
     config: RecorderConfig,
     stop: Arc<StopEvent>,
@@ -1152,8 +1152,8 @@ mod tests {
     }
 
     /// The tail matters: dropping it truncates every recording by up to 1023
-    /// samples, which is small enough to look like nothing and still shift a
-    /// byte-diff parity test.
+    /// samples, which is small enough to look like nothing and still change
+    /// every byte of the file after it.
     #[test]
     fn repacketiser_drains_the_partial_tail() {
         let mut r = Repacketiser::new();

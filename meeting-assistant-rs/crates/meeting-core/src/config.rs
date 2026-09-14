@@ -3,8 +3,7 @@
 //! The `Config` struct is the source of truth and the UI is a view of it — not
 //! the other way round. Reading the widgets when saving would tie every write
 //! to the UI thread, and it is what lets a recording thread take an owned
-//! snapshot instead of reaching back into the
-//! UI (deferred fixes #1 and #2).
+//! snapshot instead of reaching back into the UI.
 //!
 //! # Reading rules
 //!

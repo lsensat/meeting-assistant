@@ -495,7 +495,7 @@ pub fn run(
     }))
 }
 
-/// Chunk, extract per chunk, then synthesize. Port of `summarize_with_ollama`.
+/// Chunk, extract per chunk, then synthesize.
 /// `Ok(None)` means paused, not failed — see [`RunOutcome`].
 ///
 /// The chunk loop is the natural place to stop: each iteration is one request,

@@ -168,8 +168,9 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// The 32767 scale factor is a parity contract, not an implementation
-    /// detail; assert it survives the trip through the file.
+    /// The 32767 scale factor is a contract with every file already on disk,
+    /// not an implementation detail; assert it survives the trip through the
+    /// file.
     #[test]
     fn full_scale_sample_round_trips_as_32767() {
         let path = temp_path("scale");

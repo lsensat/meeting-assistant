@@ -1,4 +1,4 @@
-//! Transcription progress math. Port of `progress_utils.py`.
+//! Transcription progress math.
 
 /// Global transcription progress from 0 to 100.
 ///
