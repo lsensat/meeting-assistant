@@ -346,7 +346,25 @@ mod platform {
 
             let names: Vec<String> = endpoints.iter().map(|(_, n)| n.clone()).collect();
             let Some(index) = meeting_core::config::match_saved_device_name(name, &names) else {
-                return Err(MuteError::NoSuchDevice(name.to_string()));
+                // What was on the machine, not just what was wanted.
+                //
+                // "no input device named X" reads the same whether the device
+                // was absent or the enumeration came back empty — and those
+                // call for opposite fixes. A Windows run produced exactly that
+                // message and the two could not be told apart afterwards.
+                return Err(MuteError::NoSuchDevice(format!(
+                    "{name}; {} active capture endpoint(s) seen: {}",
+                    names.len(),
+                    if names.is_empty() {
+                        "none".to_string()
+                    } else {
+                        names
+                            .iter()
+                            .map(|n| format!("{n:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )));
             };
 
             let device = collection
