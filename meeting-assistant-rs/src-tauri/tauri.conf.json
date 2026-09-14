@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "alwaysOnTop": true,
         "title": "Meeting Assistant",
         "theme": "Dark",
         "width": 375,

@@ -537,6 +537,13 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
             .title("Welcome to Meeting Assistant")
             .inner_size(620.0, 560.0)
             .resizable(false)
+            // Floating, because the main window is.
+            //
+            // A window level outranks ordering *within* a level, so a normal
+            // window of this same app is drawn behind the always-on-top main
+            // window even while it is focused. Without this, opening Settings
+            // over the main window hides half of Settings.
+            .always_on_top(true)
             .maximizable(false)
             .center()
             // Windows 10 has no caption-colour attribute, so the theme is what
@@ -773,6 +780,8 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .title("Settings")
     .inner_size(590.0, 610.0)
     .resizable(false)
+    // Floating for the same reason as the main window — see `open_setup`.
+    .always_on_top(true)
     .maximizable(false)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
     // this window's title bar dark there. `tauri.conf.json` covers the main
@@ -810,6 +819,8 @@ pub fn open_licenses(app: AppHandle) -> Result<(), String> {
     )
     .title("Acknowledgements")
     .inner_size(640.0, 620.0)
+    // Floating for the same reason as the main window — see `open_setup`.
+    .always_on_top(true)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
     // this window's title bar dark there. `tauri.conf.json` covers the main
     // window; a builder does not read that list.
@@ -1017,6 +1028,9 @@ pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
         let window =
             tauri::WebviewWindowBuilder::new(&app, "library", tauri::WebviewUrl::App(url.into()))
                 .title("Library")
+                // Floating for the same reason as the main window — see
+                // `open_setup`.
+                .always_on_top(true)
                 // Unlike Settings and the wizard, this one holds a document.
                 .inner_size(900.0, 640.0)
                 .theme(Some(tauri::Theme::Dark))
