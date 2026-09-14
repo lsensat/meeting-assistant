@@ -1108,8 +1108,17 @@ impl Transcriber {
 /// the file rather than assumed, so a hand-placed or future file cannot quietly
 /// be misinterpreted.
 pub(crate) fn read_wav_as_16k_mono(path: &Path) -> Result<Vec<f32>, WhisperError> {
-    let mut reader =
-        hound::WavReader::open(path).map_err(|e| WhisperError::ReadAudio(e.to_string()))?;
+    // The path is part of the error, not just the reason.
+    //
+    // A Windows user hit "could not read the recording: The system cannot find
+    // the path specified. (os error 3)" and there was no way to act on it: os
+    // error 3 is ERROR_PATH_NOT_FOUND, which on Windows means a *directory* in
+    // the path is missing rather than the file — a genuinely useful distinction,
+    // and useless without knowing which path was tried. Opening a file is the
+    // one failure where the name of the file is the whole diagnosis.
+    let mut reader = hound::WavReader::open(path).map_err(|e| {
+        WhisperError::ReadAudio(format!("{e} — {}", path.display()))
+    })?;
     let spec = reader.spec();
 
     let raw: Vec<f32> = match spec.sample_format {

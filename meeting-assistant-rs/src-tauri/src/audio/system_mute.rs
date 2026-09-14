@@ -646,6 +646,12 @@ impl MuteGuard {
         }
     }
 
+    /// Which device this guard is holding muted.
+    ///
+    /// Load-bearing, not a convenience: the recording can change microphones
+    /// underneath it — the device-follow path switches on a disconnect — and a
+    /// mute held on the device that went away is a mute nobody can hear the
+    /// effect of. The session compares this against the device now capturing.
     pub fn device(&self) -> &str {
         &self.device
     }

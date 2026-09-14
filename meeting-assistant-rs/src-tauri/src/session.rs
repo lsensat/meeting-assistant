@@ -36,6 +36,19 @@ pub struct RecordingSession {
     /// order, but releasing the user's microphone is the more urgent of the two.
     system_mute: std::sync::Mutex<Option<crate::audio::system_mute::MuteGuard>>,
 
+    /// The microphone actually capturing, which is not always the configured
+    /// one.
+    ///
+    /// On Windows a headset that is not plugged in falls back to whatever is
+    /// there, and the first version of the mute looked up the configured name:
+    /// it reported "the device refused — no input device named ..." and muted
+    /// nothing, while the recording ran happily on a device it had never been
+    /// told about. The mute has to follow the device the audio is coming from.
+    ///
+    /// `None` until the stream opens — which took 18 seconds on the machine
+    /// that found this, long enough for the user to have pressed mute first.
+    mic_device: std::sync::Mutex<Option<String>>,
+
     /// Stops the processing queue for as long as this session exists.
     ///
     /// A field rather than something the commands acquire and release, so the
@@ -83,12 +96,36 @@ impl RecordingSession {
             return Ok(());
         }
 
-        if slot.is_some() {
+        // Already muting the right device.
+        if slot.as_ref().map(|g| g.device() == device).unwrap_or(false) {
             return Ok(());
         }
 
+        // Held, but on a different device — the recording followed a
+        // disconnect. Release the old one first: leaving it muted would strand
+        // a device the user is no longer recording with.
+        *slot = None;
+
         *slot = Some(crate::audio::system_mute::MuteGuard::acquire(device, remember)?);
         Ok(())
+    }
+
+    /// Record which microphone is capturing now. Returns true if this is a
+    /// change from what was there before, so the caller can re-take a mute that
+    /// is now held on the wrong device.
+    pub fn note_mic_device(&self, name: &str) -> bool {
+        let mut slot = self.mic_device.lock().expect("mic device poisoned");
+        let changed = slot.as_deref() != Some(name);
+        *slot = Some(name.to_string());
+        changed
+    }
+
+    /// The microphone to act on: the one capturing, if it is known yet.
+    pub fn mic_device(&self) -> Option<String> {
+        self.mic_device
+            .lock()
+            .expect("mic device poisoned")
+            .clone()
     }
 
     /// Whether this recording currently holds a system-wide mute.
@@ -97,6 +134,37 @@ impl RecordingSession {
             .lock()
             .map(|slot| slot.is_some())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod mic_device_tests {
+    /// The rule that was wrong on Windows, as a test of the piece that decides
+    /// it: the device capturing wins, and only a real change is a change.
+    ///
+    /// `RecordingSession` cannot be built without opening audio hardware, so
+    /// this covers `note_mic_device`'s logic through the same `Mutex<Option<_>>`
+    /// it uses. What it does not cover is the wiring in `commands.rs`, which is
+    /// why the log line there names the device — that is the evidence on the
+    /// next Windows run.
+    #[test]
+    fn only_a_real_change_counts_as_a_change() {
+        let slot: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+        let note = |name: &str| {
+            let mut slot = slot.lock().expect("poisoned");
+            let changed = slot.as_deref() != Some(name);
+            *slot = Some(name.to_string());
+            changed
+        };
+
+        // First sight of a device is a change: this is the case that was
+        // broken, where the user muted before the stream had opened.
+        assert!(note("Varios micrófonos (Realtek(R) Audio)"));
+        // The same device reported again is not.
+        assert!(!note("Varios micrófonos (Realtek(R) Audio)"));
+        // Following a disconnect to another device is.
+        assert!(note("Plantronics Blackwire 3225 Series"));
     }
 }
 
@@ -196,6 +264,7 @@ impl RecordingSession {
             tracks,
             events,
             system_mute: std::sync::Mutex::new(None),
+            mic_device: std::sync::Mutex::new(None),
             _queue_hold: queue_hold,
         })
     }
