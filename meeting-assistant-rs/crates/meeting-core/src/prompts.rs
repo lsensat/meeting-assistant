@@ -1,17 +1,16 @@
-//! Prompt templates for the Ollama summarisation pass.
-//! Port of `summary_instructions` and `summarize_with_ollama` (`app.py:1962-2205`).
+//! Prompt templates for the summarisation pass.
 //!
 //! Summarisation is map-reduce: each transcript chunk gets an extraction pass,
 //! the partial results are concatenated, and one final pass renders them into
 //! the chosen summary format.
 //!
-//! # The `\n` fix
+//! # Real newlines, not escaped ones
 //!
-//! The Python built these messages with `f"{a}\\n\\n{b}"` — an escaped
-//! backslash, so the model received the literal characters `\n\n` instead of
-//! blank lines, gluing the transcript onto the end of the instruction text.
-//! That was fixed in `app.py` before this port; the joins here use real
-//! newlines. Do not reintroduce the escape.
+//! The joins below use real newlines. Written with an escaped backslash, the
+//! model receives the literal characters `\n\n` instead of blank lines, which
+//! glues the transcript onto the end of the instruction text and makes the whole
+//! prompt read as one paragraph. It is invisible in the source and obvious only
+//! in the output. Do not reintroduce the escape.
 
 use crate::config::{Language, SummaryType};
 

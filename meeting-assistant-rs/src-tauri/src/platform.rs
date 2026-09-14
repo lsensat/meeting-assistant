@@ -8,10 +8,9 @@ use std::path::PathBuf;
 
 /// Per-user application data directory.
 ///
-/// The Python kept everything beside `app.py` (`APP_FOLDER`, `app.py:52`),
-/// which works for a folder you unzip but not for a signed `.app` bundle:
-/// the bundle is read-only in the general case and macOS expects app state
-/// under Application Support.
+/// Not beside the binary: that works for a folder you unzip, but not for a
+/// signed `.app` bundle, which is read-only in the general case. macOS expects
+/// app state under Application Support.
 pub fn app_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -61,18 +60,17 @@ pub fn documents_dir() -> PathBuf {
 
 /// Where Whisper GGUF weights are cached.
 ///
-/// The Python relied on the Hugging Face cache via `scan_cache_dir`
-/// (`app.py:695`) because faster-whisper downloaded through `huggingface_hub`.
-/// whisper.cpp takes a plain file path, so the port owns the directory.
+/// whisper.cpp takes a plain file path rather than a model id, so this app owns
+/// the directory and the download rather than sharing a third-party cache.
 pub fn models_dir() -> PathBuf {
     app_data_dir().join("models")
 }
 
 /// The `ollama` executable, or `None` if it cannot be found.
 ///
-/// Port of `find_ollama_executable` (`app.py:770`), which searched `PATH` and
-/// then the usual Windows install locations. The macOS equivalents are
-/// Homebrew (both architectures) and the app bundle's bundled binary.
+/// Searches `PATH` first, then the usual install locations: Homebrew on both
+/// architectures and the bundled binary on macOS, the standard installer paths
+/// on Windows.
 /// # `PATH` is trusted, deliberately
 ///
 /// A hostile `ollama` earlier in `PATH` would be launched by [`start_ollama`].
@@ -125,8 +123,7 @@ pub fn find_ollama() -> Option<PathBuf> {
 ///
 /// On macOS the daemon is owned by the `.app`, so `open -a` is the supported
 /// way in; running the CLI binary directly would leave a child process tied to
-/// our lifetime. On Windows the executable is launched directly, as the Python
-/// did.
+/// our lifetime. On Windows the executable is launched directly.
 pub fn start_ollama() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -215,9 +212,9 @@ pub fn sound_settings_uri() -> &'static str {
 mod tests {
     use super::*;
 
-    /// Recordings must not default beside the binary. The Python's
-    /// `APP_FOLDER / "meetings"` put them wherever the app happened to live —
-    /// which on the maintainer's machine was inside OneDrive.
+    /// Recordings must not default beside the binary: that puts them wherever
+    /// the app happens to live, which on this project's own machine meant
+    /// inside a OneDrive-synced folder.
     #[test]
     fn documents_dir_is_not_the_app_bundle() {
         let documents = documents_dir();

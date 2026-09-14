@@ -1,9 +1,10 @@
 //! Shared application state.
 //!
-//! The Python kept ~20 module-level globals mutated from four threads with no
-//! synchronization (deferred fixes #1 and #2). Here there is exactly one piece
-//! of shared mutable state — the current session — behind one mutex, and
-//! everything a worker thread needs is snapshotted and moved into it at start.
+//! There is exactly one piece of shared mutable state — the current session —
+//! behind one mutex, and everything a worker thread needs is snapshotted and
+//! moved into it at start. Shared mutable globals reachable from the recording
+//! threads, the queue worker and the UI at once are the shape this deliberately
+//! does not have.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,8 +37,9 @@ pub struct AppState {
     /// recording starts and stays in force for the whole of it.
     ///
     /// **Cleared when a recording stops**, which reverses an earlier decision
-    /// here. The Python cleared it too (`app.py:3962`) and this code called that
-    /// "silently throwing the user's choice away" — but the choice belongs to a
+    /// here. Keeping it was once described as respecting the user's choice,
+    /// where clearing it "silently threw the choice away" — but the choice
+    /// belongs to a
     /// meeting, not to the app, and keeping it had a much worse failure: mute
     /// once, forget, and the *next* meeting records silent from its first
     /// sample, with the system mute taken automatically. A mute that has to be

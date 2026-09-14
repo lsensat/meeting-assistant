@@ -1,17 +1,15 @@
 //! Transcription via whisper.cpp.
 //!
-//! Replaces faster-whisper (`app.py:1842`). Two differences matter and both are
-//! load-bearing:
+//! Two properties of this engine shape the module, and both are load-bearing:
 //!
-//! 1. **Different weights.** faster-whisper used CTranslate2 models pulled
-//!    through `huggingface_hub` and cached by `scan_cache_dir` (`app.py:695`).
-//!    whisper.cpp wants GGML/GGUF `.bin` files. The Python's cache is not
-//!    reusable, so this module owns download and detection itself.
+//! 1. **It takes a file path, not a model id.** whisper.cpp wants GGML/GGUF
+//!    `.bin` weights on disk, so this module owns downloading them, verifying
+//!    them and knowing which are present.
 //!
-//! 2. **No internal resampling.** faster-whisper took a file path and handled
-//!    rate conversion. whisper.cpp's `full()` assumes the slice is already
-//!    16 kHz mono and gives no error otherwise — see [`Transcriber::transcribe`]
-//!    and `meeting_core::convert::resample_for_whisper`.
+//! 2. **It does no resampling.** `full()` assumes the slice it is handed is
+//!    already 16 kHz mono, and gives no error otherwise — it simply transcribes
+//!    the wrong thing. See [`Transcriber::transcribe`] and
+//!    `meeting_core::convert::resample_for_whisper`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -53,7 +51,7 @@ pub struct ModelSpec {
     pub sha1: &'static str,
 }
 
-/// The models offered in the UI, matching the Python's list.
+/// The models offered in the UI.
 pub const MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "tiny",
@@ -372,8 +370,7 @@ pub fn model_path(id: &str) -> PathBuf {
     platform::models_dir().join(format!("ggml-{id}.bin"))
 }
 
-/// Model ids present on disk. Port of `installed_whisper_models`
-/// (`app.py:695`), reading our own directory instead of the HF cache.
+/// Model ids present on disk, read from this app's own models directory.
 pub fn installed_models() -> Vec<String> {
     MODELS
         .iter()
@@ -756,8 +753,8 @@ pub struct TranscriptionOutcome {
 impl Transcriber {
     /// Load a model from disk, downloading it first if necessary.
     ///
-    /// `language` is `None` for auto-detection, mirroring the Python's
-    /// `transcription_language` of `"auto"`.
+    /// `language` is `None` for auto-detection, which is what the `auto`
+    /// setting means.
     pub fn load(model_id: &str, language: Option<&str>) -> Result<Self, WhisperError> {
         // whisper.cpp and GGML print model and buffer details straight to
         // stdout/stderr on every load. Harmless for a CLI, but in the Tauri app
@@ -788,8 +785,8 @@ impl Transcriber {
     /// Transcribe one track.
     ///
     /// `offset_seconds` is added to every timestamp so both tracks share the
-    /// meeting's origin, exactly as `transcribe_audio` does with
-    /// `start_times[..] - common_start` (`app.py:1908`).
+    /// meeting's origin rather than each starting at zero — otherwise the two
+    /// interleave into a transcript where nobody answers anybody.
     ///
     /// `on_progress` receives the end timestamp of each segment so the caller
     /// can drive `transcription_percent` without this module knowing about the
@@ -934,8 +931,8 @@ impl Transcriber {
             let run_len_cs = (run.len() as f64 / WHISPER_SAMPLE_RATE as f64 * 100.0) as i64;
 
             let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-                // Matches the Python's `model.transcribe(..., beam_size=5)`
-                // (`app.py:1877`). Changing it changes the transcript.
+                // Changing this changes the transcript, so it is a tuning
+                // value with a test, not a number to adjust casually.
                 beam_size: tuning.beam_size,
                 patience: 0.0,
             });
@@ -1022,7 +1019,8 @@ impl Transcriber {
                         }
 
                         // Blank segments are dropped before they reach the
-                        // transcript, as the Python does (`app.py:1898`).
+                        // transcript: whisper emits them, and they render as an
+                        // empty speaker line.
                         let text = data.text.trim();
                         if text.is_empty() {
                             return;

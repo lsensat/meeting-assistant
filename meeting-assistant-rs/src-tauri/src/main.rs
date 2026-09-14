@@ -15,7 +15,7 @@ fn main() {
     // A missing or malformed file yields pure defaults rather than failing to
     // start — the app must always open, even with a corrupted config.
     // Recordings default under the user's Documents, not beside the binary.
-    // See `Config::defaults` for why this diverges from the Python.
+    // See `Config::defaults` for why.
     let documents = platform::documents_dir();
     let config = std::fs::read_to_string(&config_file)
         .map(|text| Config::from_json(&text, &documents))

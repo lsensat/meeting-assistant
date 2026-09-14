@@ -4,10 +4,10 @@
  * The whole catalogue is fetched once from Rust, so both halves of the app read
  * the same 110 keys and neither can drift.
  *
- * `applyLanguage()` replaces `refresh_ui_language()` (`app.py:4110`) — 154 lines
- * that manually re-set roughly 40 widget texts on every language switch. Here
- * the DOM already records which element owns which key, so switching languages
- * is a walk over `[data-i18n]`.
+ * `applyLanguage()` is a walk over `[data-i18n]`: the DOM already records which
+ * element owns which key, so nothing has to list the widgets. The alternative —
+ * re-setting each widget's text by hand on every language switch — is where a
+ * newly added label silently stays in the previous language.
  */
 
 import { getI18n } from "./api.js";

@@ -1,9 +1,8 @@
 //! Post-recording processing: transcribe both tracks, merge, summarize, write.
 //!
-//! Port of `process_meeting` (`app.py:2211`) and `summarize_with_ollama`
-//! (`app.py:2076`). The ordering here is not incidental — several steps are
-//! sequenced the way they are for reasons that only show up when something goes
-//! wrong. Each is commented at the point it matters.
+//! The ordering here is not incidental — several steps are sequenced the way
+//! they are for reasons that only show up when something goes wrong. Each is
+//! commented at the point it matters.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +31,7 @@ pub enum StageState {
     Error,
 }
 
-/// What the pipeline reports while it runs. Mirrors the Python queue tags.
+/// What the pipeline reports while it runs.
 #[derive(Debug, Clone)]
 pub enum Progress {
     Stage(Stage, StageState),
@@ -208,8 +207,8 @@ pub fn run(
     //
     // The WAVs are closed by the time `RecordingSession::stop` returns, and the
     // rename must not happen before that: renaming a directory out from under
-    // an open file handle leaves a truncated RIFF header. The Python has an
-    // explicit comment about this at `app.py:2221-2237`; preserve the ordering.
+    // an open file handle leaves a truncated RIFF header, and a recording that
+    // claims to contain nothing. Preserve the ordering.
     let folder = rename_folder(&config.folder, &config.meeting_title, &config.output_folder)?;
 
     // Immediately, and before anything can fail: whoever is tracking this
@@ -282,9 +281,9 @@ pub fn run(
 
     // Both tracks already share one origin: `RecordingSession::start` stamps a
     // single `Instant` and hands it to both recorders, and each track's
-    // lead-in silence covers its own open latency. So `common_start` — which
-    // the Python had to compute from two separate stamps (`app.py:2280`) — is
-    // zero here by construction, and both offsets are zero.
+    // lead-in silence covers its own open latency. So the two tracks share an
+    // origin by construction and both offsets are zero — there is no per-track
+    // start stamp to reconcile.
     let partial_segments_file = folder.join(PARTIAL_SEGMENTS);
     let partial_summary_file = folder.join(PARTIAL_SUMMARY);
 
@@ -360,18 +359,15 @@ pub fn run(
     }
 
     // Interleaves the two speakers by timestamp and formats
-    // `[HH:MM:SS] SPEAKER: text`. The exact format and ordering are part of the
-    // parity contract with the Python.
+    // `[HH:MM:SS] SPEAKER: text`. The format is fixed: it is what the summary
+    // prompts are written against, and what a reader of `transcript.txt` sees.
     let transcript = text::build_transcript(&mut segments);
 
     // Deliberately NOT written before the emptiness check.
     //
-    // The Python writes `transcript.txt` and only then raises `error_no_voice`
-    // (`app.py:2343` vs `2348`), leaving a stray empty file behind on that
-    // path. That is deferred fix #5. Since writing the file at all is the bug,
-    // and this is the ordering the register already records as wrong, the file
-    // is written after the check — the observable difference is only that an
-    // empty run leaves no empty artifact.
+    // Writing it first and checking afterwards leaves a stray empty
+    // `transcript.txt` beside a meeting that has none — a file that looks like
+    // a transcript and is not one. Checking first costs nothing.
     //
     // # A meeting with nothing said in it is finished, not failed
     //
@@ -598,8 +594,9 @@ fn debug_timing(label: &str, sent: usize, received: usize, started: std::time::I
 
 /// Append the user's meeting title to the folder name, if they gave one.
 ///
-/// Collisions get a timestamp suffix rather than failing or overwriting, which
-/// is what the Python does (`app.py:2228-2233`).
+/// Collisions get a timestamp suffix rather than failing or overwriting: two
+/// meetings with the same title on the same day is ordinary, and losing one of
+/// them to the other is not.
 fn rename_folder(
     folder: &Path,
     title: &str,

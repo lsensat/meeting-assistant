@@ -1,4 +1,4 @@
-//! Ollama client. Port of the `ollama` Python package usage in `app.py`.
+//! Ollama client.
 //!
 //! Only two endpoints are used — `/api/tags` to list installed models and
 //! `/api/chat` to summarize — so this talks HTTP directly rather than taking a
@@ -19,19 +19,17 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-/// Same host and port the Python `ollama` package defaults to, on both
-/// platforms. Loopback only — nothing here should ever reach the network.
+/// Ollama's default host and port on both platforms. Loopback only — nothing
+/// here should ever reach the network.
 pub const BASE_URL: &str = "http://127.0.0.1:11434";
 
-/// Matches the Python's `options={"temperature": 0.2}` (`app.py:2160`, `2196`).
 /// Low but not zero: the summary should be stable without being degenerate.
 const TEMPERATURE: f64 = 0.2;
 
 /// Ollama is on loopback: if it does not answer in three seconds it is not
-/// running. The Python allowed 15 s (`app.py:894-911`), but that was a startup
-/// probe in a thread nobody waited on — here Settings and the setup wizard both
-/// block on this before they can render their model list, so the timeout is
-/// how long a machine without Ollama waits to see its own settings.
+/// running. Kept short because Settings and the setup wizard both block on this
+/// before they can render their model list: the timeout is how long a machine
+/// without Ollama waits to see its own settings.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Summarization is the long pole: a 7B model on a chunk of transcript can
@@ -106,10 +104,9 @@ impl std::error::Error for OllamaError {}
 
 /// One installed model, as reported by `/api/tags`.
 ///
-/// **Three shapes are tolerated on purpose.** The Python accepted `item.model`,
-/// `item.name`, or a dict with either key (`app.py:819-824`), because the field
-/// moved between Ollama versions. Keeping both here means a server upgrade
-/// cannot silently produce an empty model list.
+/// **Both field names are tolerated on purpose**, because the field has moved
+/// between Ollama versions. Accepting either means a server upgrade cannot
+/// silently produce an empty model list.
 #[derive(Debug, Deserialize)]
 struct TagEntry {
     #[serde(default)]
@@ -199,9 +196,8 @@ fn client() -> Result<&'static reqwest::blocking::Client, OllamaError> {
 
 /// Installed model names, sorted and deduplicated.
 ///
-/// Port of `ollama_runtime_status` (`app.py:806`). An empty list with `Ok` means
-/// Ollama is running but has no models — a different UI state from unreachable,
-/// so the distinction must survive.
+/// An empty list with `Ok` means Ollama is running but has no models — a
+/// different UI state from unreachable, so the distinction must survive.
 pub fn list_models() -> Result<Vec<String>, OllamaError> {
     let response = client()?
         .get(format!("{BASE_URL}/api/tags"))
@@ -232,9 +228,9 @@ pub fn is_running() -> bool {
 
 /// One `/api/chat` round trip with `stream: false`.
 ///
-/// The message shape mirrors the Python exactly: a system message carrying the
-/// meeting-analysis framing, then a single user message holding the instruction
-/// and the transcript text.
+/// A system message carrying the meeting-analysis framing, then a single user
+/// message holding the instruction and the transcript text. The same split as
+/// the OpenAI-compatible path, so a summary does not depend on the engine.
 pub fn chat(model: &str, system: &str, user: &str) -> Result<String, OllamaError> {
     // Caught here rather than at the server: the default config ships with an
     // empty `ollama_model`, so a first run with nothing chosen in Settings
@@ -362,8 +358,8 @@ mod tests {
         assert_eq!(truncate(&text, 10).chars().count(), 11);
     }
 
-    /// The three response shapes the Python tolerated. A server upgrade that
-    /// renames this field must not silently yield "no models installed".
+    /// Every response shape seen from Ollama. A server upgrade that renames
+    /// this field must not silently yield "no models installed".
     #[test]
     fn tag_entries_accept_model_or_name() {
         let parsed: TagsResponse = serde_json::from_str(

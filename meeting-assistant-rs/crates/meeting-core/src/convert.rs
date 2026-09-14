@@ -14,7 +14,8 @@ pub fn to_mono_float(samples: &[f32], channels: u16) -> Vec<f32> {
         return samples.to_vec();
     }
 
-    // Drop a trailing partial frame, as the Python does via its `usable` slice.
+    // Drop a trailing partial frame: an incomplete frame would average fewer
+    // channels than the rest and land as a click.
     samples
         .chunks_exact(channels)
         .map(|frame| frame.iter().sum::<f32>() / channels as f32)
@@ -22,11 +23,8 @@ pub fn to_mono_float(samples: &[f32], channels: u16) -> Vec<f32> {
 }
 
 /// Decode interleaved little-endian PCM16 bytes to mono f32 in [-1, 1).
-/// Port of `pcm16_bytes_to_mono_float`.
-///
-/// Note the divisor is 32768, while [`f32_to_i16`] multiplies by 32767. That
-/// asymmetry exists in the Python today and is deliberate here — see the note
-/// on [`f32_to_i16`].
+/// Note the divisor is 32768, while [`f32_to_i16`] multiplies by 32767. The
+/// asymmetry is deliberate — see the note on [`f32_to_i16`].
 pub fn pcm16_bytes_to_mono_float(data: &[u8], channels: u16) -> Vec<f32> {
     let samples: Vec<f32> = data
         .chunks_exact(2)
@@ -71,9 +69,10 @@ pub fn f32_to_i16(sample: f32) -> i16 {
 ///    boundary. Sample *counts* still come out right, so there is no cumulative
 ///    length drift — and Whisper has evidently tolerated the artifact all along.
 ///
-/// Because of (2), chunk size is part of the output contract. The recorder
-/// re-packetises into 1024-sample units before calling this so that output can
-/// be diffed against the Python app's WAVs.
+/// Because of (2), chunk size is part of the output contract: the same audio
+/// resampled in different-sized pieces does not produce the same bytes. The
+/// recorder re-packetises into 1024-sample units before calling this so the
+/// output is reproducible.
 pub fn resample_mono(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -122,10 +121,10 @@ pub const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
 /// Resample audio for whisper.cpp, low-passing first so nothing aliases.
 ///
-/// # This function has no Python counterpart, and that is the point
+/// # Why this exists at all
 ///
-/// faster-whisper took a *file path* and resampled internally. whisper.cpp does
-/// not: `full()` assumes the slice it is given is already 16 kHz mono. Hand it
+/// whisper.cpp does no resampling of its own: `full()` assumes the slice it is
+/// given is already 16 kHz mono. Hand it
 /// 48 kHz and there is no crash and no error — you get a fluent, confidently
 /// wrong transcript with plausible timestamps. That is Windows risk R2, and it
 /// is the most likely silent-wrong-output bug in the whole port.

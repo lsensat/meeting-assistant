@@ -1,30 +1,25 @@
-//! Translated UI strings. Port of `TEXTS` and `tr()` in `app.py`.
+//! Translated UI strings.
 //!
 //! The catalog is a single JSON file, `i18n.json`, embedded at compile time and
 //! also handed to the frontend through the `get_i18n` command — one source of
 //! truth for both sides rather than a Rust copy and a JavaScript copy that
 //! drift apart.
 //!
-//! # Simplification from the Python
+//! # One namespace, one direction
 //!
-//! `app.py` had four parallel lookup paths: `tr()` over `TEXTS`, plus
-//! `summary_type_display`, `transcription_language_display` and
-//! `language_display` over three separate label dicts, each with its own
-//! `*_from_display` inverse for reading the value back out of a widget.
-//!
-//! Here those labels live in the same flat namespace under `summary_type.*`,
-//! `transcription_language.*` and `app_language.*`, so there is one lookup and
-//! no inverse at all — the UI keeps ids and only ever renders labels. That also
-//! removes the `parse_whisper_value` class of bug, where the selected value had
-//! to be recovered by splitting a display string.
+//! Choice labels live in the same flat namespace as everything else, under
+//! `summary_type.*`, `transcription_language.*` and `app_language.*`. So there
+//! is one lookup and **no inverse**: the UI holds ids and only ever renders
+//! labels, and nothing ever has to recover a value by parsing the text a user
+//! sees. A separate dictionary per group of labels, each needing a reverse
+//! lookup, is how a translated label ends up being stored as a setting.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::config::Language;
 
-/// The generated catalog. Regenerate from `app.py` rather than editing by hand
-/// while the Python original still exists.
+/// The catalog, embedded at compile time.
 const CATALOG_JSON: &str = include_str!("../i18n.json");
 
 type Catalog = HashMap<String, HashMap<String, String>>;
@@ -39,9 +34,10 @@ fn catalog() -> &'static Catalog {
 
 /// Look up a translated string.
 ///
-/// Falls back the same way the Python did: requested language, then English,
-/// then the key itself, so a missing translation degrades to something visible
-/// rather than panicking or blanking the UI.
+/// Falls back requested language, then English, then the key itself, so a
+/// missing translation degrades to something visible rather than panicking or
+/// blanking the UI. A key appearing in the UI is the signal that one is
+/// missing — which is why the tests assert against the key, not against text.
 ///
 /// The result borrows from the key rather than being `'static`, because the
 /// last fallback hands the key straight back; catalog hits are `'static` and
@@ -65,9 +61,8 @@ pub fn tr(language: Language, key: &str) -> &str {
 /// assert_eq!(s, "Summarizing with gemma3:4b...");
 /// ```
 ///
-/// Placeholders with no matching argument are left as-is. The Python caught the
-/// `KeyError` from `str.format` and returned the whole unformatted string; this
-/// substitutes what it can, which is strictly more useful and never worse.
+/// Placeholders with no matching argument are left as-is: substituting what is
+/// available beats discarding the whole string because one name was wrong.
 pub fn tr_args(language: Language, key: &str, args: &[(&str, &str)]) -> String {
     let template = tr(language, key);
 
@@ -242,7 +237,8 @@ mod tests {
 
     #[test]
     fn app_language_labels_are_endonyms() {
-        // Shown the same whichever language the UI is in, as in the Python.
+        // Shown the same whichever language the UI is in: someone who cannot
+        // read the current language has to be able to find their own.
         for language in [Language::En, Language::Es] {
             assert_eq!(tr(language, "app_language.en"), "English");
             assert_eq!(tr(language, "app_language.es"), "Español");

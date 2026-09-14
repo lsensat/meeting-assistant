@@ -1,12 +1,12 @@
-//! Audio-device selection policy. Port of `audio_policy.py`.
+//! Audio-device selection policy.
 //!
 //! No audio backend is referenced here, so the selection logic is testable
-//! without real hardware — same rationale as the Python module's docstring.
+//! without real hardware — which matters because the interesting cases are
+//! devices disappearing mid-recording.
 //!
-//! The one structural change from Python: devices are keyed by a string `id`
-//! rather than a PortAudio integer index. PortAudio indices renumber on
-//! hotplug, which is exactly when this code runs; cpal's `DeviceId` is stable.
-//! Tests pass stringified integers so they read like the Python originals.
+//! Devices are keyed by a string `id` rather than a positional index. Indices
+//! renumber on hotplug, which is exactly when this code runs; cpal's `DeviceId`
+//! is stable. Tests pass stringified integers, which is only a convenience.
 
 /// Substrings that mark a built-in microphone. Preferred over arbitrary inputs
 /// when the configured and default devices are both unavailable.
@@ -86,8 +86,8 @@ fn unique_by_id(devices: Vec<&Device>) -> Vec<Device> {
     result
 }
 
-/// Port of `_find_by_name`. An empty name never matches, mirroring Python's
-/// `if not name: return None` — otherwise a device with an empty name would.
+/// An empty name never matches. Without that guard, a device that reports an
+/// empty name would match a configuration that names nothing at all.
 fn find_by_name<'a>(devices: &'a [Device], name: &str) -> Option<&'a Device> {
     if name.is_empty() {
         return None;
@@ -102,8 +102,8 @@ fn find_by_id<'a>(devices: &'a [Device], id: Option<&str>) -> Option<&'a Device>
 }
 
 /// Build the ordered preference list, shared by both the mic and system paths.
-/// They differ only in which substrings get promoted, so Python's two
-/// near-identical functions collapse into one here.
+/// They differ only in which substrings get promoted, which is not enough to
+/// justify two near-identical copies of the ordering rules.
 fn ordered_candidates(
     devices: &[Device],
     selected_name: &str,
@@ -159,9 +159,10 @@ pub fn ordered_system_candidates(
 /// Outcome of a failover decision.
 ///
 /// `changed` drives the UI's "(automatic)" suffix: it means the recorder is on
-/// a device the user did not pick. Note the Python quirk this preserves — when
-/// no device at all is available, `changed` is `true` only if we *had* a device
-/// before, so a meeting that never acquired one does not claim it fell back.
+/// a device the user did not pick. One subtlety worth keeping — when no device
+/// at all is available, `changed` is `true` only if we *had* a device before, so
+/// a meeting that never acquired one does not claim it fell back from
+/// something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failover {
     pub device: Option<Device>,

@@ -10,16 +10,18 @@
 /// * `completed_duration` — total duration of tracks already finished
 /// * `total_duration` — duration of all tracks combined
 ///
-/// The final `round` is round-half-to-even to match Python's `round()`. With
-/// `f64::round` instead, the 62.5% case in the ported tests would give 63.
+/// The final `round` is round-half-to-even, which is why `round_ties_even` and
+/// not `f64::round`: the exact-half cases sit right where a progress bar is read
+/// most closely, and one of them is covered below.
 pub fn transcription_percent(
     position_seconds: f64,
     track_duration: f64,
     completed_duration: f64,
     total_duration: f64,
 ) -> u8 {
-    // Python coerces via float() inside a try/except and returns 0 on garbage.
-    // Rust's type system rules out most of that; NaN is the remaining case.
+    // The type system rules out most bad input here. NaN is what it does not:
+    // it propagates silently through the arithmetic and comes out as a
+    // nonsensical percentage, so it is refused up front.
     if [
         position_seconds,
         track_duration,
@@ -81,8 +83,8 @@ mod tests {
         // First track 30 s, second 90 s.
         assert_eq!(transcription_percent(30.0, 30.0, 0.0, 120.0), 25);
 
-        // 75/120 = 62.5%. Python's banker's rounding gives 62, not 63.
-        // This case is why round_ties_even is used throughout.
+        // 75/120 = 62.5%, an exact half. Round-half-to-even gives 62; plain
+        // rounding gives 63. This case is why `round_ties_even` is used.
         assert_eq!(transcription_percent(45.0, 90.0, 30.0, 120.0), 62);
     }
 

@@ -157,12 +157,12 @@ export const startOllama = () => invoke("start_ollama");
 /** Open an external URL in the default browser. */
 export const openUrl = (url) => opener.openUrl(url);
 
-/** Native folder picker, replacing the Python's `filedialog`. */
+/** Native folder picker. */
 export const browseFolder = () => open({ directory: true, multiple: false });
 
 /**
- * The eleven events, one-to-one with the Python's queue tags so behaviour can
- * be diffed against the original.
+ * Every event the backend can send. One list, so a name cannot be invented at
+ * either end and silently never fire.
  */
 export const EVENTS = {
   configChanged: "config_changed",

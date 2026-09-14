@@ -60,10 +60,10 @@ async function populateLanguages() {
 async function populateWhisper() {
   const models = await api.listWhisperModels();
 
-  // The id and the display label are kept apart on purpose. The Python stored
-  // the display string and re-parsed it with `parse_whisper_value`, splitting
-  // on whitespace to strip the suffix (`app.py:731`) — which breaks the moment
-  // a label contains a space.
+  // The id and the display label are kept apart on purpose. Storing the label
+  // and parsing the id back out of it — splitting on whitespace to strip a size
+  // suffix, say — breaks the moment a label contains a space, and labels are
+  // translated.
   fillSelect(
     el("whisper-model"),
     models.map((model) => ({
@@ -230,9 +230,9 @@ async function populateOllama() {
 
   if (!status.running) {
     note.textContent = tr("ollama_not_responding");
-    // No sentinel option. The Python put "No models installed" into the select
-    // and `write_config` then persisted that string verbatim as the model name
-    // (deferred fix #7); an empty select cannot do that.
+    // No sentinel option. A placeholder like "No models installed" is a value
+    // the select can return, and saving then persists that sentence verbatim as
+    // the model name. An empty select cannot do that.
     fillSelect(el("ollama-model"), [], "");
     return;
   }
@@ -376,9 +376,9 @@ function collect(base) {
 }
 
 function wire() {
-  // A live language switch re-renders every label and every option list. In the
-  // Python this was 154 hand-written lines; here the option lists are the only
-  // part that is not covered by the `[data-i18n]` walk.
+  // A live language switch re-renders every label and every option list. The
+  // option lists are the only part not covered by the `[data-i18n]` walk, so
+  // they are the only part written out here.
   el("app-language").addEventListener("change", async () => {
     setLanguage(el("app-language").value);
     config = collect(config);

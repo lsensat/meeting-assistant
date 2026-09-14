@@ -1,5 +1,4 @@
-//! Mono 48 kHz PCM16 track writer. Port of the `sf.SoundFile` usage in
-//! `record_microphone` / `record_system_audio` (`app.py:1493`, `1676`).
+//! Mono 48 kHz PCM16 track writer.
 //!
 //! Every track is written at [`TARGET_SAMPLE_RATE`] regardless of what the
 //! device runs at, so the two files are always directly comparable and the
@@ -72,8 +71,8 @@ impl TrackWriter {
     /// Append mono samples already resampled to [`TARGET_SAMPLE_RATE`].
     ///
     /// Conversion goes through [`f32_to_i16`], which scales by 32767 to match
-    /// libsndfile. Do not inline a different scale factor here — the byte-diff
-    /// parity test against the Python app's WAVs depends on it.
+    /// libsndfile. Do not inline a different scale factor here: the tests
+    /// compare written bytes exactly, and 32768 would clip full-scale samples.
     pub fn write_samples(&mut self, samples: &[f32]) -> Result<(), WavError> {
         for &sample in samples {
             self.writer
@@ -110,8 +109,12 @@ impl TrackWriter {
         &self.path
     }
 
-    /// Flush and patch the RIFF header. Must be called before the containing
-    /// folder is renamed — see the ordering note at `app.py:2221-2237`.
+    /// Flush and patch the RIFF header.
+    ///
+    /// Must be called before the containing folder is renamed: renaming a
+    /// directory out from under an open file handle leaves the header
+    /// unfinalised, and the file then claims to hold no audio at all. See
+    /// [`repair_unfinalised`] for what that costs afterwards.
     pub fn finalize(self) -> Result<u64, WavError> {
         let frames = self.frames;
         self.writer.finalize().map_err(WavError::Finalize)?;

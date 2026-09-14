@@ -1,11 +1,9 @@
 //! The IPC surface: 14 commands and 11 events.
 //!
-//! Events are deliberately one-to-one with the Python's queue tags
-//! (`app.py`'s `messages.put((tag, payload))`) so the port can be diffed
-//! against current behaviour rather than guessed at.
-//!
-//! `queue.Queue` plus `root.after(100, poll_messages)` becomes `app.emit()`;
-//! the flow is still strictly one-way, worker → UI.
+//! Every event is emitted by the backend and consumed by a window: the flow is
+//! strictly one-way, worker → UI. Nothing here reads UI state back, which is
+//! what lets a worker thread run without touching anything the user is
+//! interacting with.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -198,9 +196,9 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
     std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
     std::fs::write(&state.config_file, parsed.to_json()).map_err(|e| e.to_string())?;
 
-    // Replace wholesale rather than mutating field by field. The Python did
-    // `config.clear()` then `update()` while worker threads read the same dict
-    // (deferred fix #2); here the lock makes the swap atomic.
+    // Replace wholesale rather than mutating field by field: clearing and
+    // repopulating in place would let a worker thread read a half-written
+    // config. The lock makes the swap atomic.
     *state.config.lock().expect("config poisoned") = parsed;
 
     // The tray menu bakes in the language and the selected devices, and unlike
@@ -1087,11 +1085,10 @@ fn permitted_url(url: &str) -> Option<&str> {
 
 // --- startup -----------------------------------------------------------
 
-/// The startup probe. Port of the checks around `app.py:894-911`.
+/// The startup probe.
 ///
 /// Runs off the UI thread because reaching Ollama can block for seconds when it
-/// is cold — the Python's version blocked in a thread that was never joined or
-/// cancelled on quit (deferred fix #10).
+/// is cold, and the window must be usable while that happens.
 #[tauri::command]
 pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let config = state.config_snapshot();
@@ -1144,10 +1141,9 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         emit_status("checking_ollama");
             let status = list_ollama_models();
 
-            // The Python auto-started Ollama when it was installed but not
-            // running, then told the user to reopen the app if it had to
-            // (`app.py:200`). Reopening is no longer the remedy: this waits for
-            // it properly, and the main window offers a retry if it still fails.
+            // Ollama is started when it is installed but not running, and
+            // then waited for properly rather than asking the user to reopen
+            // the app. The main window offers a retry if it still fails.
             if !status.running && ollama_installed && platform::start_ollama().is_ok() {
                 wait_for_ollama()
             } else {
@@ -1787,8 +1783,8 @@ fn assess_capture(
 /// Separate from stopping on purpose. The two used to be one command taking the
 /// title, which meant capture continued for as long as the title dialog was
 /// open — recording the user typing a name onto the end of the meeting, with
-/// the timer still counting up. The Python has the same split: `stop_event.set()`
-/// fires before `simpledialog.askstring` (`app.py:3958` vs `3968`).
+/// the timer still counting up — the recording has to end when the user says
+/// so, not when they have finished naming it.
 #[tauri::command]
 pub fn finalize_meeting(
     app: AppHandle,
@@ -2242,7 +2238,7 @@ pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(
 }
 
 
-/// `YYYY-MM-DD_HH-MM-SS` in **local** time, matching the Python's folder naming.
+/// `YYYY-MM-DD_HH-MM-SS` in **local** time.
 ///
 /// # Why this is local and the timings below are not
 ///

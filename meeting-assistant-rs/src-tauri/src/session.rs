@@ -1,7 +1,7 @@
 //! A recording session: both tracks, started together and stopped together.
 //!
-//! Port of the thread setup in `start_recording` (`app.py:4300`-ish) and the
-//! teardown in `stop_recording`.
+//! Both tracks are started from one place and stopped from one place, so
+//! neither can outlive the other.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -202,9 +202,8 @@ impl RecordingSession {
     ///
     /// The single `Instant::now()` here is passed to both recorders. Stamping
     /// it once, before either thread is spawned, is what makes the two files
-    /// share a common origin: the Python stamps a separate `start_times` entry
-    /// inside each thread, so thread-spawn jitter lands directly in the
-    /// alignment between the tracks.
+    /// share a common origin. Stamping it inside each thread instead would put
+    /// thread-spawn jitter directly into the alignment between the tracks.
     /// `muted` is owned by the caller and outlives the session, so a mute set
     /// before recording starts is already in force on the first sample.
     pub fn start(
@@ -290,9 +289,8 @@ impl RecordingSession {
     /// Signal both threads and wait for them to finish writing.
     ///
     /// Both WAVs are closed by the time this returns. Any folder rename must
-    /// happen *after* this call — the Python has an explicit comment saying so
-    /// at `app.py:2221-2237`, because renaming with the files still open leaves
-    /// a truncated RIFF header behind.
+    /// happen *after* this call: renaming with the files still open leaves a
+    /// truncated RIFF header behind, and a file whose header says it is empty.
     pub fn stop(self) -> SessionSummary {
         self.stop.set();
 
