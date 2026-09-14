@@ -432,6 +432,41 @@ mod adopt_tests {
         w.finalize().expect("finalize");
     }
 
+    /// A stage written mid-run survives a kill, which is the point of writing it.
+    ///
+    /// `set_stage` alone is display state and dies with the process; this checks
+    /// the pair that `commands.rs` uses — read the job, write what it says — so
+    /// a meeting killed while transcribing comes back saying `whisper` rather
+    /// than `queued`, and the pipeline resumes rather than starting over.
+    #[test]
+    fn a_stage_written_mid_run_is_on_disk_for_the_next_launch() {
+        let root = std::env::temp_dir().join(format!("ma-stage-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let folder = root.join("2026-09-14_17-00-00");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+
+        let mut state =
+            MeetingState::new("2026-09-14_17-00-00".into(), String::new(), serde_json::Value::Null);
+        state.mic_offset_seconds = 12.5;
+        save(&folder, &state).expect("save");
+
+        let queue = Queue::new();
+        queue.absorb(vec![(folder.clone(), state)]);
+        queue.set_stage("2026-09-14_17-00-00", Stage::Whisper);
+
+        let job = queue.job("2026-09-14_17-00-00").expect("job");
+        save(&job.folder, &job.state).expect("save");
+
+        let reloaded = load(&folder).expect("state");
+        assert_eq!(reloaded.stage, Stage::Whisper, "the stage reached the disk");
+        assert_eq!(
+            reloaded.mic_offset_seconds, 12.5,
+            "and took the resume point with it, rather than resetting the meeting"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The case the state-at-start file exists for: the app died mid-recording
     /// and said so on disk.
     ///
@@ -1123,6 +1158,15 @@ impl Queue {
         inner.percent = 0;
         *self.control.lock().expect("control poisoned") = TranscriptionControl::new();
         Some(job)
+    }
+
+    /// A copy of one job, for a caller that needs to write it to disk.
+    ///
+    /// Returns a clone rather than a reference so the queue lock is released
+    /// before the caller touches the filesystem: a `save` under this lock would
+    /// stall every other reader of the queue for the length of a disk write.
+    pub fn job(&self, id: &str) -> Option<Job> {
+        self.lock().jobs.iter().find(|j| j.state.id == id).cloned()
     }
 
     /// The running job's handle, for polling progress from another thread.

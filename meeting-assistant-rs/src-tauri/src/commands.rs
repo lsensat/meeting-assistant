@@ -2015,6 +2015,28 @@ fn run_job(
                     Stage::Summary => queue::Stage::Summary,
                 },
             );
+            // And onto disk, not just into the queue's memory.
+            //
+            // `set_stage` above is display state: it drives the card and is
+            // gone if the process dies. Writing it here means `meeting.json`
+            // says what the meeting was *doing* — transcribing, summarising —
+            // rather than what it was doing when it was enqueued, so a crash
+            // mid-run leaves a file that says where to pick up instead of one
+            // that says "waiting".
+            //
+            // The folder may have been renamed by the audio stage, so the
+            // renamed path wins when there is one.
+            if let Some(job) = queue_for_stage.job(&stage_id) {
+                let folder = renamed_sink
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+                    .unwrap_or(job.folder);
+                if let Err(e) = queue::save(&folder, &job.state) {
+                    eprintln!("[queue] could not record the stage of {stage_id}: {e}");
+                }
+            }
+
             queue_for_stage.set_percent(match stage {
                 Stage::Audio => PERCENT_AUDIO,
                 Stage::Whisper => PERCENT_WHISPER_START,
