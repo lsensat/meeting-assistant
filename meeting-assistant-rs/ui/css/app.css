@@ -1359,7 +1359,15 @@ input[type="password"] { cursor: text; }
   transition: background-color 120ms ease;
 }
 
-.library-row:hover { background: var(--panel-recess); }
+/* Ink and surface move together, always.
+   Hover lit the row up without touching the text, leaving cream on `#C7CAC9`:
+   the row you were pointing at was the one you could not read. `.is-selected`
+   below has always paired them; this is the same pairing, and the third time
+   this exact mistake has been made in this file. */
+.library-row:hover {
+  background: var(--panel-recess);
+  color: var(--ink);
+}
 
 .library-row.is-selected {
   background: var(--panel);
