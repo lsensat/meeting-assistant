@@ -60,6 +60,22 @@ impl Stage {
     pub fn is_outstanding(self) -> bool {
         matches!(self, Self::Queued | Self::Audio | Self::Whisper | Self::Summary)
     }
+
+    /// Whether this meeting still belongs in the list at all.
+    ///
+    /// Wider than [`is_outstanding`](Self::is_outstanding), and the difference
+    /// is `Failed`. A failure must not be *run* again on its own — that is what
+    /// `is_outstanding` guarantees, and `Queue::dispatch` is where it is
+    /// enforced — but it must still be **visible**, because the row carries the
+    /// error and the retry button, and the audio is still on disk.
+    ///
+    /// `scan` used to reuse `is_outstanding`, so a failed meeting vanished from
+    /// the list at the next launch: the retry it was kept for became
+    /// unreachable, and to the user the meeting had simply been forgotten.
+    /// Discarding one deletes its folder, so a dismissed failure stays gone.
+    pub fn belongs_in_the_queue(self) -> bool {
+        !matches!(self, Self::Done)
+    }
 }
 
 /// How long each stage of the pipeline took.
@@ -288,15 +304,20 @@ pub struct MeetingFolder {
     pub state: Option<MeetingState>,
 }
 
-/// Every meeting under `output_folder` that still has work outstanding.
+/// Every meeting under `output_folder` that is not finished.
 ///
 /// Oldest first, so a backlog is worked through in the order it was recorded.
+///
+/// Includes meetings that **failed**: they are not work the queue will pick up
+/// by itself — `Queue::dispatch` only ever takes an outstanding stage — but they
+/// are work the user may still want to retry, and leaving them out meant they
+/// disappeared from the app at the next launch with their audio still on disk.
 pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
     walk(output_folder)
         .into_iter()
         .filter_map(|found| {
             let mut state = found.state?;
-            if !state.stage.is_outstanding() {
+            if !state.stage.belongs_in_the_queue() {
                 return None;
             }
 
@@ -315,6 +336,66 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
             Some((found.path, state))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    /// A failed meeting survives a restart; a finished one does not come back.
+    ///
+    /// The pairing is the point. `scan` feeds the list at startup, and it used
+    /// to drop anything that was not outstanding — which took `Failed` with it,
+    /// so the error and its retry button were gone at the next launch while the
+    /// audio sat on disk. `Queue::dispatch` is what stops a failure being *run*
+    /// again, and it is unchanged.
+    #[test]
+    fn a_failed_meeting_is_still_listed_after_a_restart() {
+        let root = std::env::temp_dir().join(format!("ma-scan-failed-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+
+        for (id, stage) in [
+            ("2026-09-14_16-15-39", Stage::Failed),
+            ("2026-09-14_16-01-49", Stage::Queued),
+            ("2026-09-14_15-57-46", Stage::Done),
+        ] {
+            let folder = root.join(id);
+            std::fs::create_dir_all(&folder).expect("mkdir");
+            let mut state = MeetingState::new(id.into(), String::new(), serde_json::Value::Null);
+            state.stage = stage;
+            if stage == Stage::Failed {
+                state.error = Some("No speech was detected in the recording.".into());
+            }
+            save(&folder, &state).expect("save");
+        }
+
+        let found: Vec<(String, Stage)> = scan(&root)
+            .into_iter()
+            .map(|(_, s)| (s.id, s.stage))
+            .collect();
+
+        assert!(
+            found.contains(&("2026-09-14_16-15-39".into(), Stage::Failed)),
+            "a failure must survive a restart so it can be retried: {found:?}"
+        );
+        assert!(found.contains(&("2026-09-14_16-01-49".into(), Stage::Queued)));
+        assert!(
+            !found.iter().any(|(_, stage)| *stage == Stage::Done),
+            "a finished meeting is not queue work: {found:?}"
+        );
+
+        // And the worker still refuses to run the failure by itself.
+        let queue = Queue::new();
+        queue.absorb(scan(&root));
+        let dispatched = queue.try_next();
+        assert_eq!(
+            dispatched.map(|j| j.state.id),
+            Some("2026-09-14_16-01-49".to_string()),
+            "only the outstanding meeting may run"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
 
 #[cfg(test)]
@@ -492,8 +573,16 @@ mod tests {
         assert!(dir.join(STATE_FILENAME).exists());
     }
 
+    /// Everything unfinished, which now includes failures.
+    ///
+    /// This test used to assert that `Failed` was skipped, on the reasoning that
+    /// a failure must not be retried automatically. That reasoning is sound and
+    /// unchanged — but it is `Queue::dispatch` that enforces it, not this. The
+    /// cost of enforcing it here as well was that a failed meeting disappeared
+    /// from the app at the next launch, taking its error and its retry button
+    /// with it, while its audio stayed on disk. A user reported exactly that.
     #[test]
-    fn the_scan_returns_only_outstanding_meetings() {
+    fn the_scan_returns_every_unfinished_meeting_including_failures() {
         let root = temp_dir("scan");
         meeting(&root, "2026-09-07_09-00-00", Stage::Done);
         meeting(&root, "2026-09-07_10-00-00", Stage::Queued);
@@ -501,7 +590,15 @@ mod tests {
         meeting(&root, "2026-09-07_12-00-00", Stage::Failed);
 
         let ids: Vec<String> = scan(&root).into_iter().map(|(_, s)| s.id).collect();
-        assert_eq!(ids, ["2026-09-07_10-00-00", "2026-09-07_11-00-00"]);
+        assert_eq!(
+            ids,
+            [
+                "2026-09-07_10-00-00",
+                "2026-09-07_11-00-00",
+                "2026-09-07_12-00-00"
+            ],
+            "the finished meeting is out; the failed one stays"
+        );
     }
 
     #[test]
