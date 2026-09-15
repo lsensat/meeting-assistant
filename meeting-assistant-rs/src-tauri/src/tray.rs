@@ -291,13 +291,24 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
     match id.as_str() {
         ID_START => {
-            let state = app.state::<AppState>();
             // Start needs no input, so unlike Finalize it can act directly.
             // Errors would otherwise be invisible with the window closed.
-            if let Err(e) = crate::commands::start_recording(app.clone(), state) {
-                let _ = app.emit(crate::commands::EV_ERROR, e);
-                show_window(app);
-            }
+            //
+            // On its own thread, because this is NOT the IPC path: the menu
+            // handler calls the command as a plain Rust function, so the
+            // `#[tauri::command(async)]` that moves the window's start onto a
+            // pool thread does nothing here. Left inline, the tray would be the
+            // one remaining way to freeze the app for the half-second a device
+            // open takes — and it would do it while holding the lifecycle lock,
+            // so a stop from the window would queue behind it.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<AppState>();
+                if let Err(e) = crate::commands::start_recording(app.clone(), state) {
+                    let _ = app.emit(crate::commands::EV_ERROR, e);
+                    show_window(&app);
+                }
+            });
         }
         // Finalize and Cancel need a title and a confirmation respectively, and
         // a native menu can collect neither. Show the window and let it run the

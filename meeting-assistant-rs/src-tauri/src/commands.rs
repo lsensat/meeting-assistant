@@ -1268,8 +1268,17 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
 
 // --- recording ---------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // Before the check, and for the whole body.
+    //
+    // The check below and the assignment that installs the session are about
+    // ninety lines apart, so without this two starts both pass it and the second
+    // overwrites the first — detaching writer threads onto a WAV nobody will
+    // ever close. Running on the main thread used to make that impossible;
+    // `(async)` above is what takes that away, and this is what replaces it.
+    let _lifecycle = state.lifecycle_guard();
+
     if state.is_recording() {
         return Err("already recording".into());
     }
@@ -1277,7 +1286,7 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 
     // One folder per meeting, named for when it started. The user's optional
     // title is appended later, after the WAVs close — see `pipeline::run`.
-    let folder = config.output_folder.join(timestamp_folder_name());
+    let folder = unused_meeting_folder(&config.output_folder, &timestamp_folder_name());
 
     let session = RecordingSession::start(
         &folder,
@@ -1657,8 +1666,14 @@ pub fn elapsed_seconds(state: State<AppState>) -> f64 {
 /// The session is stopped first, and only then is anything removed: deleting a
 /// directory out from under two open WAV writers is exactly the corruption the
 /// rename ordering elsewhere exists to avoid.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // `.take()` below is already a compare-and-swap, so two cancels cannot both
+    // get the session. The guard is here for the pairs it does not cover — a
+    // cancel arriving mid-start, whose `remove_dir_all` would then be racing the
+    // folder the start is still writing into.
+    let _lifecycle = state.lifecycle_guard();
+
     let session = state
         .session
         .lock_recover()
@@ -1735,8 +1750,12 @@ fn clear_mute_after_recording(app: &AppHandle, state: &State<AppState>) {
 ///
 /// Returns as soon as the audio is closed; the rest is reported through
 /// `stage`, `status`, `complete` and `error`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // Joins both writer threads, so this is the command that most needed to
+    // leave the main thread and the one that must not overlap a start.
+    let _lifecycle = state.lifecycle_guard();
+
     let session = state
         .session
         .lock_recover()
@@ -1910,12 +1929,18 @@ fn assess_capture(
 /// open — recording the user typing a name onto the end of the meeting, with
 /// the timer still counting up — the recording has to end when the user says
 /// so, not when they have finished naming it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finalize_meeting(
     app: AppHandle,
     meeting_title: String,
     state: State<AppState>,
 ) -> Result<(), String> {
+    // Takes `pending` rather than `session`, so it races nothing the other three
+    // touch — but it renames the meeting folder, and a start that picked the
+    // same second would be writing into a folder this is moving out from under
+    // it. Cheap to hold, and it keeps all four on one rule.
+    let _lifecycle = state.lifecycle_guard();
+
     let summary = state
         .pending
         .lock_recover()
@@ -2385,6 +2410,44 @@ fn timestamp_folder_name() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
+/// `root/name`, or the first `root/name-N` that does not exist.
+///
+/// # Why a name that is already taken is a hazard and not an inconvenience
+///
+/// The folder name is second-granular, so two meetings started inside the same
+/// second want the same directory. The lifecycle guard makes that unreachable
+/// through the UI, but the consequence is severe enough that it should not
+/// depend on a lock held somewhere else: a meeting folder is what
+/// `cancel_recording` hands to `remove_dir_all`, so cancelling one of a
+/// colliding pair would delete the other one's audio while it was still being
+/// written.
+///
+/// The suffix is only ever reached on a collision, so the name stays exactly as
+/// it was for every real meeting — which matters because this string is also the
+/// library id and the id recorded in `meeting.json`.
+///
+/// Racy in principle, in that another process could create the folder between
+/// the check and the use. Nothing else writes here, and a second instance is
+/// already prevented; the point is to stop two meetings sharing a name, not to
+/// win a race with something that does not exist.
+fn unused_meeting_folder(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = root.join(name);
+    if !first.exists() {
+        return first;
+    }
+
+    // Bounded: a hundred meetings in one second is not a case worth serving, and
+    // an unbounded loop here would hang a start rather than fail it.
+    for n in 2..100 {
+        let candidate = root.join(format!("{name}-{n}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    first
+}
+
 /// `YYYY-MM-DDTHH:MM:SS`, **UTC**, for the stage timings in `meeting.json`.
 ///
 /// Deliberately not local, and the opposite choice from the folder name above.
@@ -2408,6 +2471,36 @@ mod tests {
         std::fs::create_dir_all(root.join("meeting")).expect("mkdir");
         std::fs::write(root.join("meeting/summary.md"), b"x").expect("write");
         root
+    }
+
+    #[test]
+    fn an_unused_meeting_name_is_taken_as_it_is() {
+        let root = std::env::temp_dir().join(format!("ma-folder-free-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+
+        assert_eq!(
+            unused_meeting_folder(&root, "2026-01-01_09-00-00"),
+            root.join("2026-01-01_09-00-00"),
+            "an unused name must not be decorated — it is also the library id"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Two meetings inside one second would otherwise share a directory, and
+    /// cancelling either would `remove_dir_all` the other's audio.
+    #[test]
+    fn a_taken_meeting_name_steps_aside() {
+        let root = std::env::temp_dir().join(format!("ma-folder-taken-{}", std::process::id()));
+        let name = "2026-01-01_09-00-00";
+        std::fs::create_dir_all(root.join(name)).expect("mkdir");
+
+        assert_eq!(unused_meeting_folder(&root, name), root.join(format!("{name}-2")));
+
+        std::fs::create_dir_all(root.join(format!("{name}-2"))).expect("mkdir");
+        assert_eq!(unused_meeting_folder(&root, name), root.join(format!("{name}-3")));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
