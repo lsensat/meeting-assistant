@@ -340,7 +340,8 @@ mod platform {
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{eCapture, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE};
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        STGM_READ,
     };
     // `Win32::Foundation`, not `UI::Shell::PropertiesSystem` where the rest of
     // the property-store API lives. Wrong in the first draft, and caught by
@@ -443,71 +444,96 @@ mod platform {
             )
         });
 
-        // SAFETY: each call below is a documented COM call whose arguments are
-        // live for its duration; failures come back as `Err`, not as UB.
-        unsafe {
-            let enumerator: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+        // Every **successful** `CoInitializeEx` has to be balanced by one
+        // `CoUninitialize` on the same thread, and `S_FALSE` counts as success:
+        // it means this call incremented the apartment's reference count, same
+        // as `S_OK`, and only the count differs. `RPC_E_CHANGED_MODE` is a
+        // failure code — the apartment belongs to whoever established it, and
+        // tearing it down from here would break COM for everything else on the
+        // thread, which on a main thread is the windowing layer.
+        //
+        // `HRESULT::is_ok` is exactly that split: `S_OK` and `S_FALSE` are
+        // non-negative, `RPC_E_CHANGED_MODE` is not.
+        let owned = hr.is_ok();
+
+        // The body runs in a closure so its `?`s cannot skip the balancing call
+        // below. Returning early past a `CoUninitialize` is the standard way
+        // this gets got wrong.
+        let result = (|| {
+            // SAFETY: each call below is a documented COM call whose arguments
+            // are live for its duration; failures come back as `Err`, not as UB.
+            unsafe {
+                let enumerator: IMMDeviceEnumerator =
+                    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                        .map_err(|e| MuteError::Failed(e.to_string()))?;
+
+                let collection = enumerator
+                    .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
                     .map_err(|e| MuteError::Failed(e.to_string()))?;
 
-            let collection = enumerator
-                .EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)
-                .map_err(|e| MuteError::Failed(e.to_string()))?;
+                let count = collection
+                    .GetCount()
+                    .map_err(|e| MuteError::Failed(e.to_string()))?;
 
-            let count = collection
-                .GetCount()
-                .map_err(|e| MuteError::Failed(e.to_string()))?;
+                // Collect the names first, then let the shared matcher choose, so
+                // the same rules apply here as on macOS instead of two hand-rolled
+                // comparisons drifting apart.
+                let mut endpoints: Vec<(u32, String)> = Vec::new();
+                for i in 0..count {
+                    let Ok(device) = collection.Item(i) else {
+                        continue;
+                    };
+                    let Ok(store) = device.OpenPropertyStore(STGM_READ) else {
+                        continue;
+                    };
+                    let Ok(value) = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME) else {
+                        continue;
+                    };
+                    endpoints.push((i, value.to_string()));
+                }
 
-            // Collect the names first, then let the shared matcher choose, so
-            // the same rules apply here as on macOS instead of two hand-rolled
-            // comparisons drifting apart.
-            let mut endpoints: Vec<(u32, String)> = Vec::new();
-            for i in 0..count {
-                let Ok(device) = collection.Item(i) else {
-                    continue;
+                let names: Vec<String> = endpoints.iter().map(|(_, n)| n.clone()).collect();
+                let Some(index) = meeting_core::config::match_saved_device_name(name, &names) else {
+                    // What was on the machine, not just what was wanted.
+                    //
+                    // "no input device named X" reads the same whether the device
+                    // was absent or the enumeration came back empty — and those
+                    // call for opposite fixes. A Windows run produced exactly that
+                    // message and the two could not be told apart afterwards.
+                    return Err(MuteError::NoSuchDevice(format!(
+                        "{name}; {} active capture endpoint(s) seen: {}",
+                        names.len(),
+                        if names.is_empty() {
+                            "none".to_string()
+                        } else {
+                            names
+                                .iter()
+                                .map(|n| format!("{n:?}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    )));
                 };
-                let Ok(store) = device.OpenPropertyStore(STGM_READ) else {
-                    continue;
-                };
-                let Ok(value) = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME) else {
-                    continue;
-                };
-                endpoints.push((i, value.to_string()));
+
+                let device = collection
+                    .Item(endpoints[index].0)
+                    .map_err(|e| MuteError::Failed(e.to_string()))?;
+
+                let volume: IAudioEndpointVolume = device
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| MuteError::Unsupported(format!("{name}: {e}")))?;
+
+                f(&volume)
             }
+        })();
 
-            let names: Vec<String> = endpoints.iter().map(|(_, n)| n.clone()).collect();
-            let Some(index) = meeting_core::config::match_saved_device_name(name, &names) else {
-                // What was on the machine, not just what was wanted.
-                //
-                // "no input device named X" reads the same whether the device
-                // was absent or the enumeration came back empty — and those
-                // call for opposite fixes. A Windows run produced exactly that
-                // message and the two could not be told apart afterwards.
-                return Err(MuteError::NoSuchDevice(format!(
-                    "{name}; {} active capture endpoint(s) seen: {}",
-                    names.len(),
-                    if names.is_empty() {
-                        "none".to_string()
-                    } else {
-                        names
-                            .iter()
-                            .map(|n| format!("{n:?}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                )));
-            };
-
-            let device = collection
-                .Item(endpoints[index].0)
-                .map_err(|e| MuteError::Failed(e.to_string()))?;
-
-            let volume: IAudioEndpointVolume = device
-                .Activate(CLSCTX_ALL, None)
-                .map_err(|e| MuteError::Unsupported(format!("{name}: {e}")))?;
-
-            f(&volume)
+        if owned {
+            // SAFETY: balancing the successful CoInitializeEx above, on the
+            // same thread, with every COM object from it already dropped.
+            unsafe { CoUninitialize() };
         }
+
+        result
     }
 }
 
