@@ -107,6 +107,10 @@ pub struct AppState {
     /// There is no UI at `setup` time, so the outcome parks here and
     /// `startup_check` emits it once somebody can read it.
     pub startup_mute_restore: Mutex<Option<String>>,
+    /// Serialises `start_recording`, `stop_recording`, `cancel_recording` and
+    /// `finalize_meeting` against one another. Guards nothing; the lock itself
+    /// is the point. See [`AppState::lifecycle_guard`].
+    lifecycle: Mutex<()>,
 }
 
 impl AppState {
@@ -122,7 +126,40 @@ impl AppState {
             pending: Mutex::new(None),
             meeting_log: Mutex::new(None),
             startup_mute_restore: Mutex::new(None),
+            lifecycle: Mutex::new(()),
         }
+    }
+
+    /// Hold this for the whole body of a lifecycle command.
+    ///
+    /// # What it is replacing
+    ///
+    /// The four lifecycle commands are serialised today by an accident of
+    /// dispatch: they are plain `#[tauri::command]`, so Tauri runs them on the
+    /// main thread, one at a time. Nothing in the code says so, and moving any
+    /// of them to `(async)` — which they need, because they join writer threads,
+    /// open audio devices and delete multi-gigabyte folders — silently removes
+    /// it.
+    ///
+    /// What that would expose is a real gap rather than a theoretical one.
+    /// `start_recording` asks `is_recording()`, then does around ninety lines of
+    /// fallible work, and only then installs the session. Two starts that both
+    /// pass the check both reach the assignment, and the second overwrites the
+    /// first. `RecordingSession` has no `Drop` and `stop()` consumes `self`, so
+    /// the overwritten one is simply dropped: its writer threads detach and keep
+    /// running against a WAV whose header is never fixed up, holding the audio
+    /// device. That is a lost meeting, and a meeting cannot be recorded twice.
+    ///
+    /// So the serialisation becomes explicit and keeps exactly the shape it has
+    /// now — strictly no weaker than the status quo, which is the property worth
+    /// having when the thing being protected is unrepeatable.
+    ///
+    /// Deliberately a plain `Mutex<()>` rather than a try-lock: a second caller
+    /// should wait and then be told "already recording" by the check inside,
+    /// which is what happens today. It is also not a state machine; that is the
+    /// better long-term shape and a much larger change than this earns.
+    pub fn lifecycle_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lifecycle.lock_recover()
     }
 
     /// A copy of the current settings.
@@ -195,5 +232,91 @@ impl AppState {
         let next = !self.is_muted();
         self.muted.store(next, Ordering::Relaxed);
         next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    fn state() -> AppState {
+        let dir = std::env::temp_dir();
+        AppState::new(dir.join("config.json"), Config::defaults(&dir))
+    }
+
+    /// The property the lifecycle commands will depend on once they are `async`:
+    /// however many threads ask, only one is ever inside at a time.
+    ///
+    /// Written before the commands use it, so the mechanism is proven on its own
+    /// rather than argued about through four call sites that need real audio
+    /// hardware to exercise.
+    #[test]
+    fn only_one_lifecycle_command_runs_at_a_time() {
+        let state = Arc::new(state());
+        let inside = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let inside = Arc::clone(&inside);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        let _guard = state.lifecycle_guard();
+
+                        let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        // Widen the window a real command would occupy, so an
+                        // overlap has somewhere to happen.
+                        std::thread::yield_now();
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for thread in threads {
+            thread.join().expect("thread panicked");
+        }
+
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "two lifecycle commands were inside the guard at once"
+        );
+    }
+
+    /// `start_recording` is a chain of `?`s. If an early return could strand the
+    /// guard, the first failed start would wedge every later one — including the
+    /// stop for a recording already in progress.
+    #[test]
+    fn an_early_return_releases_the_guard() {
+        let state = state();
+
+        fn fails_early(state: &AppState) -> Result<(), &'static str> {
+            let _guard = state.lifecycle_guard();
+            Err("as `?` would")
+        }
+
+        assert!(fails_early(&state).is_err());
+
+        // Would block forever if the guard had leaked, so the test is the
+        // timeout rather than the assertion.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let state = Arc::new(state);
+            move || {
+                let _guard = state.lifecycle_guard();
+                let _ = tx.send(());
+            }
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the guard was not released by the early return"
+        );
     }
 }
