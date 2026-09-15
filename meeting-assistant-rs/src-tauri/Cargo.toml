@@ -107,24 +107,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # Core Audio, for muting the microphone system-wide. Already in the tree via
 # cpal; named here because a transitive dependency is not an import.
 [target.'cfg(target_os = "macos")'.dependencies]
-# `block2` and `dispatch2` are for `AudioObjectAddPropertyListenerBlock`, the
-# mute-change listener. Both crates were already in the tree as dependencies of
-# this one, so these are feature flags rather than new dependencies.
-#
-# The block form rather than the function-pointer form on purpose: the HAL
-# retains the block and releases it after its last invocation, which removes the
-# use-after-free window the function-pointer form has between removing the
-# listener and freeing the context it was given. It also chooses the delivery
-# queue, and the main queue is the one that keeps the callback away from the
-# locks this app holds elsewhere.
-objc2-core-audio = { version = "0.3.2", features = ["block2", "dispatch2"] }
+objc2-core-audio = "0.3.2"
 objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
-# Direct dependencies because this crate names them itself, in the mute
-# listener. Enabling the features above only makes them available to
-# `objc2-core-audio`. Versions match what is already in the lockfile, so
-# nothing new is pulled in.
-block2 = "0.6.2"
-dispatch2 = "0.3.1"
 
 [target.'cfg(windows)'.dependencies]
 # The audio features are for `audio::system_mute`, which mutes the capture
