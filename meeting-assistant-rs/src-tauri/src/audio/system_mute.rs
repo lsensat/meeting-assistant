@@ -121,7 +121,8 @@ type OnChange = Box<dyn Fn(bool) + Send + Sync + 'static>;
 mod platform {
     use super::{MuteError, OnChange};
     use objc2_core_audio::{
-        kAudioDevicePropertyMute, kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain,
+        kAudioDevicePropertyMute, kAudioDevicePropertyStreamConfiguration,
+        kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain,
         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
         kAudioObjectSystemObject, AudioObjectAddPropertyListenerBlock, AudioObjectGetPropertyData,
         AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectIsPropertySettable,
@@ -216,9 +217,65 @@ mod platform {
     }
 
     /// The device id whose name matches `name`, by the shared matching rules.
+    /// Whether this device can capture anything.
+    ///
+    /// A USB headset is **two devices with the same name** — a microphone and a
+    /// pair of speakers — and Core Audio reports both. Matching on the name
+    /// alone can therefore land on the output half, which has no mute on its
+    /// input scope, and the whole feature reports "this device does not support
+    /// muting" for a headset whose microphone supports it perfectly well. Found
+    /// with a Poly Blackwire 3320: `Unsupported`, on a device that was sitting
+    /// right there.
+    ///
+    /// The stream configuration is an `AudioBufferList`, whose first field is
+    /// the buffer count. Zero buffers on the input scope means zero ways to
+    /// record from it.
+    fn has_input(id: AudioObjectID) -> bool {
+        let mut addr = address(
+            kAudioDevicePropertyStreamConfiguration,
+            kAudioObjectPropertyScopeInput,
+        );
+        let mut size: u32 = 0;
+
+        // SAFETY: asking for the size only; `size` is a live u32.
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                id,
+                NonNull::from(&mut addr),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+            )
+        };
+        if status != 0 || (size as usize) < std::mem::size_of::<u32>() {
+            return false;
+        }
+
+        let mut buffer = vec![0u8; size as usize];
+        // SAFETY: the buffer is exactly the size the call above reported.
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                id,
+                NonNull::from(&mut addr),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+                NonNull::new_unchecked(buffer.as_mut_ptr() as *mut c_void),
+            )
+        };
+        if status != 0 {
+            return false;
+        }
+
+        let count = u32::from_ne_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+        count > 0
+    }
+
     fn find(name: &str) -> Result<AudioObjectID, MuteError> {
         let devices: Vec<(AudioObjectID, String)> = all_devices()
             .into_iter()
+            // Capture devices only — see `has_input`.
+            .filter(|id| has_input(*id))
             .filter_map(|id| name_of(id).map(|n| (id, n)))
             .collect();
 
@@ -604,6 +661,24 @@ mod tests {
 mod live {
     use super::*;
 
+    /// Serialises the tests below.
+    ///
+    /// Every one of them mutes and unmutes **the same physical device**, and the
+    /// harness runs tests in parallel by default. Individually they all passed;
+    /// together they failed, because one test unmuted the device another had
+    /// just muted and was about to assert on. The watch test recorded the
+    /// interference in its own output — `observed [false, true, false]` for a
+    /// single flip.
+    ///
+    /// Poisoning is tolerated on purpose: a panic in one of these leaves the
+    /// device in whatever state it was in, and refusing to run the rest would
+    /// turn one failure into five.
+    static DEVICE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        DEVICE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Mute a real device and read the state back from the OS.
     ///
     /// Ignored by default: it changes global state, so it has no business in a
@@ -631,6 +706,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn the_watch_reports_a_change_made_by_another_process() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
         let before = is_muted(&device).expect("read the mute state");
 
@@ -708,6 +784,93 @@ mod live {
         set(&device, before).expect("restore");
     }
 
+    /// Step 0: does a headset's own mute button reach the operating system?
+    ///
+    /// The whole feature assumes it does. The evidence was only "the microphone
+    /// track was silent", which is equally consistent with the headset muting
+    /// inside its own firmware and never telling anybody — in which case no
+    /// listener can hear it, and an app that trusts the device would show
+    /// "unmuted" while recording silence, which is where this started.
+    ///
+    /// Deliberately not an assertion. The answer is the point, either way.
+    ///
+    /// ```text
+    /// MUTE_TEST_DEVICE="Poly Blackwire 3320 Series" cargo test -p meeting-assistant \
+    ///     --lib audio::system_mute::live::the_headset_button -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "asks a person to press a button; set MUTE_TEST_DEVICE"]
+    fn the_headset_button_reaches_the_operating_system() {
+        let _serial = one_at_a_time();
+        let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
+        let started = std::time::Instant::now();
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&seen);
+
+        let (_watch, initial) = watch(&device, move |muted| {
+            println!(
+                "    [{:5.1}s] {}",
+                started.elapsed().as_secs_f64(),
+                if muted { "MUTED" } else { "unmuted" }
+            );
+            sink.lock().unwrap().push(muted);
+        })
+        .expect("register the watch");
+
+        println!("watching {device:?} for 30s — starting state: muted={initial}");
+        println!("press the headset's mute button a few times now");
+
+        // Poll as well as listen, because "no notification" and "no change" are
+        // different findings with opposite consequences. If the value moves
+        // while the listener stays silent, the listener is wrong. If the value
+        // never moves, the headset is muting somewhere the OS cannot see, and
+        // no listener could have helped.
+        let mut polled = Vec::new();
+        let mut last = initial;
+        for _ in 0..120 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Ok(now) = is_muted(&device) {
+                if now != last {
+                    println!(
+                        "    [{:5.1}s] POLLED {}",
+                        started.elapsed().as_secs_f64(),
+                        if now { "MUTED" } else { "unmuted" }
+                    );
+                    polled.push(now);
+                    last = now;
+                }
+            }
+        }
+
+        println!(
+            "\npolled {} change(s), listener reported {}",
+            polled.len(),
+            seen.lock().unwrap().len()
+        );
+        if !polled.is_empty() && seen.lock().unwrap().is_empty() {
+            println!(
+                "THE VALUE MOVED AND THE LISTENER MISSED IT — that is this code's bug, \
+                 not the headset's."
+            );
+        }
+
+        let changes = seen.lock().unwrap().clone();
+        if changes.is_empty() {
+            println!(
+                "\nNO CHANGES. If the button was pressed, this headset mutes in its own \
+                 firmware and never tells the OS. Nothing can observe that, and the app \
+                 must not pretend to."
+            );
+        } else {
+            println!(
+                "\n{} change(s): {changes:?} — the device does report it.",
+                changes.len()
+            );
+        }
+    }
+
     /// The child half of the watch test: set the device and exit.
     #[test]
     #[ignore = "child of the watch test; set MUTE_TEST_FLIP"]
@@ -722,6 +885,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn muting_a_real_device_takes_effect() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
 
         let before = is_muted(&device).expect("read the mute state");
@@ -791,6 +955,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn crash_while_muted_leaves_the_device_muted() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
         let before = is_muted(&device).expect("read the mute state");
 
@@ -858,6 +1023,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn dropping_the_guard_unmutes() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
         let before = is_muted(&device).expect("read the mute state");
 
