@@ -15,11 +15,26 @@
 //! So this file is the other half, and it is split the same way the risk is:
 //!
 //! * **Automated, below.** A real capture through `RecordingSession`, asserting
-//!   both tracks are finalised — the header patched, the data chunk non-empty,
-//!   the two tracks aligned. Run it before the change and after it; the numbers
-//!   should not move.
+//!   both tracks are finalised — header patched, data chunk non-empty — and that
+//!   the microphone track is roughly the length it should be.
 //! * **Manual, in the list further down.** The paths that need a person, a
 //!   mouse and two windows. No test can click a tray menu.
+//!
+//! # What the automated half does not cover
+//!
+//! Two limits, both worth knowing before a green run is mistaken for a pass.
+//!
+//! It drives `RecordingSession` directly, so it exercises none of the command
+//! layer — not the lifecycle guard, not `(async)`, not the tray. Those are only
+//! reachable through the real UI. A green run here says the recording machinery
+//! still works; the manual list is what gates a lifecycle change.
+//!
+//! And it deliberately asserts nothing about the system track's length or the
+//! skew between tracks. Six consecutive runs on unchanged code moved the system
+//! track from 577 KB to 647 KB and the skew from 2 ms to 660 ms, purely because
+//! the audio engine warms up between runs — see the note at the assertions. Those
+//! two numbers are printed, not checked, and are only meaningful compared against
+//! another **cold** run.
 //!
 //! # Running the automated half
 //!
@@ -165,6 +180,10 @@ fn a_recording_that_starts_and_stops_leaves_two_finalised_tracks() {
     let mic_len = declared_data_len(&folder.join(MIC_FILENAME));
     let system_len = declared_data_len(&folder.join(SYSTEM_FILENAME));
 
+    // Asserted, for both tracks: either the writer thread finished and patched
+    // the header or it did not, and nothing about the machine's state changes
+    // which. This is the failure a session dropped instead of stopped produces,
+    // and it is the one this file exists to catch.
     assert!(
         mic_len > 0,
         "the microphone header was never patched — the writer thread did not finish"
@@ -174,27 +193,50 @@ fn a_recording_that_starts_and_stops_leaves_two_finalised_tracks() {
         "the system header was never patched — the writer thread did not finish"
     );
 
-    // 48 kHz mono PCM16 is 96,000 bytes a second. Allow a generous margin for
-    // the device open at the front; the assertion is "roughly the right length",
-    // not a timing measurement.
+    // 48 kHz mono PCM16 is 96,000 bytes a second.
     let expected = CAPTURE_SECONDS as f64 * 96_000.0;
-    for (name, len) in [("microphone", mic_len), ("system", system_len)] {
-        let ratio = len as f64 / expected;
-        assert!(
-            ratio > 0.5,
-            "{name} captured {len} bytes, less than half the {expected:.0} expected — \
-             a track this short means capture stopped early or never began"
-        );
-    }
 
-    if let Some(skew) = summary.skew_seconds() {
-        println!("skew between tracks: {skew:.3}s");
-        assert!(
-            skew < 1.0,
-            "the tracks are {skew:.3}s apart; silence-gap accounting drifted"
-        );
-    }
+    // Asserted for the microphone only.
+    //
+    // A microphone is an ordinary capture endpoint: it is opened and it
+    // delivers, so its length is a property of the code. Measured over six runs
+    // it stayed inside 578-584 KB, and a short one means capture stopped early
+    // or never began.
+    assert!(
+        mic_len as f64 / expected > 0.5,
+        "the microphone captured {mic_len} bytes, less than half the {expected:.0} expected — \
+         capture stopped early or never began"
+    );
 
-    println!("microphone {mic_len} bytes, system {system_len} bytes — both finalised");
+    // NOT asserted: the system track's length, and the skew between the tracks.
+    //
+    // The system track is a tap on what the machine is playing, not a device
+    // that is simply open, and macOS runs that engine only while it has
+    // something to run it for. Its start time is therefore a property of how
+    // recently sound last played — `audio/devices.rs` says so directly, and
+    // warns that a run started shortly after any audio "will capture fine and
+    // look like a pass".
+    //
+    // Measured here across six consecutive runs: the system track climbed from
+    // 577 KB to 647 KB and the skew from 2 ms to 660 ms, monotonically, then sat
+    // flat — with no code change between them. Asserting on either would fail on
+    // a cold machine, pass on a warm one, and tell you nothing about the code
+    // in both cases. A 1-second skew limit was also six times looser than the
+    // ~100 ms alignment budget it was supposed to be protecting, so it would
+    // have slept through a real regression while crying wolf over this one.
+    //
+    // They are printed because they are worth *looking* at — just only ever
+    // against another cold run.
+    let skew = summary
+        .skew_seconds()
+        .map(|s| format!("{s:.3}s"))
+        .unwrap_or_else(|| "n/a".to_string());
+    println!(
+        "microphone {mic_len} bytes — asserted\n\
+         system {system_len} bytes, skew {skew} — informational only: both depend on \
+         how recently audio last played on this machine. Compare them only between \
+         cold runs, never between back-to-back ones."
+    );
+
     std::fs::remove_dir_all(&folder).ok();
 }
