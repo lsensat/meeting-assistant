@@ -60,4 +60,10 @@ export function applyLanguage(root = document) {
   for (const element of root.querySelectorAll("[data-i18n-title]")) {
     element.title = tr(element.getAttribute("data-i18n-title"));
   }
+  // An icon-only button's accessible name is the only name it has, so it has to
+  // be translated like any visible label. A literal `aria-label` reads as
+  // English to a Spanish screen-reader user and never changes on a switch.
+  for (const element of root.querySelectorAll("[data-i18n-label]")) {
+    element.setAttribute("aria-label", tr(element.getAttribute("data-i18n-label")));
+  }
 }

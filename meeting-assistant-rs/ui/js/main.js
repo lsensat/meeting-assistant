@@ -777,7 +777,24 @@ function contentHeight() {
  * shortfall would otherwise be re-requested forever. Four attempts is far more
  * than convergence needs and stops an argument nobody can win.
  */
+const MAX_RESIZE_PASSES = 4;
 let resizePasses = 0;
+
+/**
+ * Whether a fit is in flight.
+ *
+ * Covers the **whole** operation, not its first frame. The previous version
+ * guarded only the entry point and then continued through
+ * `nudgeMainHeight().then(rAF(measureAndResize))` with the flag already
+ * cleared — so anything asking for a refit mid-flight started a *second* chain,
+ * and the two computed deltas from measurements the other was invalidating. Two
+ * IPC calls and two native resizes, fighting over the same window: the visible
+ * result was a window that flickered between sizes and then settled.
+ */
+let fitting = false;
+
+/** A refit asked for while one was already running. */
+let refitWanted = false;
 
 /**
  * Fit the window to its content.
@@ -791,41 +808,99 @@ let resizePasses = 0;
  *
  * How much more room the content needs than it has is something this side can
  * measure exactly, and it is all the other side needs to know.
- */
-let resizeQueued = false;
-
-/**
- * Fold every resize request made in one frame into a single measurement.
  *
  * Several things ask for a refit at once — a status line changing, the queue
- * panel appearing, a panel being toggled — and each used to start its own
- * measure/IPC/re-measure loop against the same shared `resizePasses` budget.
- * They exhausted it between them and gave up early, which left the window a
- * few lines short of its content and the toolbar clipped off the bottom.
+ * panel appearing, a panel being toggled. They are folded into one fit: the
+ * request is remembered and honoured when the current one finishes, rather than
+ * being dropped or racing it.
  */
 function resizeToContent() {
-  if (resizeQueued) return;
-  resizeQueued = true;
-  requestAnimationFrame(() => {
-    resizeQueued = false;
-    measureAndResize();
-  });
+  if (fitting) {
+    refitWanted = true;
+    return;
+  }
+  fitting = true;
+  refitWanted = false;
+  requestAnimationFrame(measureAndResize);
 }
 
+/**
+ * The height Rust reported on the previous pass of this fit, or `null`.
+ *
+ * Used for one thing only: noticing that the window did **not** move, which
+ * means it is clamped at the floor or ceiling `nudge_main_height` enforces and
+ * asking again cannot help.
+ *
+ * Deliberately **not** used as the baseline for the measurement. It counts a
+ * different thing from `window.innerHeight`: Rust's number includes the title
+ * bar, the webview's does not, and on macOS that is 32 px. Measuring content —
+ * which lives in the webview's coordinates — against Rust's height adds that
+ * difference to every pass, and the window oscillates by exactly the height of
+ * its own title bar. Measured, before this was understood: 237 ↔ 269 for as
+ * long as the app was open.
+ *
+ * A delta is free of all this, which is the whole reason the Rust side takes
+ * one. Each side measures in its own coordinates and neither has to know what
+ * the other's chrome costs.
+ */
+let lastAchieved = null;
+
 function measureAndResize() {
-  const delta = Math.round(contentHeight() - window.innerHeight);
+  // Everything, including the measurement, inside the guard.
+  //
+  // `endFit` is what clears `fitting`, so any escape from this function that
+  // skips it wedges the flag true for the rest of the session and silently
+  // swallows every later refit — the window simply stops fitting its content,
+  // with no console in a release build to say why. A `.catch` on the promise
+  // does not cover this: `contentHeight` throws *before* the promise exists,
+  // and this function runs from a `requestAnimationFrame` callback, outside any
+  // chain of its own.
+  try {
+    // Against the webview's own viewport, always. See `lastAchieved`.
+    const delta = Math.round(contentHeight() - window.innerHeight);
 
-  if (delta === 0) {
-    resizePasses = 0;
-    return;
-  }
-  if (resizePasses >= 4) {
-    resizePasses = 0;
-    return;
-  }
-  resizePasses += 1;
+    // A dead band, not `=== 0`.
+    //
+    // `contentHeight` rounds up while the viewport height is fractional on a
+    // scaled display — 125% and 150% are the common Windows settings — so the
+    // difference can sit at +1, then -1, then +1, and a window chases a pixel
+    // it can never land on, burning the whole budget on every fit.
+    if (Math.abs(delta) <= 1 || resizePasses >= MAX_RESIZE_PASSES) {
+      endFit();
+      return;
+    }
 
-  api.nudgeMainHeight(delta).then(() => requestAnimationFrame(measureAndResize));
+    resizePasses += 1;
+    api
+      .nudgeMainHeight(delta)
+      .then((height) => {
+        // The window did not move, so asking again cannot help: it is clamped
+        // at the floor or the ceiling `nudge_main_height` enforces. Without
+        // this the fit spends its whole budget, ends, and starts over on the
+        // next status line — permanently, for a window that can never comply.
+        if (height === lastAchieved) {
+          endFit();
+          return;
+        }
+        lastAchieved = height;
+        requestAnimationFrame(measureAndResize);
+      })
+      .catch((error) => {
+        console.warn("[fit] the window refused to resize:", error);
+        endFit();
+      });
+  } catch (error) {
+    console.warn("[fit] could not measure:", error);
+    endFit();
+  }
+}
+
+/** End the fit, and honour anything asked for while it ran. */
+function endFit() {
+  resizePasses = 0;
+  lastAchieved = null;
+  fitting = false;
+  if (refitWanted) resizeToContent();
 }
 
 /**

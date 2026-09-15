@@ -730,9 +730,9 @@ main {
 .result-row .center { display: flex; gap: 6px; }
 
 #mute-button      { width: 32px;  height: 31px; padding: 0; }
-#transcript-button{ width: 38px;  height: 31px; padding: 0; }
 #folder-button    { width: 38px;  height: 31px; padding: 0; }
-#summary-button   { width: 104px; height: 31px; }
+/* Icon-only since the label became an icon, so it matches its neighbour. */
+#summary-button   { width: 38px;  height: 31px; padding: 0; }
 #settings-button  { width: 34px;  height: 31px; padding: 0; }
 
 /*

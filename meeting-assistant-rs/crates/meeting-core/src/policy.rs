@@ -694,6 +694,39 @@ const LENGTH_TOLERANCE: f64 = 0.002;
 /// way is normal.
 const LENGTH_FLOOR_SECONDS: f64 = 0.5;
 
+/// How much of a meeting has to be missing before the user is told.
+///
+/// Separate from the tolerance above, and the distinction is the point.
+/// `LENGTH_TOLERANCE` answers "is this file shorter than it should be", and is
+/// sized to clear resampler drift. This answers a different question: "is the
+/// loss big enough to be worth interrupting somebody about" — which has nothing
+/// to do with resamplers and everything to do with what a listener or a
+/// transcript would notice. [`GAP_REPORT_SECONDS`] below is the same idea for
+/// outage silence, and this is the equivalent the length path never had.
+///
+/// Measured on a real meeting: 551 seconds, 50 driver glitches, about 2 seconds
+/// short. That cleared the 1.1 s tolerance and produced "some audio was lost …
+/// the transcript and summary will be incomplete" — in the same words and at
+/// the same volume as losing a minute to a disconnect. Two seconds across 50
+/// glitches is **40 ms each**; a phoneme is roughly 80 ms, so nothing in the
+/// transcript moved. Warning about it on someone's first real meeting spends
+/// the credibility needed for the time it matters.
+///
+/// A loss is material if it is **either** a fair slice of the meeting **or** a
+/// long enough stretch to be a sentence — not both.
+///
+/// Both halves are needed, and a single number is wrong either way round. A
+/// fixed number of seconds swallows a five-second clip that lost two of them,
+/// which is 40% of it. A fraction alone waves through five seconds missing from
+/// two hours, which is somebody's answer to a question.
+///
+/// Three percent rather than one: three seconds missing from ninety is 3.3%,
+/// and this file already asserts in two places that such a track is worth
+/// naming. A threshold that quietly reverses an existing expectation is the
+/// wrong threshold.
+const LENGTH_REPORT_FRACTION: f64 = 0.03;
+const LENGTH_REPORT_SECONDS: f64 = 5.0;
+
 /// How much outage silence is worth telling the user about.
 ///
 /// `gap_frames` counts only genuine outages. The opening device-open silence is
@@ -741,7 +774,15 @@ pub fn assess_track(elapsed_seconds: f64, facts: TrackFacts) -> Option<TrackDama
     // than the measured elapsed time — see LENGTH_FLOOR_SECONDS.
     let missing = elapsed_seconds - facts.duration_seconds;
     let tolerance = LENGTH_FLOOR_SECONDS.max(elapsed_seconds * LENGTH_TOLERANCE);
-    if missing > tolerance {
+
+    // Detectable *and* worth saying out loud. Two separate questions, asked in
+    // that order: the tolerance knows whether the file is shorter than it
+    // should be, and this knows whether anyone needs to be told. See
+    // `LENGTH_REPORT_FRACTION`.
+    let material = missing >= LENGTH_REPORT_SECONDS
+        || (elapsed_seconds > 0.0 && missing / elapsed_seconds >= LENGTH_REPORT_FRACTION);
+
+    if missing > tolerance && material {
         let missing_seconds = missing.round().max(1.0) as u64;
 
         // Name the cause when the recorder saw one. A shortfall on a track the
@@ -887,6 +928,68 @@ mod damage_tests {
                 glitches: 47,
             }),
             "a shortfall with a known cause must not be reported as a mystery"
+        );
+    }
+
+    /// The meeting that prompted the reporting threshold, to the second.
+    ///
+    /// 551 seconds, 50 driver glitches, about 2 seconds short. Every number
+    /// here is measured, not invented: it cleared the 1.1 s detection tolerance
+    /// and produced "some audio was lost … the transcript and summary will be
+    /// incomplete", in the same words as losing a minute to a disconnect. Two
+    /// seconds across 50 glitches is 40 ms each, and nothing in the transcript
+    /// moved.
+    ///
+    /// The loss is still real and still logged. This asserts only that it does
+    /// not interrupt anybody.
+    #[test]
+    fn two_seconds_lost_from_nine_minutes_is_not_worth_a_warning() {
+        let mut facts = facts(549.0, 0, 0);
+        facts.glitches = 50;
+
+        assert_eq!(assess_track(551.0, facts), None);
+    }
+
+    /// The same fault, big enough to matter. 1% of 551 s is 5.51 s.
+    #[test]
+    fn a_material_loss_is_still_reported_with_its_cause() {
+        let mut facts = facts(540.0, 0, 0);
+        facts.glitches = 50;
+
+        assert_eq!(
+            assess_track(551.0, facts),
+            Some(TrackDamage::Glitched {
+                missing_seconds: 11,
+                glitches: 50,
+            })
+        );
+    }
+
+    /// The two halves of "material", each doing the job the other cannot.
+    #[test]
+    fn a_loss_counts_as_material_by_proportion_or_by_length() {
+        // 1.5 s of a minute: 2.5%, and not a sentence. Detectable, not worth
+        // saying.
+        assert_eq!(assess_track(60.0, facts(58.5, 0, 0)), None);
+
+        // 4 s of a minute is 6.7% — the fraction catches it while the absolute
+        // rule would not.
+        assert_eq!(
+            assess_track(60.0, facts(56.0, 0, 0)),
+            Some(TrackDamage::Short { missing_seconds: 4 })
+        );
+
+        // 20 s of two hours is 0.28% — far under the fraction, so only the
+        // absolute rule catches it, and twenty seconds is a whole exchange.
+        //
+        // Not a smaller number: at two hours the *detection* tolerance is
+        // already 14.4 s, because 0.2% is sized for resampler drift over a long
+        // recording. Anything under that is not merely unreported, it is
+        // invisible — which is worth knowing before trusting a shortfall on a
+        // very long meeting.
+        assert_eq!(
+            assess_track(7200.0, facts(7180.0, 0, 0)),
+            Some(TrackDamage::Short { missing_seconds: 20 })
         );
     }
 

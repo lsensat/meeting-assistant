@@ -681,8 +681,9 @@ pub fn reapply_main_size_pin(window: &tauri::Window) {
 /// its content needs than it has, which it can measure exactly; this adds that
 /// to whatever the window currently is. Neither side needs to know what a title
 /// bar costs, and there is no round-trip figure to be stale.
+/// Returns the inner height the window was actually given, after clamping.
 #[tauri::command]
-pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
+pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<f64, String> {
     const MIN: f64 = 200.0;
     // Raised from 420 for the processing queue, which adds a panel of up to
     // three cards. The queue list scrolls past that, so this is a ceiling on
@@ -745,7 +746,20 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<(), String> {
         eprintln!("[resize] {current:.0} {delta:+.0} -> {target:.0}");
     }
 
-    Ok(())
+    // The height the window was actually given, which is not always the height
+    // that was asked for: `target` is clamped to MIN..=MAX above.
+    //
+    // Returned because the caller cannot find this out for itself. Reading
+    // `innerHeight` back in the webview has the staleness described above — the
+    // old value for a frame or two after the resize — so a caller that measures
+    // again immediately computes the same delta and nudges a second time,
+    // overshooting by the whole delta before correcting on the pass after. And
+    // a caller that has been clamped has no way to tell "not applied yet" from
+    // "you can never have this", so it spends its whole retry budget asking for
+    // a size the window manager will never give it, on every trigger, forever.
+    //
+    // One number answers both.
+    Ok(target)
 }
 
 /// Open, or focus, the settings window.
