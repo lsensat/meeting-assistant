@@ -323,7 +323,11 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 .lock_recover()
                 .clone()
                 .unwrap_or_else(|| app.state::<AppState>().config_snapshot().output_folder);
-            let _ = crate::commands::open_path(app.clone(), folder.to_string_lossy().into_owned());
+            let _ = crate::commands::open_path(
+                app.clone(),
+                folder.to_string_lossy().into_owned(),
+                app.state::<AppState>(),
+            );
         }
         ID_SETTINGS => {
             let _ = crate::commands::open_settings(app.clone());

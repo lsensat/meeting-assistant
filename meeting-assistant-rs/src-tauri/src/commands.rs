@@ -900,18 +900,56 @@ pub fn has_api_key() -> bool {
 /// folder of that name, and pressing "Open folder" would have run `calc`.
 ///
 /// `tauri-plugin-opener` uses the OS APIs directly, with no shell in the path.
+/// # Why the path is checked even though the frontend builds it
+///
+/// Every caller in this repository passes a path this app produced —
+/// `library_folder`, `library_transcript`, the current meeting, or the output
+/// folder itself. None of that is enforced by the signature, and a webview is
+/// exactly the component least able to promise it: a `devtools`-enabled release
+/// build is one console away from `invoke("open_path", { path: "/anything" })`.
+///
+/// So the containment is decided here rather than trusted from there.
 #[tauri::command(async)]
-pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+pub fn open_path(app: AppHandle, path: String, state: State<AppState>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 
-    let path = std::path::Path::new(&path);
-    if !path.exists() {
-        return Err(format!("{} does not exist", path.display()));
+    let requested = std::path::Path::new(&path);
+    if !requested.exists() {
+        return Err(format!("{} does not exist", requested.display()));
     }
 
+    let root = state.config_snapshot().output_folder;
+    let Some(target) = contained_path(requested, &root) else {
+        return Err("refusing to open a path outside the meeting folder".into());
+    };
+
     app.opener()
-        .open_path(path.to_string_lossy(), None::<&str>)
+        .open_path(target.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// `requested` resolved, if it lies inside `root`.
+///
+/// Separated from the command so it can be tested without a running app, which
+/// is the whole reason this check is worth having — the same reason
+/// [`permitted_url`] is separate.
+///
+/// **Both sides are canonicalised**, and that is not symmetry for its own sake.
+/// `..` and symlinks are resolved only by canonicalising, so comparing a raw
+/// request against a raw root would admit `<root>/../../etc`. Canonicalising the
+/// root as well matters on Windows, where the call returns a `\\?\`-prefixed
+/// path: compare one against a root that has no such prefix and every legitimate
+/// path is refused.
+///
+/// `Path::starts_with` matches whole components, so a sibling directory whose
+/// name merely begins with the root's cannot slip through.
+fn contained_path(
+    requested: &std::path::Path,
+    root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let requested = requested.canonicalize().ok()?;
+    let root = root.canonicalize().ok()?;
+    requested.starts_with(&root).then_some(requested)
 }
 
 /// Open the OS sound settings, where the input and output levels live.
@@ -2345,6 +2383,75 @@ pub use policy::Device as PolicyDevice;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A root with one file in it, under a name unique to this process.
+    fn containment_fixture(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("ma-open-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(root.join("meeting")).expect("mkdir");
+        std::fs::write(root.join("meeting/summary.md"), b"x").expect("write");
+        root
+    }
+
+    #[test]
+    fn a_file_inside_the_output_folder_resolves() {
+        let root = containment_fixture("inside");
+        assert!(contained_path(&root.join("meeting/summary.md"), &root).is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The main window's "open folder" button passes the output folder itself,
+    /// so the root has to be inside its own boundary.
+    #[test]
+    fn the_output_folder_itself_resolves() {
+        let root = containment_fixture("root");
+        assert!(contained_path(&root, &root).is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_path_outside_the_output_folder_is_refused() {
+        let root = containment_fixture("outside");
+        assert!(contained_path(std::path::Path::new("/etc/hosts"), &root).is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The case a raw `starts_with` on an uncanonicalised path would admit.
+    #[test]
+    fn a_traversal_out_of_the_output_folder_is_refused() {
+        let root = containment_fixture("traversal");
+        let escape = root.join("meeting/../../..");
+        assert!(contained_path(&escape, &root).is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Canonicalising resolves symlinks, so a link planted inside the folder
+    /// cannot be used to reach outside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_pointing_outside_is_refused() {
+        let root = containment_fixture("symlink");
+        let link = root.join("escape");
+        std::os::unix::fs::symlink("/etc", &link).expect("symlink");
+        assert!(contained_path(&link, &root).is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `Path::starts_with` matches whole components. A sibling whose name merely
+    /// begins with the root's must not be treated as inside it.
+    #[test]
+    fn a_sibling_sharing_a_name_prefix_is_refused() {
+        let root = containment_fixture("prefix");
+        let sibling = root.with_file_name(format!(
+            "{}-evil",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&sibling).expect("mkdir");
+
+        assert!(contained_path(&sibling, &root).is_none());
+
+        std::fs::remove_dir_all(&sibling).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A track as the recorder really reports one.
     ///
