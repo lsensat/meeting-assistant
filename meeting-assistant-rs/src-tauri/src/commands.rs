@@ -1437,6 +1437,24 @@ pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
             }
             (false, _) => "microphone unmuted by the user".to_string(),
         });
+
+        // Once per process, and only on Windows, where the answer is unknown.
+        //
+        // Which COM apartment the mute runs in decides whether the
+        // `COINIT_MULTITHREADED` request in `with_endpoint` is honoured, and
+        // there is no Windows machine here to find out on. This is how the
+        // answer gets back: in the meeting log, from someone who has one.
+        //
+        // It has to be read BEFORE the lifecycle work moves off the main thread.
+        // Afterwards the mute runs on a Tauri pool thread, which is MTA, and the
+        // main thread's apartment becomes unobservable.
+        static COM_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !COM_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if let Some(note) = crate::audio::system_mute::com_diagnostic() {
+                log.line(&note);
+            }
+        }
     }
 
     // The tray carries a checkbox for this and never refreshed, so muting from

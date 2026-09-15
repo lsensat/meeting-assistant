@@ -77,6 +77,25 @@ pub fn is_supported() -> bool {
     cfg!(any(target_os = "macos", target_os = "windows"))
 }
 
+/// One line describing the COM apartment the mute ran in, once something has
+/// tried to mute. `None` where COM is not involved, which is everywhere but
+/// Windows, and on Windows until the first mute.
+///
+/// Written into the meeting log by `toggle_mute`. See `COM_STATE` in the Windows
+/// module for why this is observed from a user's machine rather than reasoned
+/// about here.
+pub fn com_diagnostic() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::com_diagnostic()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 // ---------------------------------------------------------------- macOS
 
 #[cfg(target_os = "macos")]
@@ -326,7 +345,29 @@ mod platform {
     // `Win32::Foundation`, not `UI::Shell::PropertiesSystem` where the rest of
     // the property-store API lives. Wrong in the first draft, and caught by
     // compiling this module for a Windows target from the Mac.
-    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE, S_FALSE};
+
+    /// What COM said the first time this process asked to mute.
+    ///
+    /// # Why this is recorded instead of reasoned about
+    ///
+    /// There is no Windows development machine: the platform is only ever
+    /// exercised as a release artifact from CI, which compiles and links but
+    /// never runs a recording. So the apartment this code actually gets is not
+    /// something anybody here can observe by running it — and it decides whether
+    /// [`with_endpoint`]'s `COINIT_MULTITHREADED` request is honoured or refused.
+    ///
+    /// `diagnostics::MeetingLog` already exists to answer exactly this shape of
+    /// question — a failure on someone else's laptop — so the observation is
+    /// written into the meeting log and travels back with the report.
+    ///
+    /// Read once per process: the value cannot change for a given thread, and a
+    /// line per mute toggle would bury the thing it is here to show.
+    static COM_STATE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    pub fn com_diagnostic() -> Option<String> {
+        COM_STATE.get().cloned()
+    }
 
     /// `PKEY_Device_FriendlyName` — the name the user sees in Sound settings,
     /// and the one stored in `Config`.
@@ -360,12 +401,47 @@ mod platform {
         name: &str,
         f: impl FnOnce(&IAudioEndpointVolume) -> Result<T, MuteError>,
     ) -> Result<T, MuteError> {
-        // SAFETY: initialising COM for this thread. A repeat call on an
-        // already-initialised thread returns S_FALSE, which is not an error and
-        // is why the result is discarded rather than checked.
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        }
+        // SAFETY: initialising COM for this thread.
+        //
+        // The result is still not fatal, but it is no longer discarded unseen.
+        // An earlier comment here justified throwing it away on the grounds that
+        // "a repeat call on an already-initialised thread returns S_FALSE". That
+        // is true only when the apartment models agree, and it is the case this
+        // code is least likely to be in. Three returns matter:
+        //
+        //   S_OK               this call initialised the thread, as MTA.
+        //   S_FALSE            already initialised, same model — so also MTA.
+        //   RPC_E_CHANGED_MODE already initialised under a DIFFERENT model. A
+        //                      thread the windowing layer made STA says this,
+        //                      and the MTA asked for above is NOT what is in
+        //                      force. COM still works and the calls below still
+        //                      succeed; the apartment simply is not the one this
+        //                      code was written against.
+        //
+        // Which of the three actually happens on a Tauri main thread is the open
+        // question, and `COM_STATE` is how it gets answered from a user's log.
+        // The HRESULT alone settles it — STA and MTA are distinguishable without
+        // a second call to `CoGetApartmentType`.
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+
+        COM_STATE.get_or_init(|| {
+            let outcome = if hr == S_FALSE {
+                "S_FALSE (already initialised, same model, so MTA)"
+            } else if hr == RPC_E_CHANGED_MODE {
+                "RPC_E_CHANGED_MODE (already STA; the MTA request was refused)"
+            } else if hr.is_ok() {
+                "S_OK (this call initialised the thread as MTA)"
+            } else {
+                "an error"
+            };
+
+            format!(
+                "com: CoInitializeEx returned {outcome} [0x{:08X}] on thread {:?} named {:?}",
+                hr.0,
+                std::thread::current().id(),
+                std::thread::current().name().unwrap_or("<unnamed>"),
+            )
+        });
 
         // SAFETY: each call below is a documented COM call whose arguments are
         // live for its duration; failures come back as `Err`, not as UB.
