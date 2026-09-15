@@ -11,6 +11,23 @@ use std::path::PathBuf;
 /// Not beside the binary: that works for a folder you unzip, but not for a
 /// signed `.app` bundle, which is read-only in the general case. macOS expects
 /// app state under Application Support.
+///
+/// # This deliberately does not match `AppHandle::path().app_data_dir()`
+///
+/// Tauri's own resolver keys the directory off the bundle **identifier**, so it
+/// would return `.../com.meetingassistant.app`, while the literal below is
+/// `MeetingAssistant`. The two therefore name different directories, and that is
+/// a known divergence rather than an oversight — `app_data_dir_is_not_the_tauri_one`
+/// below fails if either side moves.
+///
+/// It stays hand-rolled because there is no `AppHandle` at either call site that
+/// matters: `main.rs` reads the config **before** the Tauri `Builder` exists, and
+/// the `rec` and `process` CLI binaries have no Tauri app at all.
+///
+/// **Before calling the Tauri path API anywhere in this codebase**, reconcile the
+/// two — and note that doing so means migrating an existing installation's
+/// directory, which holds the user's recordings and multi-gigabyte model files.
+/// That migration is the reason this has not simply been renamed.
 pub fn app_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -226,6 +243,43 @@ mod tests {
     fn model_dir_sits_under_app_data() {
         assert!(models_dir().starts_with(app_data_dir()));
         assert!(models_dir().ends_with("models"));
+    }
+
+    /// A tripwire, not a requirement.
+    ///
+    /// [`app_data_dir`] names a directory Tauri's own `app_data_dir()` would not:
+    /// Tauri keys off the bundle identifier, this keys off a literal. Both values
+    /// are pinned here so that changing either one fails loudly and forces the
+    /// question — because the moment any code reads the Tauri path, the app
+    /// silently starts looking for config, models and meetings in a directory
+    /// that has none of them.
+    ///
+    /// If you are here because this test failed: reconciling the two is not just
+    /// an edit. An installed copy already has data under the old name, so it needs
+    /// a migration, and that migration moves gigabytes of model weights and the
+    /// user's recordings.
+    #[test]
+    fn app_data_dir_is_not_the_tauri_one() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json is valid JSON");
+        let identifier = conf["identifier"]
+            .as_str()
+            .expect("tauri.conf.json has a string identifier");
+
+        assert_eq!(
+            identifier, "com.meetingassistant.app",
+            "the bundle identifier moved; see this test's doc comment"
+        );
+        assert!(
+            app_data_dir().ends_with("MeetingAssistant"),
+            "the app data directory moved to {}; see this test's doc comment",
+            app_data_dir().display()
+        );
+        assert_ne!(
+            app_data_dir().file_name().and_then(|n| n.to_str()),
+            Some(identifier),
+            "these now agree — drop this test and use AppHandle::path() instead"
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -19,7 +19,7 @@ use crate::audio::recorder::Event as RecorderEvent;
 use crate::queue;
 use crate::pipeline::{self, PipelineConfig, Progress, Stage, StageState};
 use crate::session::RecordingSession;
-use crate::state::AppState;
+use crate::state::{AppState, LockRecover};
 use crate::{ollama, platform, whisper};
 
 // --- event names -------------------------------------------------------
@@ -199,7 +199,7 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
     // Replace wholesale rather than mutating field by field: clearing and
     // repopulating in place would let a worker thread read a half-written
     // config. The lock makes the swap atomic.
-    *state.config.lock().expect("config poisoned") = parsed;
+    *state.config.lock_recover() = parsed;
 
     // The tray menu bakes in the language and the selected devices, and unlike
     // the DOM it has no way to re-read them. Nothing else tells Rust that the
@@ -684,6 +684,17 @@ pub fn reapply_main_size_pin(window: &tauri::Window) {
 /// Returns the inner height the window was actually given, after clamping.
 #[tauri::command]
 pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<f64, String> {
+    // Rejected here rather than clamped later: `f64::clamp` panics only when the
+    // BOUNDS are NaN and passes a NaN input straight through. It would reach
+    // `set_size` and then be stored into `PINNED_HEIGHT` via `to_bits()` — after
+    // the min and max constraints have already been released — leaving the window
+    // unpinned with a corrupt height that `reapply_main_size_pin` reads back on
+    // the next scale-factor change. The frontend has no business sending one, but
+    // this is the boundary and the boundary is where it gets checked.
+    if !delta.is_finite() {
+        return Err("height delta must be a finite number".into());
+    }
+
     const MIN: f64 = 200.0;
     // Raised from 420 for the processing queue, which adds a panel of up to
     // three cards. The queue list scrolls past that, so this is a ceiling on
@@ -1149,8 +1160,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         if let Some(message) = app
             .state::<AppState>()
             .startup_mute_restore
-            .lock()
-            .expect("startup restore poisoned")
+            .lock_recover()
             .take()
         {
             let _ = app.emit(EV_LOG, message);
@@ -1320,10 +1330,10 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     });
 
     // Held so `stop_recording` can write the outcome into the same file.
-    *state.meeting_log.lock().expect("log poisoned") = Some(log);
+    *state.meeting_log.lock_recover() = Some(log);
 
-    *state.current_folder.lock().expect("folder poisoned") = Some(folder);
-    *state.session.lock().expect("session poisoned") = Some(session);
+    *state.current_folder.lock_recover() = Some(folder);
+    *state.session.lock_recover() = Some(session);
 
     // Muting before you press record is in force on the first sample — that is
     // what `toggle_mute` has always promised, and the flag was already honoured
@@ -1335,7 +1345,7 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
         // Logged, because this is the case a silent track is hardest to explain
         // from the audio alone: the microphone was muted before the first sample
         // ever arrived, so there is no before-and-after in the waveform to read.
-        if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+        if let Some(log) = state.meeting_log.lock_recover().as_ref() {
             log.line(&match &system {
                 SystemMute::Held => {
                     "started while MUTED, system-wide — the microphone track is silence by request"
@@ -1376,7 +1386,7 @@ pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
     // Into the meeting's log as well. A muted microphone writes silence through
     // the same path a dead device does, so a track that goes quiet at 40s looks
     // identical to one that lost its device there — unless the log says which.
-    if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+    if let Some(log) = state.meeting_log.lock_recover().as_ref() {
         log.line(&match (muted, &system) {
             (true, SystemMute::Held) => {
                 "microphone MUTED by the user, system-wide — silence from here is deliberate".into()
@@ -1428,7 +1438,7 @@ fn note_mic_device(app: &AppHandle, name: &str) {
     let state = app.state::<AppState>();
 
     let changed = {
-        let session = state.session.lock().expect("session poisoned");
+        let session = state.session.lock_recover();
         match session.as_ref() {
             Some(session) => session.note_mic_device(name),
             // The pump outlives the session by a moment at either end.
@@ -1464,7 +1474,7 @@ fn note_mic_device(app: &AppHandle, name: &str) {
                 EV_STATUS,
                 i18n::tr(state.config_snapshot().language, "mic_already_muted"),
             );
-            if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+            if let Some(log) = state.meeting_log.lock_recover().as_ref() {
                 log.line(&format!(
                     "{name:?} is already muted system-wide — not by this app. \
                      The microphone track will be silence until that is undone."
@@ -1475,7 +1485,7 @@ fn note_mic_device(app: &AppHandle, name: &str) {
     }
 
     let outcome = apply_system_mute(app, &state, true);
-    if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+    if let Some(log) = state.meeting_log.lock_recover().as_ref() {
         log.line(&match &outcome {
             SystemMute::Held => {
                 format!("system-wide mute now held on {name:?}, the device actually capturing")
@@ -1504,7 +1514,7 @@ pub enum SystemMute {
 
 /// Take or release the system-wide mute, if a recording is running.
 fn apply_system_mute(app: &AppHandle, state: &State<AppState>, muted: bool) -> SystemMute {
-    let session = state.session.lock().expect("session poisoned");
+    let session = state.session.lock_recover();
     let Some(session) = session.as_ref() else {
         return SystemMute::NotRecording;
     };
@@ -1573,8 +1583,7 @@ pub fn is_muted(state: State<AppState>) -> bool {
 pub fn elapsed_seconds(state: State<AppState>) -> f64 {
     state
         .session
-        .lock()
-        .expect("session poisoned")
+        .lock_recover()
         .as_ref()
         .map(|s| s.elapsed_seconds())
         .unwrap_or(0.0)
@@ -1596,8 +1605,7 @@ pub fn elapsed_seconds(state: State<AppState>) -> f64 {
 pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let session = state
         .session
-        .lock()
-        .expect("session poisoned")
+        .lock_recover()
         .take()
         .ok_or("not recording")?;
 
@@ -1623,7 +1631,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
                 output_folder.display()
             ),
         );
-        *state.current_folder.lock().expect("folder poisoned") = None;
+        *state.current_folder.lock_recover() = None;
         clear_mute_after_recording(&app, &state);
         // The recording is over, so the queue is no longer held.
         emit_queue_changed(&app);
@@ -1638,7 +1646,7 @@ pub fn cancel_recording(app: AppHandle, state: State<AppState>) -> Result<(), St
         );
     }
 
-    *state.current_folder.lock().expect("folder poisoned") = None;
+    *state.current_folder.lock_recover() = None;
     clear_mute_after_recording(&app, &state);
     // Same as the early return above: the session is gone, so is the hold.
     emit_queue_changed(&app);
@@ -1675,8 +1683,7 @@ fn clear_mute_after_recording(app: &AppHandle, state: &State<AppState>) {
 pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let session = state
         .session
-        .lock()
-        .expect("session poisoned")
+        .lock_recover()
         .take()
         .ok_or("not recording")?;
 
@@ -1703,7 +1710,7 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
     // describe events: the counters beside what was asked of the device tell
     // you whether audio arrived, and if not, what the device had said about
     // itself first.
-    if let Some(log) = state.meeting_log.lock().expect("log poisoned").take() {
+    if let Some(log) = state.meeting_log.lock_recover().take() {
         log.line("--- stopped ---");
         log.line(&format!("elapsed: {:.3}s", summary.elapsed_seconds));
         for track in &summary.tracks {
@@ -1745,7 +1752,7 @@ pub fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), Stri
 
     clear_mute_after_recording(&app, &state);
 
-    *state.pending.lock().expect("pending poisoned") = Some(summary);
+    *state.pending.lock_recover() = Some(summary);
     emit_recording_state(&app, false, state.is_processing());
     Ok(())
 }
@@ -1855,8 +1862,7 @@ pub fn finalize_meeting(
 ) -> Result<(), String> {
     let summary = state
         .pending
-        .lock()
-        .expect("pending poisoned")
+        .lock_recover()
         .take()
         .ok_or("no meeting is waiting to be processed")?;
 
@@ -2257,7 +2263,7 @@ pub fn set_processing_paused(
     let app_folder = platform::app_data_dir();
     std::fs::create_dir_all(&app_folder).map_err(|e| e.to_string())?;
     std::fs::write(&state.config_file, config.to_json()).map_err(|e| e.to_string())?;
-    *state.config.lock().expect("config poisoned") = config;
+    *state.config.lock_recover() = config;
 
     emit_queue_changed(&app);
     Ok(())

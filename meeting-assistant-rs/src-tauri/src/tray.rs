@@ -28,7 +28,7 @@ use meeting_core::config::Language;
 use meeting_core::i18n;
 
 use crate::audio::devices::{self, SourceKind};
-use crate::state::AppState;
+use crate::state::{AppState, LockRecover};
 
 /// Asks the main window to run its stop flow, including the title prompt.
 pub const EV_REQUEST_STOP: &str = "request_stop";
@@ -320,8 +320,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let folder = app
                 .state::<AppState>()
                 .current_folder
-                .lock()
-                .expect("folder poisoned")
+                .lock_recover()
                 .clone()
                 .unwrap_or_else(|| app.state::<AppState>().config_snapshot().output_folder);
             let _ = crate::commands::open_path(app.clone(), folder.to_string_lossy().into_owned());
@@ -350,7 +349,7 @@ fn select_device(app: &AppHandle, microphone: Option<String>, system: Option<Str
         let _ = app.emit(crate::commands::EV_LOG, format!("could not save config: {e}"));
         return;
     }
-    *state.config.lock().expect("config poisoned") = config;
+    *state.config.lock_recover() = config;
     rebuild(app);
 
     // The Settings window path (`commands::save_config`) emits this; the tray

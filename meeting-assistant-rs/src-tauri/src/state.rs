@@ -14,6 +14,36 @@ use meeting_core::config::Config;
 
 use crate::session::RecordingSession;
 
+/// `lock()` that recovers a poisoned mutex instead of propagating the panic.
+///
+/// # Why poisoning is the wrong default here
+///
+/// Poisoning exists to stop a thread inheriting state that another thread left
+/// half-updated. None of the mutexes below guard anything of that shape: each
+/// holds either an `Option<T>` that is taken wholesale or a handle, so there is
+/// no torn invariant for the next caller to trip over.
+///
+/// What propagating the panic buys instead is an app that can never stop the
+/// meeting it is currently recording. One panic anywhere inside any critical
+/// section poisons that mutex permanently, and because `session` is the mutex
+/// `stop_recording` needs, every later attempt to stop panics too — for the life
+/// of the process, with the audio still on disk and its WAV header never fixed
+/// up. Recovering the value is the lesser harm by a wide margin.
+///
+/// This is deliberately not a blanket policy: a mutex whose critical section can
+/// leave a genuinely inconsistent value should keep `expect`. See
+/// [`AppState::remember_system_mute`], whose section was reduced to a single
+/// field assignment precisely so this trait could be used on it.
+pub trait LockRecover<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockRecover<T> for Mutex<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Managed by Tauri and reachable from every command.
 pub struct AppState {
     /// `Some` only while recording. The mutex is held for the moment it takes
@@ -100,11 +130,11 @@ impl AppState {
     /// Every worker takes one of these rather than reading the live config, so
     /// a settings save mid-meeting cannot change what the recorder is doing.
     pub fn config_snapshot(&self) -> Config {
-        self.config.lock().expect("config poisoned").clone()
+        self.config.lock_recover().clone()
     }
 
     pub fn is_recording(&self) -> bool {
-        self.session.lock().expect("session poisoned").is_some()
+        self.session.lock_recover().is_some()
     }
 
     /// Whether any meeting is being processed or waiting to be.
@@ -121,10 +151,23 @@ impl AppState {
     /// ignored — it means the next launch will not restore the mute, which the
     /// user can do from Sound settings, and it is no reason to fail a recording.
     pub fn remember_system_mute(&self, device: Option<&str>) {
-        let mut config = self.config.lock().expect("config poisoned");
-        config.system_mic_muted = device.map(str::to_string);
+        // Serialise under the lock, write outside it.
+        //
+        // This used to hold the `config` guard across `fs::write`, and the
+        // caller — `apply_system_mute` — holds the `session` guard for the whole
+        // of its body. A mute toggle therefore blocked every other command that
+        // touches the session, `stop_recording` included, for as long as the
+        // disk took. On a network volume that is not a rounding error.
+        //
+        // It also leaves the critical section a single field assignment, which
+        // cannot panic, which is what makes `lock_recover` safe to use here.
+        let json = {
+            let mut config = self.config.lock_recover();
+            config.system_mic_muted = device.map(str::to_string);
+            config.to_json()
+        };
 
-        if let Err(e) = std::fs::write(&self.config_file, config.to_json()) {
+        if let Err(e) = std::fs::write(&self.config_file, json) {
             eprintln!("[mute] could not record the system mute: {e}");
         }
     }
@@ -141,8 +184,7 @@ impl AppState {
     /// session, so this is false whenever nothing is recording.
     pub fn holds_system_mute(&self) -> bool {
         self.session
-            .lock()
-            .expect("session poisoned")
+            .lock_recover()
             .as_ref()
             .map(|s| s.holds_system_mute())
             .unwrap_or(false)

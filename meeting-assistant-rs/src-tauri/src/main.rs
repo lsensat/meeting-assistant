@@ -5,7 +5,7 @@
 
 use meeting_assistant::commands;
 use meeting_assistant::platform;
-use meeting_assistant::state::AppState;
+use meeting_assistant::state::{AppState, LockRecover};
 use meeting_core::config::Config;
 
 fn main() {
@@ -116,8 +116,7 @@ fn main() {
                 eprintln!("[mute] {message}");
                 *state
                     .startup_mute_restore
-                    .lock()
-                    .expect("startup restore poisoned") = Some(message);
+                    .lock_recover() = Some(message);
                 state.remember_system_mute(None);
             }
 
