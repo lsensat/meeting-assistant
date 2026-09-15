@@ -1579,26 +1579,31 @@ pub enum SystemMute {
 
 /// Take or release the system-wide mute, if a recording is running.
 fn apply_system_mute(app: &AppHandle, state: &State<AppState>, muted: bool) -> SystemMute {
-    let session = state.session.lock_recover();
-    let Some(session) = session.as_ref() else {
-        return SystemMute::NotRecording;
+    // Everything needed from the session, then the lock goes.
+    //
+    // What follows is a full capture-endpoint enumeration — COM on Windows,
+    // Core Audio on macOS — and holding the session lock across it blocked every
+    // command that needs the session, `stop_recording` included. On a machine
+    // with several endpoints that is hundreds of milliseconds of the app not
+    // being able to stop the meeting it is recording.
+    //
+    // The device is the one **capturing**, not the one configured. A Windows
+    // recording fell back to the built-in microphone because the configured
+    // headset was not plugged in, and the mute — looking up the configured name
+    // — reported "no input device named ..." and silenced nothing, while the
+    // recording ran on a device it had never heard of. The configured name is
+    // the fallback for the window before the stream opens, which is not a
+    // rounding error: that open took 18 seconds on the machine this was found
+    // on.
+    let (device, slot) = {
+        let session = state.session.lock_recover();
+        let Some(session) = session.as_ref() else {
+            return SystemMute::NotRecording;
+        };
+        (session.mic_device(), session.system_mute_slot())
     };
 
-    // The device **capturing**, not the device configured.
-    //
-    // A Windows recording fell back to the built-in microphone because the
-    // configured headset was not plugged in, and the mute — looking up the
-    // configured name — reported "no input device named ..." and silenced
-    // nothing, while the recording ran on a device it had never heard of. The
-    // mute exists to stop the microphone the meeting is being recorded from,
-    // and that is the only device it should ever touch.
-    //
-    // The configured name is the fallback for the window before the stream
-    // opens, which is not a rounding error: that open took 18 seconds on the
-    // machine this was found on.
-    let device = session
-        .mic_device()
-        .unwrap_or_else(|| state.config_snapshot().microphone_name);
+    let device = device.unwrap_or_else(|| state.config_snapshot().microphone_name);
     if device.is_empty() {
         return SystemMute::NotRecording;
     }
@@ -1607,12 +1612,29 @@ fn apply_system_mute(app: &AppHandle, state: &State<AppState>, muted: bool) -> S
     // — it is handed a way to remember and a way to forget.
     let handle = app.clone();
     let remember = move |device: Option<&str>| {
-        handle
-            .state::<AppState>()
-            .remember_system_mute(device);
+        handle.state::<AppState>().remember_system_mute(device);
     };
 
-    match session.set_system_mute(muted, &device, remember) {
+    let outcome = crate::session::set_system_mute(&slot, muted, &device, remember);
+
+    // The recording can now end while the call above is still running, which it
+    // could not when the session lock was held for the whole function. Taking a
+    // mute for a meeting that has already stopped would leave the microphone
+    // silenced with nothing left to release it — the slot's own `Drop` fires
+    // only when the last handle goes, and this one is about to.
+    //
+    // So it is checked and undone rather than prevented: the alternative is
+    // holding a lock across the OS call again, which is the thing being fixed.
+    if muted && outcome.is_ok() && !state.is_recording() {
+        let handle = app.clone();
+        let forget = move |device: Option<&str>| {
+            handle.state::<AppState>().remember_system_mute(device);
+        };
+        let _ = crate::session::set_system_mute(&slot, false, &device, forget);
+        return SystemMute::NotRecording;
+    }
+
+    match outcome {
         Ok(()) => {
             if muted {
                 SystemMute::Held

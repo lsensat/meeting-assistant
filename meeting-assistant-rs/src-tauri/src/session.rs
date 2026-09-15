@@ -34,7 +34,7 @@ pub struct RecordingSession {
     ///
     /// Listed before `_queue_hold` so it drops first. Nothing depends on the
     /// order, but releasing the user's microphone is the more urgent of the two.
-    system_mute: std::sync::Mutex<Option<crate::audio::system_mute::MuteGuard>>,
+    system_mute: SystemMuteSlot,
 
     /// The microphone actually capturing, which is not always the configured
     /// one.
@@ -71,43 +71,66 @@ pub struct RecordingSession {
     _queue_hold: crate::queue::RecordingHold,
 }
 
-impl RecordingSession {
-    /// Take or release the system-wide microphone mute.
-    ///
-    /// Separate from [`set_muted`](Self::set_muted), which silences the samples
-    /// this recording writes. This one silences the device for **every**
-    /// application, and is only ever held while a recording is running — the
-    /// guard is a field of this session, so every way out of a recording
-    /// releases it.
-    ///
-    /// Returns the error when the OS refuses, so the caller can say the mute is
-    /// recording-only rather than let the button claim more than it did.
-    pub fn set_system_mute(
-        &self,
-        muted: bool,
-        device: &str,
-        remember: impl Fn(Option<&str>) + Send + Sync + 'static,
-    ) -> Result<(), crate::audio::system_mute::MuteError> {
-        let mut slot = self.system_mute.lock().expect("system mute poisoned");
+/// Where a recording's system-wide mute lives.
+///
+/// `Arc` rather than a plain field so a caller can hold the slot without
+/// holding the session. The session owns one of these, so dropping the session
+/// still releases the mute — that is what makes every exit from a recording,
+/// including a panic, put the microphone back. A transient handle taken by
+/// [`set_system_mute`] only defers that release by the length of one OS call.
+pub type SystemMuteSlot = Arc<std::sync::Mutex<Option<crate::audio::system_mute::MuteGuard>>>;
 
-        if !muted {
-            // Dropping the guard is what unmutes and clears the flag.
-            *slot = None;
-            return Ok(());
-        }
+/// Take or release the system-wide microphone mute.
+///
+/// Separate from [`RecordingSession::set_muted`], which silences the samples
+/// this recording writes. This one silences the device for **every**
+/// application, and is only ever held while a recording is running — the guard
+/// lives in a slot the session owns, so every way out of a recording releases
+/// it.
+///
+/// Takes the slot rather than the session so the caller can release the session
+/// lock first; see [`RecordingSession::system_mute_slot`].
+///
+/// Returns the error when the OS refuses, so the caller can say the mute is
+/// recording-only rather than let the button claim more than it did.
+pub fn set_system_mute(
+    slot: &SystemMuteSlot,
+    muted: bool,
+    device: &str,
+    remember: impl Fn(Option<&str>) + Send + Sync + 'static,
+) -> Result<(), crate::audio::system_mute::MuteError> {
+    let mut slot = slot.lock().unwrap_or_else(|p| p.into_inner());
 
-        // Already muting the right device.
-        if slot.as_ref().map(|g| g.device() == device).unwrap_or(false) {
-            return Ok(());
-        }
-
-        // Held, but on a different device — the recording followed a
-        // disconnect. Release the old one first: leaving it muted would strand
-        // a device the user is no longer recording with.
+    if !muted {
+        // Dropping the guard is what unmutes and clears the flag.
         *slot = None;
+        return Ok(());
+    }
 
-        *slot = Some(crate::audio::system_mute::MuteGuard::acquire(device, remember)?);
-        Ok(())
+    // Already muting the right device.
+    if slot.as_ref().map(|g| g.device() == device).unwrap_or(false) {
+        return Ok(());
+    }
+
+    // Held, but on a different device — the recording followed a disconnect.
+    // Release the old one first: leaving it muted would strand a device the user
+    // is no longer recording with.
+    *slot = None;
+
+    *slot = Some(crate::audio::system_mute::MuteGuard::acquire(device, remember)?);
+    Ok(())
+}
+
+impl RecordingSession {
+    /// A handle to the mute slot, valid for as long as the caller holds it.
+    ///
+    /// Exists so a caller can stop holding the **session** lock before going
+    /// near the OS. Taking or releasing a system mute means a full capture
+    /// endpoint enumeration — COM on Windows, Core Audio on macOS — and doing
+    /// that under the session lock blocks every command that needs the session,
+    /// `stop_recording` among them.
+    pub fn system_mute_slot(&self) -> SystemMuteSlot {
+        Arc::clone(&self.system_mute)
     }
 
     /// Record which microphone is capturing now. Returns true if this is a
@@ -262,7 +285,7 @@ impl RecordingSession {
             folder,
             tracks,
             events,
-            system_mute: std::sync::Mutex::new(None),
+            system_mute: SystemMuteSlot::default(),
             mic_device: std::sync::Mutex::new(None),
             _queue_hold: queue_hold,
         })
