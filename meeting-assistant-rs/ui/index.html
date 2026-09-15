@@ -226,8 +226,24 @@
           now a per-meeting action inside the library, where it works for every
           meeting rather than only the last.
         -->
-        <button class="btn btn--result" id="summary-button" data-tooltip="tooltip_library">
-          <span data-i18n="library">Library</span>
+        <button class="btn btn--result" id="summary-button" data-tooltip="tooltip_library"
+                data-i18n-label="library" aria-label="Library">
+          <!--
+            An icon rather than the word, which was the only text in this row.
+            Both bundled font faces are `font-display: block`, so text is
+            invisible until the font loads and the button rendered blank until
+            then. An icon has nothing to wait for.
+
+            The `aria-label` carries what the word did — the button is still
+            named for a screen reader, and the tooltip still says "Library".
+
+            Heroicons outline, like every other icon in this window, and MIT —
+            already credited in the acknowledgements. `stroke-width`, `linecap`
+            and `linejoin` are left off deliberately: `.btn svg` supplies them,
+            and repeating them per icon is how one ends up drawn at a different
+            weight from its neighbours.
+          -->
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7.875 14.25 1.214 1.942a2.25 2.25 0 0 0 1.908 1.058h2.006c.776 0 1.497-.4 1.908-1.058l1.214-1.942M2.41 9h4.636a2.25 2.25 0 0 1 1.872 1.002l.164.246a2.25 2.25 0 0 0 1.872 1.002h2.092a2.25 2.25 0 0 0 1.872-1.002l.164-.246A2.25 2.25 0 0 1 16.954 9h4.636M2.41 9a2.25 2.25 0 0 0-.16.832V12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 12V9.832c0-.287-.055-.57-.16-.832M2.41 9a2.25 2.25 0 0 1 .382-.632l3.285-3.832a2.25 2.25 0 0 1 1.708-.786h8.43c.657 0 1.281.287 1.709.786l3.284 3.832c.163.19.291.404.382.632M4.5 20.25h15A2.25 2.25 0 0 0 21.75 18v-2.625c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125V18a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
         </button>
         <button class="btn btn--result" id="folder-button" data-tooltip="tooltip_folder" aria-label="Folder">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
