@@ -413,7 +413,7 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::MuteError;
+    use super::{MuteError, OnChange};
     use windows::core::GUID;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{eCapture, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE};
@@ -440,6 +440,29 @@ mod platform {
                 .map_err(|e| MuteError::Failed(e.to_string()))
         })
     }
+
+    /// Not yet implemented here — see the module note.
+    ///
+    /// Deliberately an error rather than a watch that never fires: a caller that
+    /// believes it is watching, and is not, shows "unmuted" with the same
+    /// confidence it would show the truth. The caller logs this and carries on
+    /// without observation, which is what the app did before any of this
+    /// existed.
+    ///
+    /// The Windows shape is different from the macOS one and cannot be a
+    /// translation of it. `IAudioEndpointVolume` is a COM interface, COM
+    /// interfaces are `!Send`, and `RecordingSession` — which owns the watch —
+    /// lives inside `AppState`, which Tauri's `manage` requires to be
+    /// `Send + Sync`. So the watch has to own a **thread** that owns the
+    /// interface, and hold only a sender and a `JoinHandle`.
+    pub fn watch(name: &str, _on_change: OnChange) -> Result<(MuteWatch, bool), MuteError> {
+        Err(MuteError::Unsupported(format!(
+            "{name}: watching the mute state is not implemented on Windows yet"
+        )))
+    }
+
+    /// Nothing is registered yet, so there is nothing to unregister.
+    pub struct MuteWatch;
 
     pub fn set(name: &str, muted: bool) -> Result<(), MuteError> {
         with_endpoint(name, |volume| {
