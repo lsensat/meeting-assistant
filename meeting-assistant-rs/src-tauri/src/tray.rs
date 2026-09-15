@@ -399,6 +399,7 @@ mod tests {
             "tray_muted_recording_only",
             "mute_recording_only",
             "tooltip_mute",
+            "mic_already_muted",
             // The summary written when a meeting has no speech in it. If these
             // are missing the file says `summary_no_speech_title`, which is the
             // one artifact the user keeps from that meeting.

@@ -1436,7 +1436,41 @@ fn note_mic_device(app: &AppHandle, name: &str) {
         }
     };
 
-    if !changed || !state.is_muted() {
+    if !changed {
+        return;
+    }
+
+    // Is this microphone already muted, before the app touches anything?
+    //
+    // A mute set in Control Center, in Sound settings, or by another app is
+    // invisible to this one: it shows "ready", records digital silence, and the
+    // user finds out from a summary saying nothing was said. One synchronous
+    // read at the moment the device becomes known catches the whole class, and
+    // it is the only moment worth reading — before this the device is not open,
+    // and after it the recording has already started.
+    //
+    // Deliberately not a listener. A listener was built for this and measured
+    // against the hardware it was aimed at: a Poly Blackwire's own mute button
+    // never moves the OS flag, so the notification never comes. Everything a
+    // listener would have caught beyond this — somebody muting in Control
+    // Center *during* a meeting — costs a callback thread, a COM object on
+    // Windows, and a lifetime problem, for an event nobody has reported.
+    //
+    // A failure to read is not reported: an unreadable mute state is not
+    // evidence of anything, and this is a courtesy, not a diagnosis.
+    if !state.is_muted() {
+        if let Ok(true) = crate::audio::system_mute::is_muted(name) {
+            let _ = app.emit(
+                EV_STATUS,
+                i18n::tr(state.config_snapshot().language, "mic_already_muted"),
+            );
+            if let Some(log) = state.meeting_log.lock().expect("log poisoned").as_ref() {
+                log.line(&format!(
+                    "{name:?} is already muted system-wide — not by this app. \
+                     The microphone track will be silence until that is undone."
+                ));
+            }
+        }
         return;
     }
 

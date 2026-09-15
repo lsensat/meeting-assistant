@@ -83,7 +83,8 @@ pub fn is_supported() -> bool {
 mod platform {
     use super::MuteError;
     use objc2_core_audio::{
-        kAudioDevicePropertyMute, kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain,
+        kAudioDevicePropertyMute, kAudioDevicePropertyStreamConfiguration,
+        kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain,
         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
         kAudioObjectSystemObject, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize,
         AudioObjectID, AudioObjectIsPropertySettable, AudioObjectPropertyAddress,
@@ -175,10 +176,64 @@ mod platform {
         Some(name)
     }
 
+    /// Whether this device can capture anything.
+    ///
+    /// A USB headset is **two devices with the same name** — a microphone and a
+    /// pair of speakers — and Core Audio reports both. Matching on the name
+    /// alone can therefore land on the output half, which has no mute on its
+    /// input scope, so the app reports "this device does not support muting" for
+    /// a headset whose microphone supports it perfectly well. Found by plugging
+    /// in a Poly Blackwire 3320.
+    ///
+    /// The stream configuration is an `AudioBufferList`, whose first field is
+    /// the buffer count. Zero buffers on the input scope means zero ways to
+    /// record from it.
+    fn has_input(id: AudioObjectID) -> bool {
+        let mut addr = address(
+            kAudioDevicePropertyStreamConfiguration,
+            kAudioObjectPropertyScopeInput,
+        );
+        let mut size: u32 = 0;
+
+        // SAFETY: asking for the size only; `size` is a live u32.
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                id,
+                NonNull::from(&mut addr),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+            )
+        };
+        if status != 0 || (size as usize) < std::mem::size_of::<u32>() {
+            return false;
+        }
+
+        let mut buffer = vec![0u8; size as usize];
+        // SAFETY: the buffer is exactly the size the call above reported.
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                id,
+                NonNull::from(&mut addr),
+                0,
+                std::ptr::null(),
+                NonNull::from(&mut size),
+                NonNull::new_unchecked(buffer.as_mut_ptr() as *mut c_void),
+            )
+        };
+        if status != 0 {
+            return false;
+        }
+
+        u32::from_ne_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) > 0
+    }
+
     /// The device id whose name matches `name`, by the shared matching rules.
     fn find(name: &str) -> Result<AudioObjectID, MuteError> {
         let devices: Vec<(AudioObjectID, String)> = all_devices()
             .into_iter()
+            // Capture devices only — see `has_input`.
+            .filter(|id| has_input(*id))
             .filter_map(|id| name_of(id).map(|n| (id, n)))
             .collect();
 
@@ -422,6 +477,22 @@ mod tests {
 mod live {
     use super::*;
 
+    /// Serialises the tests below.
+    ///
+    /// Every one of them mutes and unmutes **the same physical device**, and the
+    /// harness runs tests in parallel by default. Individually they all passed;
+    /// together they failed, because one unmuted a device another had just muted
+    /// and was about to assert on.
+    ///
+    /// Poisoning is tolerated on purpose: a panic in one of these leaves the
+    /// device wherever it was, and refusing to run the rest would turn one
+    /// failure into several.
+    static DEVICE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        DEVICE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Mute a real device and read the state back from the OS.
     ///
     /// Ignored by default: it changes global state, so it has no business in a
@@ -435,6 +506,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn muting_a_real_device_takes_effect() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
 
         let before = is_muted(&device).expect("read the mute state");
@@ -504,6 +576,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn crash_while_muted_leaves_the_device_muted() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
         let before = is_muted(&device).expect("read the mute state");
 
@@ -571,6 +644,7 @@ mod live {
     #[test]
     #[ignore = "changes the system mute state; set MUTE_TEST_DEVICE"]
     fn dropping_the_guard_unmutes() {
+        let _serial = one_at_a_time();
         let device = std::env::var("MUTE_TEST_DEVICE").expect("set MUTE_TEST_DEVICE");
         let before = is_muted(&device).expect("read the mute state");
 
