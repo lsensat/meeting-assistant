@@ -1461,7 +1461,24 @@ pub fn toggle_mute(app: AppHandle, state: State<AppState>) -> bool {
             std::sync::atomic::AtomicBool::new(false);
         if !COM_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             if let Some(note) = crate::audio::system_mute::com_diagnostic() {
-                log.line(&note);
+                // Two threads, and they are not always the same one.
+                //
+                // `COM_STATE` records whoever reached `CoInitializeEx` FIRST,
+                // which may be the recorder event pump re-taking a mute on the
+                // capturing device rather than this command. Logging only that
+                // one made the first result ambiguous: it showed an unnamed
+                // worker, which could have meant either "sync commands do not
+                // run on the main thread" or "the pump got there first" — and
+                // those call for opposite conclusions about the lifecycle work.
+                //
+                // So the observing thread is recorded too. `toggle_mute` is a
+                // plain `#[tauri::command]`, so whatever this prints IS where a
+                // synchronous command runs.
+                log.line(&format!(
+                    "{note}; observed from thread {:?} named {:?}",
+                    std::thread::current().id(),
+                    std::thread::current().name().unwrap_or("<unnamed>"),
+                ));
             }
         }
     }
