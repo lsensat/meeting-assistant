@@ -101,7 +101,25 @@
   --panel-recess: var(--alloy-2);
   --ink:          var(--body);        /* text on cream */
   --ink-invert:   var(--faceplate);   /* text on steel-dark, amber-dark, red */
-  --menu:         #242627;            /* an open dropdown list, one step below --body */
+
+  /*
+   * The chrome: what sits directly on --app-bg rather than on a panel. Named
+   * apart from --ink-invert, which is text on the dark fills (steel-dark,
+   * amber-dark, red) and stays cream in both themes.
+   */
+  --chrome-ink:    var(--faceplate);
+  --chrome-muted:  var(--faceplate-2);
+  --chrome-accent: var(--amber);      /* section headings, text links */
+  --chrome-off:    var(--body);       /* a disabled key on the chrome */
+
+  --menu:          #242627;           /* an open dropdown list, one step below --body */
+  --menu-ink:      var(--faceplate);
+  --menu-active:   var(--steel-dark);
+
+  --modal-bg:      var(--body);
+  --modal-ink:     var(--faceplate);
+
+  color-scheme: dark;
 
   --border: 1px solid var(--steel);
 
@@ -129,13 +147,42 @@
   --lift: 0 1px 2px rgb(0 0 0 / 0.35);
 }
 
+/*
+ * The light theme: the machine body in brushed aluminium instead of charcoal.
+ * Only tokens change here; no component rule knows which theme it is in.
+ *
+ * The panels go one step lighter than the body so they still read as raised,
+ * and the gold for headings is darkened until it reads on aluminium: amber on
+ * --alloy is 1.4:1, #7A5C12 is 4.6:1. The buttons, lamps and record key keep
+ * their colours; they were chosen as fills and do not depend on the ground.
+ */
+:root[data-theme="light"] {
+  --app-bg:        var(--alloy);
+  --panel:         #F4F4F2;
+  --panel-recess:  #E4E6E5;
+
+  --chrome-ink:    var(--body);
+  --chrome-muted:  var(--steel-dark);
+  --chrome-accent: #7A5C12;
+  --chrome-off:    var(--alloy-2);
+
+  --menu:          #F4F4F2;
+  --menu-ink:      var(--body);
+  --menu-active:   var(--alloy-2);
+
+  --modal-bg:      #F4F4F2;
+  --modal-ink:     var(--body);
+
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   padding: 0;
   background: var(--app-bg);
-  color: var(--ink-invert);
+  color: var(--chrome-ink);
   font-family: var(--font);
   font-size: 13px;
   /* The app windows are fixed size and the layout has no responsive fallback.
@@ -604,7 +651,7 @@ html, body {
 #cancel-button:disabled {
   /* Sunk into the chassis and unlit. --steel on --steel-dark measured 1.99:1,
      which was invisible; on --body the glyph reaches 4.14:1. */
-  background: var(--body);
+  background: var(--chrome-off);
   color: var(--steel);
   cursor: not-allowed;
   box-shadow: none;
@@ -755,7 +802,7 @@ main {
   overflow-x: hidden;
   height: 100vh;
   background: var(--app-bg);
-  color: var(--ink-invert);
+  color: var(--chrome-ink);
 }
 
 .section { margin-top: 14px; }
@@ -764,7 +811,7 @@ main {
   font-size: 14px;
   font-weight: bold;
   margin: 0 0 8px;
-  color: var(--amber);
+  color: var(--chrome-accent);
 }
 
 .field { margin-bottom: 10px; }
@@ -774,7 +821,7 @@ main {
  * the 4.5 for text. faceplate-2 is 9.85:1 and still reads as secondary, being
  * warmer and dimmer than the faceplate used for primary text.
  */
-.helper { font-size: 10px; margin-top: 3px; color: var(--faceplate-2); }
+.helper { font-size: 10px; margin-top: 3px; color: var(--chrome-muted); }
 
 /*
  * Licence text is the one place in this app where the exact characters matter,
@@ -793,11 +840,11 @@ main {
   margin-top: 6px;
   font: inherit;
   font-size: 12px;
-  color: var(--amber);
+  color: var(--chrome-accent);
   text-decoration: underline;
   cursor: pointer;
 }
-.link-button:hover { color: var(--faceplate); }
+.link-button:hover { color: var(--chrome-ink); }
 
 #licenses-text {
   margin: 0;
@@ -805,7 +852,7 @@ main {
   word-break: break-word;
   font-size: 11px;
   line-height: 1.5;
-  color: var(--faceplate-2);
+  color: var(--chrome-muted);
 }
 
 /*
@@ -929,7 +976,7 @@ input[type="password"] { cursor: text; }
   border: var(--border);
   border-radius: var(--radius-panel);
   box-shadow: 0 10px 24px rgb(0 0 0 / 0.45);
-  color: var(--ink-invert);
+  color: var(--menu-ink);
   font-family: var(--font);
   font-size: 12px;
 }
@@ -942,7 +989,7 @@ input[type="password"] { cursor: text; }
   cursor: pointer;
   white-space: nowrap;
 }
-.dd-option.is-active { background: var(--steel-dark); }
+.dd-option.is-active { background: var(--menu-active); }
 .dd-option[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .dd-text { overflow: hidden; text-overflow: ellipsis; }
 /* The current choice carries the lamp the rest of the app uses for state. */
@@ -1057,14 +1104,14 @@ input[type="password"] { cursor: text; }
  * backdrop. Cream text on `--body` is 11.24:1.
  */
 .modal {
-  background: var(--body);
+  background: var(--modal-bg);
   border: var(--border);
   border-radius: var(--radius-card);
   padding: 14px 16px;
   /* Never wider than the window it sits in, with a gutter either side. */
   width: min(300px, calc(100vw - 24px));
   box-sizing: border-box;
-  color: var(--ink-invert);
+  color: var(--modal-ink);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.5);
 }
 
@@ -1229,7 +1276,7 @@ input[type="password"] { cursor: text; }
   flex-direction: column;
   height: 100vh;
   background: var(--app-bg);
-  color: var(--ink-invert);
+  color: var(--chrome-ink);
 }
 
 .wizard-progress {
@@ -1245,10 +1292,10 @@ input[type="password"] { cursor: text; }
   background: var(--steel-dark);
 }
 /* Amber for steps reached: progress is "in flight", which is what amber means. */
-.wizard-progress .dot.filled { background: var(--amber); }
+.wizard-progress .dot.filled { background: var(--chrome-accent); }
 
 .wizard-body { flex: 1; overflow-y: auto; padding: 6px 28px 12px; }
-.wizard-body h1 { font-size: 18px; margin: 6px 0 8px; color: var(--amber); }
+.wizard-body h1 { font-size: 18px; margin: 6px 0 8px; color: var(--chrome-accent); }
 .wizard-body p { font-size: 12px; line-height: 1.5; margin: 0 0 14px; }
 
 .wizard-footer {
@@ -1490,7 +1537,7 @@ input[type="password"] { cursor: text; }
   border: 1px solid transparent;
   border-radius: var(--radius-panel);
   background: transparent;
-  color: var(--ink-invert);
+  color: var(--chrome-ink);
   font-family: var(--font);
   padding: 7px 8px;
   cursor: pointer;
@@ -1555,7 +1602,7 @@ input[type="password"] { cursor: text; }
      rather than as more chrome. The header, the margin around the document and
      the empty-state message all inherit this. */
   background: var(--app-bg);
-  color: var(--ink-invert);
+  color: var(--chrome-ink);
   /* All four corners. `overflow: hidden` is what makes the radius real —
      without it the header's own background paints square corners straight
      over it. */

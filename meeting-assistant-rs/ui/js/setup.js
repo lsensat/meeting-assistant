@@ -15,6 +15,7 @@
 // Installed before anything that can throw, so a failure in the modules
 // below is reported on screen instead of leaving a blank or half-built window.
 import "./errors.js";
+import "./theme.js";
 import * as api from "./api.js";
 import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
 import { collectApiFields, initApiFields } from "./api-provider.js";
