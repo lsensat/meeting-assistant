@@ -17,6 +17,7 @@
 import "./errors.js";
 import * as api from "./api.js";
 import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
+import { collectApiFields, initApiFields } from "./api-provider.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 
 const el = (id) => document.getElementById(id);
@@ -121,7 +122,30 @@ function applyProviderVisibility() {
   el("setup-api").hidden = !remote;
 }
 
+/** The remote-provider fields, for `api-provider.js`. */
+function apiFields() {
+  return {
+    provider: el("setup-api-provider"),
+    baseField: el("setup-api-base-field"),
+    baseUrl: el("setup-api-base-url"),
+    model: el("setup-api-model"),
+    modelList: el("setup-api-model-list"),
+    loadModels: el("setup-api-load-models"),
+    modelStatus: el("setup-api-model-status"),
+    key: el("setup-api-key"),
+    keyStatus: el("setup-api-key-status"),
+  };
+}
+
+/** Wired once: the summary step can be entered more than once (Back, Next). */
+let apiFieldsReady = false;
+
 async function renderSummaryStep() {
+  if (!apiFieldsReady) {
+    apiFieldsReady = true;
+    await initApiFields(apiFields(), config);
+  }
+
   fillSelect(
     el("setup-provider"),
     [
@@ -170,8 +194,7 @@ async function commitStep() {
     config.summary_provider = el("setup-provider").value;
 
     if (config.summary_provider === "openai_compatible") {
-      config.api_base_url = el("setup-api-base").value.trim();
-      config.api_model = el("setup-api-model").value.trim();
+      collectApiFields(apiFields(), config);
       const key = el("setup-api-key").value;
 
       if (key) await api.setApiKey(key);

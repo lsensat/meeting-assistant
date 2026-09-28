@@ -28,7 +28,8 @@ use serde_json::json;
 /// whose connection reuse is actually worth something.
 static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
 
-fn client() -> Result<&'static reqwest::blocking::Client, OpenAiError> {
+/// Shared with `anthropic.rs`, which talks to the internet the same way.
+pub(crate) fn client() -> Result<&'static reqwest::blocking::Client, OpenAiError> {
     CLIENT
         .get_or_init(|| {
             reqwest::blocking::Client::builder()
@@ -48,6 +49,8 @@ const TEMPERATURE: f64 = 0.2;
 /// slowness.
 const CHAT_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Errors from either remote client — this one and `anthropic.rs`. The name
+/// predates the second; the variants were never specific to OpenAI.
 #[derive(Debug)]
 pub enum OpenAiError {
     /// No base URL configured — the user selected the remote provider but
@@ -65,6 +68,10 @@ pub enum OpenAiError {
     Unreachable(String),
     Http(String),
     Malformed(String),
+    /// The model declined the request (Anthropic's `stop_reason: "refusal"`).
+    /// A successful HTTP response with nothing usable in it, so it has to be
+    /// said in words rather than surfacing as an empty summary.
+    Refused,
 }
 
 impl std::fmt::Display for OpenAiError {
@@ -76,7 +83,7 @@ impl std::fmt::Display for OpenAiError {
             ),
             Self::NotConfigured => write!(
                 f,
-                "No API endpoint configured. Open Settings and enter a base URL and model."
+                "No API provider configured. Open Settings and choose a provider and a model."
             ),
             Self::MissingKey => write!(
                 f,
@@ -89,6 +96,10 @@ impl std::fmt::Display for OpenAiError {
             Self::Unreachable(e) => write!(f, "Could not reach the API endpoint: {e}"),
             Self::Http(e) => write!(f, "The API request failed: {e}"),
             Self::Malformed(e) => write!(f, "Unexpected response from the API: {e}"),
+            Self::Refused => write!(
+                f,
+                "The model declined to summarise this transcript. Try again, or choose another model in Settings."
+            ),
         }
     }
 }
@@ -181,8 +192,74 @@ pub fn chat(
         .ok_or_else(|| OpenAiError::Malformed("response contained no choices".into()))
 }
 
+const LIST_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Deserialize)]
+struct ModelList {
+    #[serde(default)]
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
+/// The models an OpenAI-compatible endpoint offers, from `GET {base}/models`.
+///
+/// Every provider in the list serves this, and it costs no tokens — which also
+/// makes it the way to find out whether a key works before a meeting depends
+/// on it. Sorted, because providers return them in no useful order.
+pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<String>, OpenAiError> {
+    if base_url.trim().is_empty() {
+        return Err(OpenAiError::NotConfigured);
+    }
+    if !is_transport_safe(base_url) {
+        return Err(OpenAiError::InsecureEndpoint(base_url.to_string()));
+    }
+
+    // A key is optional here: a local server (LM Studio, vLLM) often has none,
+    // and OpenRouter lists models without one.
+    let mut request = client()?
+        .get(format!("{}/models", base_url.trim_end_matches('/')))
+        .timeout(LIST_TIMEOUT);
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request
+        .send()
+        .map_err(|e| OpenAiError::Unreachable(e.to_string()))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(OpenAiError::Unauthorized);
+        }
+        let detail: String = response.text().unwrap_or_default().chars().take(300).collect();
+        return Err(OpenAiError::Http(format!("status {status}: {detail}")));
+    }
+
+    let parsed: ModelList = response
+        .json()
+        .map_err(|e| OpenAiError::Malformed(e.to_string()))?;
+    Ok(tidy_model_ids(parsed.data.into_iter().map(|m| m.id)))
+}
+
+/// Sorted, de-duplicated, and without Gemini's `models/` prefix — its list
+/// names models `models/gemini-...`, while chat requests take the bare id.
+fn tidy_model_ids(ids: impl Iterator<Item = String>) -> Vec<String> {
+    let mut ids: Vec<String> = ids
+        .map(|id| id.strip_prefix("models/").map(str::to_string).unwrap_or(id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// True when the endpoint is https, or plain http on the loopback interface.
-fn is_transport_safe(base_url: &str) -> bool {
+/// Shared with `anthropic.rs`.
+pub(crate) fn is_transport_safe(base_url: &str) -> bool {
     let url = base_url.trim().to_ascii_lowercase();
 
     if url.starts_with("https://") {
@@ -226,6 +303,14 @@ mod tests {
     /// The transcript must never cross a network in cleartext. Loopback is the
     /// one exception, because LM Studio and a local vLLM serve plain http there
     /// and that traffic does not leave the machine.
+    #[test]
+    fn model_ids_are_sorted_deduplicated_and_unprefixed() {
+        let ids = ["models/gemini-b", "gpt-4", "models/gemini-a", "gpt-4"]
+            .into_iter()
+            .map(String::from);
+        assert_eq!(tidy_model_ids(ids), vec!["gemini-a", "gemini-b", "gpt-4"]);
+    }
+
     #[test]
     fn plain_http_is_refused_except_on_loopback() {
         assert!(is_transport_safe("https://api.openai.com/v1"));

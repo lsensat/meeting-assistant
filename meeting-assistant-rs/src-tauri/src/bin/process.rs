@@ -78,6 +78,7 @@ fn main() {
         provider: ProviderConfig {
             provider: SummaryProvider::Ollama,
             ollama_model,
+            api_protocol: meeting_core::providers::ApiProtocol::OpenAiCompatible,
             api_base_url: String::new(),
             api_model: String::new(),
         },

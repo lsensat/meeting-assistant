@@ -37,9 +37,11 @@ disconnect from the internet and it still works.
   it stopped rather than starting over.
 - **Interface in English and Spanish.**
 
-Optionally, it can summarise through an OpenAI-compatible API instead of Ollama
-— useful on a machine that cannot run a model locally. That one *does* send your
-transcript to whoever you point it at, so it is off by default.
+Optionally, it can summarise through an online API instead of Ollama — useful
+on a machine that cannot run a model locally. Pick Anthropic, OpenAI, Google
+Gemini, Mistral, OpenRouter or Groq, or any OpenAI-compatible endpoint under
+*Other*. That one *does* send your transcript to whoever you point it at, so it
+is off by default.
 
 ### What you get
 

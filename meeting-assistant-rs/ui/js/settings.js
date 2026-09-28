@@ -11,6 +11,7 @@
 import "./errors.js";
 import * as api from "./api.js";
 import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
+import { collectApiFields, initApiFields } from "./api-provider.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
 
@@ -204,6 +205,21 @@ function applyProviderVisibility() {
   el("api-privacy").hidden = !remote;
 }
 
+/** The remote-provider fields, for `api-provider.js`. */
+function apiFields() {
+  return {
+    provider: el("api-provider"),
+    baseField: el("api-base-field"),
+    baseUrl: el("api-base-url"),
+    model: el("api-model"),
+    modelList: el("api-model-list"),
+    loadModels: el("api-load-models"),
+    modelStatus: el("api-model-status"),
+    key: el("api-key"),
+    keyStatus: el("api-key-status"),
+  };
+}
+
 async function populateProvider() {
   fillSelect(
     el("summary-provider"),
@@ -214,12 +230,7 @@ async function populateProvider() {
     String(config.summary_provider ?? "ollama"),
   );
 
-  el("api-base-url").value = String(config.api_base_url ?? "");
-  el("api-model").value = String(config.api_model ?? "");
-  el("api-key").value = "";
-  el("api-key-status").textContent = (await api.hasApiKey())
-    ? tr("api_key_saved")
-    : tr("api_key_missing");
+  await initApiFields(apiFields(), config);
 
   applyProviderVisibility();
 }
@@ -357,7 +368,7 @@ async function step(fn, noteId) {
  * @param {Record<string, unknown>} base
  */
 function collect(base) {
-  return {
+  return collectApiFields(apiFields(), {
     ...base,
     language: el("app-language").value,
     transcription_language: el("transcription-language").value,
@@ -365,14 +376,12 @@ function collect(base) {
     ollama_model: el("ollama-model").value,
     summary_type: el("summary-type").value,
     summary_provider: el("summary-provider").value,
-    api_base_url: el("api-base-url").value.trim(),
-    api_model: el("api-model").value.trim(),
     microphone_name: el("microphone").value,
     system_audio_name: el("system-audio").value,
     output_folder: el("output-folder").value,
     keep_audio: el("keep-audio").checked,
     custom_summary_prompt: el("custom-prompt").value,
-  };
+  });
 }
 
 function wire() {

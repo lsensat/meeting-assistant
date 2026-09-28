@@ -885,6 +885,38 @@ pub fn has_api_key() -> bool {
     crate::summary::has_api_key()
 }
 
+/// The stored key's last four characters, or `None` if there is no key. See
+/// `summary::api_key_hint`.
+#[tauri::command(async)]
+pub fn api_key_hint() -> Option<String> {
+    crate::summary::api_key_hint()
+}
+
+/// The models a provider offers, for the model list in Settings — and the
+/// "does this key work" check, since a rejected key fails this call.
+///
+/// Takes the form's current values rather than the saved config, so the user
+/// can try a provider and key before saving them.
+#[tauri::command(async)]
+pub fn list_api_models(provider: String, base_url: String, key: String) -> Result<Vec<String>, String> {
+    crate::summary::list_models(&provider, &base_url, &key).map_err(|e| e.to_string())
+}
+
+/// The providers the app knows by name, for the provider list.
+#[derive(Serialize)]
+pub struct ApiProviderInfo {
+    id: &'static str,
+    label: &'static str,
+}
+
+#[tauri::command]
+pub fn api_providers() -> Vec<ApiProviderInfo> {
+    meeting_core::providers::PRESETS
+        .iter()
+        .map(|p| ApiProviderInfo { id: p.id, label: p.label })
+        .collect()
+}
+
 // --- files -------------------------------------------------------------
 
 /// Reveal a file or folder in the OS file manager.
