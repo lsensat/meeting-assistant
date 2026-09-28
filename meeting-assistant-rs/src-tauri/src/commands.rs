@@ -691,7 +691,12 @@ pub fn reapply_main_size_pin(window: &tauri::Window) {
 /// Returns the inner height the window was actually given, after clamping.
 #[tauri::command]
 pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<f64, String> {
-    const MIN: f64 = 200.0;
+    // Lowered from 200 with the compact layout. The content at rest measures
+    // 180px in Chromium and less where the fonts render smaller, so a 200px
+    // floor left an empty band above the toolbar that no fit could remove.
+    // This only guards against a bad measurement collapsing the window; it is
+    // not a layout size.
+    const MIN: f64 = 120.0;
     // Raised from 420 for the processing queue, which adds a panel of up to
     // three cards. The queue list scrolls past that, so this is a ceiling on
     // the window rather than on how many meetings can be waiting.

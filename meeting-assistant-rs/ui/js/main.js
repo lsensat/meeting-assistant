@@ -81,12 +81,22 @@ function setStatus(text, detail) {
   // `detail` is the long form of a message deliberately kept short on screen:
   // three wrapped lines pushed the toolbar off the bottom of the window, and a
   // sentence of advice is worth reading once, not on every successful meeting.
-  const hover = detail ?? (clipped !== full ? full : null);
+  //
+  // The line is also clamped to two lines by CSS, so a sentence far shorter
+  // than `STATUS_MAX` can still end in an ellipsis on screen. That case needs
+  // the full text on hover just as much, and only the layout knows it happened.
+  const overflowing = ui.status.scrollHeight > ui.status.clientHeight + 1;
+  const hover = detail ?? (clipped !== full || overflowing ? full : null);
+
+  // The app's own tooltip, not the `title` attribute. `title` is drawn by the
+  // OS — a white box on Windows, a different one on macOS — and this was the
+  // only element in the window using it, so it was the one tooltip that looked
+  // like it belonged to another program.
   if (hover) {
-    ui.status.title = hover;
+    ui.status.dataset.tooltipText = hover;
     if (clipped !== full) console.log("[status]", full);
   } else {
-    ui.status.removeAttribute("title");
+    delete ui.status.dataset.tooltipText;
   }
 
   // The element carries a data-i18n default; once a live status replaces it,
