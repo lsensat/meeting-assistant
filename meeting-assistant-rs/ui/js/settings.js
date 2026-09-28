@@ -12,6 +12,7 @@ import "./errors.js";
 import * as api from "./api.js";
 import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
 import { collectApiFields, initApiFields } from "./api-provider.js";
+import { enhanceSelects } from "./dropdown.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
 
@@ -471,6 +472,7 @@ function wire() {
 }
 
 async function main() {
+  enhanceSelects();
   await loadCatalog();
   config = await api.getConfig();
   setLanguage(String(config.language ?? "en"));

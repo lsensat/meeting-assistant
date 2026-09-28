@@ -101,6 +101,7 @@
   --panel-recess: var(--alloy-2);
   --ink:          var(--body);        /* text on cream */
   --ink-invert:   var(--faceplate);   /* text on steel-dark, amber-dark, red */
+  --menu:         #242627;            /* an open dropdown list, one step below --body */
 
   --border: 1px solid var(--steel);
 
@@ -822,7 +823,7 @@ main {
  * key field falls back to the browser default and renders at the wrong height
  * and width, which it did until this was fixed.
  */
-select, input[type="text"], input[type="password"], textarea {
+select, .dd-trigger, input[type="text"], input[type="password"], textarea {
   width: 100%;
   height: 30px;
   border: var(--border);
@@ -849,9 +850,113 @@ input[type="password"] { cursor: text; }
 
 .with-button { display: flex; gap: 6px; align-items: center; }
 .with-button select,
+.with-button .dd-trigger,
+.with-button .dd-combo,
 .with-button input[type="text"],
 .with-button input[type="password"] { flex: 1; min-width: 0; }
 .with-button .btn { width: 36px; height: 30px; padding: 0; }
+
+/*
+ * Dropdowns. Every `<select>` and the model field's suggestions open the app's
+ * own list (ui/js/dropdown.js), because the system lists cannot be styled: the
+ * suggestion list had no edge on the dark window and ran into what was behind
+ * it. The select stays in the page, hidden, as the source of the value.
+ */
+.dd-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dd-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+.dd-trigger:disabled { cursor: default; opacity: 0.6; }
+.dd-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dd-caret {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dd-trigger[aria-expanded="true"] .dd-caret { transform: rotate(180deg); }
+
+/* A text field that also suggests: room on the right for the caret. */
+.dd-combo { position: relative; display: block; width: 100%; }
+.dd-combo input[type="text"] { padding-right: 26px; }
+.dd-combo-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 26px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.dd-combo input[aria-expanded="true"] ~ .dd-combo-toggle .dd-caret { transform: rotate(180deg); }
+
+/* The list: a dark well, framed by the one border the system has. */
+.dd-list {
+  position: fixed;
+  z-index: 1000;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--menu);
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.45);
+  color: var(--ink-invert);
+  font-family: var(--font);
+  font-size: 12px;
+}
+.dd-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dd-option.is-active { background: var(--steel-dark); }
+.dd-option[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.dd-text { overflow: hidden; text-overflow: ellipsis; }
+/* The current choice carries the lamp the rest of the app uses for state. */
+.dd-lamp {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+.dd-option[aria-selected="true"] .dd-lamp {
+  background: var(--amber);
+  border-color: var(--steel-dark);
+}
 
 /* A full-width action and an icon beside it. The icon keeps the square shape
    `.with-button` gives its buttons, so the two rows read as the same kind of

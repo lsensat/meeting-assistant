@@ -13,6 +13,7 @@
 
 import * as api from "./api.js";
 import { fillSelect } from "./dom.js";
+import { enhanceCombo } from "./dropdown.js";
 import { tr } from "./i18n.js";
 
 /** `api_provider` for a provider the user supplies the URL for. */
@@ -56,6 +57,7 @@ export async function initApiFields(f, config) {
   f.baseUrl.value = String(config.api_base_url ?? "");
   f.model.value = String(config.api_model ?? "");
   f.key.value = "";
+  enhanceCombo(f.model, f.modelList);
 
   const apply = () => {
     f.baseField.hidden = f.provider.value !== CUSTOM;
@@ -122,7 +124,7 @@ async function loadModels(f) {
       f.modelStatus.textContent = tr("api_models_loaded", { count: models.length });
     }
     // Empty field: the list is the point, so open it.
-    if (!chosen) f.model.focus();
+    if (!chosen) enhanceCombo(f.model, f.modelList).open();
   } catch (error) {
     f.modelStatus.textContent = String(error);
   } finally {
