@@ -75,6 +75,9 @@ pub const EV_CAPTURE_DAMAGE: &str = "capture_damage";
 pub const EV_RECORDING_STATE: &str = "recording_state";
 /// Mute toggled, whoever caused it. Same reasoning as above.
 pub const EV_MUTE_STATE: &str = "mute_state";
+/// The microphone's level during a recording: `"quiet"` when it is too low to
+/// transcribe well, `"ok"` when it recovers. See `audio::level`.
+pub const EV_MIC_LEVEL: &str = "mic_level";
 
 #[derive(Serialize, Clone)]
 pub struct RecordingStateDto {
@@ -1319,6 +1322,8 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
         event_log.line("recorder events ended");
     });
 
+    spawn_level_watch(&app, session.mic_level(), folder.clone(), Arc::clone(&log));
+
     // Held so `stop_recording` can write the outcome into the same file.
     *state.meeting_log.lock().expect("log poisoned") = Some(log);
 
@@ -1355,6 +1360,56 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
 
     emit_recording_state(&app, true, false);
     Ok(())
+}
+
+/// Watch the microphone level for as long as this recording runs, and tell the
+/// UI when it is too quiet to transcribe well — while the meeting is still
+/// running, instead of in the summary afterwards.
+///
+/// Ends on its own when the recording does: it checks that the session writing
+/// into `folder` is still the current one, so a stop, a cancel or a new
+/// recording all retire it without any handle to join.
+fn spawn_level_watch(
+    app: &AppHandle,
+    meter: Arc<crate::audio::level::LevelMeter>,
+    folder: std::path::PathBuf,
+    log: Arc<crate::diagnostics::MeetingLog>,
+) {
+    use crate::audio::level::{Change, LevelWatch};
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("mic-level".into())
+        .spawn(move || {
+            let mut watch = LevelWatch::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+
+                let state = app.state::<AppState>();
+                let still_this_meeting = state.is_recording()
+                    && state.current_folder.lock().expect("folder poisoned").as_deref()
+                        == Some(folder.as_path());
+                if !still_this_meeting {
+                    return;
+                }
+
+                let (peak, seconds) = meter.reading();
+                match watch.update(peak, seconds, crate::whisper::QUIET_PEAK) {
+                    Some(Change::Quiet) => {
+                        log.line(&format!(
+                            "microphone QUIET after {seconds:.0}s of unmuted audio: peak {peak:.4}"
+                        ));
+                        let _ = app.emit(EV_MIC_LEVEL, "quiet");
+                    }
+                    Some(Change::Recovered) => {
+                        log.line(&format!("microphone level recovered: peak {peak:.4}"));
+                        let _ = app.emit(EV_MIC_LEVEL, "ok");
+                    }
+                    None => {}
+                }
+            }
+        })
+        .expect("failed to spawn the level watch");
 }
 
 /// Toggle microphone mute. Works whether or not a recording is running.

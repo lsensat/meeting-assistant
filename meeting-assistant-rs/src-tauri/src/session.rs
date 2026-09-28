@@ -49,6 +49,9 @@ pub struct RecordingSession {
     /// that found this, long enough for the user to have pressed mute first.
     mic_device: std::sync::Mutex<Option<String>>,
 
+    /// How loud the microphone is so far. See `audio::level`.
+    mic_level: Arc<crate::audio::level::LevelMeter>,
+
     /// Stops the processing queue for as long as this session exists.
     ///
     /// A field rather than something the commands acquire and release, so the
@@ -116,6 +119,11 @@ impl RecordingSession {
     pub fn note_mic_device(&self, name: &str) -> bool {
         let mut slot = self.mic_device.lock().expect("mic device poisoned");
         let changed = slot.as_deref() != Some(name);
+        // A failover, not the first open: the level measured so far belongs
+        // to the previous device.
+        if changed && slot.is_some() {
+            self.mic_level.reset();
+        }
         *slot = Some(name.to_string());
         changed
     }
@@ -226,6 +234,7 @@ impl RecordingSession {
         let (tx, events) = unbounded();
 
         let started = Instant::now();
+        let mic_level = Arc::new(crate::audio::level::LevelMeter::new());
 
         let tracks = vec![
             recorder::spawn(
@@ -233,6 +242,7 @@ impl RecordingSession {
                     kind: SourceKind::Microphone,
                     configured_name: microphone_name.to_string(),
                     output_file: folder.join(MIC_FILENAME),
+                    level: Some(Arc::clone(&mic_level)),
                 },
                 Arc::clone(&stop),
                 Arc::clone(&muted),
@@ -244,6 +254,7 @@ impl RecordingSession {
                     kind: SourceKind::SystemAudio,
                     configured_name: system_audio_name.to_string(),
                     output_file: folder.join(SYSTEM_FILENAME),
+                    level: None,
                 },
                 Arc::clone(&stop),
                 // System audio is never muted; the mute button is the
@@ -264,6 +275,7 @@ impl RecordingSession {
             events,
             system_mute: std::sync::Mutex::new(None),
             mic_device: std::sync::Mutex::new(None),
+            mic_level,
             _queue_hold: queue_hold,
         })
     }
@@ -276,6 +288,11 @@ impl RecordingSession {
 
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::Relaxed)
+    }
+
+    /// The microphone's level meter, for the watcher in `start_recording`.
+    pub fn mic_level(&self) -> Arc<crate::audio::level::LevelMeter> {
+        Arc::clone(&self.mic_level)
     }
 
     pub fn elapsed_seconds(&self) -> f64 {

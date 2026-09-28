@@ -122,6 +122,9 @@ pub struct RecorderConfig {
     pub kind: SourceKind,
     pub configured_name: String,
     pub output_file: PathBuf,
+    /// Where to report the level of what is recorded, while it is recorded.
+    /// The microphone has one; system audio does not.
+    pub level: Option<Arc<super::level::LevelMeter>>,
 }
 
 /// What a finished track reports back.
@@ -277,6 +280,9 @@ fn run(
 ) -> Result<TrackSummary, RecorderError> {
     let kind = config.kind;
     let mut writer = TrackWriter::create(&config.output_file)?;
+    if let Some(meter) = config.level.clone() {
+        writer.meter(meter);
+    }
 
     // Owned exclusively by this thread, alongside the writer. See wav.rs.
     let mut gap_started_at: Option<Instant> = None;
