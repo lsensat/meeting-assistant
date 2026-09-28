@@ -198,8 +198,12 @@ pub struct Config {
     pub system_audio_name: String,
     pub custom_summary_prompt: String,
     pub summary_provider: SummaryProvider,
-    /// Base URL for [`SummaryProvider::OpenAiCompatible`], without a trailing
-    /// slash, e.g. `https://api.openai.com/v1`.
+    /// Which remote provider: a [`crate::providers::PRESETS`] id, or
+    /// [`crate::providers::CUSTOM`] for one the user supplies the URL for.
+    pub api_provider: String,
+    /// Base URL for [`crate::providers::CUSTOM`], without a trailing slash,
+    /// e.g. `http://localhost:1234/v1`. Ignored for a preset, which carries
+    /// its own — see [`Config::api_endpoint`].
     pub api_base_url: String,
     /// Model id for the remote provider, e.g. `gpt-4o-mini`.
     pub api_model: String,
@@ -248,6 +252,12 @@ pub const KEYCHAIN_SERVICE: &str = "com.meetingassistant.app";
 pub const KEYCHAIN_ACCOUNT: &str = "summary-api-key";
 
 impl Config {
+    /// The protocol and base URL the remote summary provider is reached at.
+    /// See [`crate::providers::endpoint`].
+    pub fn api_endpoint(&self) -> (crate::providers::ApiProtocol, String) {
+        crate::providers::endpoint(&self.api_provider, &self.api_base_url)
+    }
+
     /// Defaults.
     ///
     /// `base` is the user's documents directory, and recordings default to
@@ -283,6 +293,9 @@ impl Config {
             processing_paused: false,
             system_mic_muted: None,
             summary_provider: SummaryProvider::Ollama,
+            // The first in the list, so a user who picks "API" and changes
+            // nothing gets a provider that works, not an empty URL field.
+            api_provider: crate::providers::PRESETS[0].id.to_string(),
             api_base_url: String::new(),
             api_model: String::new(),
             setup_completed: false,
@@ -358,6 +371,20 @@ impl Config {
                 .and_then(SummaryProvider::parse)
                 .unwrap_or(defaults.summary_provider),
 
+            // A config from before the provider list has only a URL. Work out
+            // which provider it was from the host, so an existing setup keeps
+            // working — including the Anthropic one that never could, whose
+            // URL named the full `/v1/messages` endpoint.
+            api_provider: match raw.api_provider {
+                Some(id) => id,
+                None => match raw.api_base_url.as_deref() {
+                    Some(url) if !url.trim().is_empty() => {
+                        crate::providers::infer_from_base_url(url).to_string()
+                    }
+                    _ => defaults.api_provider.clone(),
+                },
+            },
+
             api_base_url: raw
                 .api_base_url
                 .map(|s| s.trim_end_matches('/').to_string())
@@ -392,6 +419,7 @@ impl Config {
             processing_paused: Some(self.processing_paused),
             system_mic_muted: self.system_mic_muted.clone(),
             summary_provider: Some(self.summary_provider.as_str().to_string()),
+            api_provider: Some(self.api_provider.clone()),
             api_base_url: Some(self.api_base_url.clone()),
             api_model: Some(self.api_model.clone()),
             setup_completed: Some(self.setup_completed),
@@ -433,6 +461,8 @@ struct RawConfig {
     system_mic_muted: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -659,6 +689,34 @@ mod tests {
 
     /// A trailing slash would produce `.../v1//chat/completions`, which some
     /// gateways reject.
+    #[test]
+    fn a_config_from_before_the_provider_list_keeps_its_provider() {
+        // The Anthropic setup that could never work under the old client,
+        // because the URL named the full endpoint.
+        let c = Config::from_json(
+            r#"{"api_base_url": "https://api.anthropic.com/v1/messages", "api_model": "claude-opus-5"}"#,
+            &app_folder(),
+        );
+        assert_eq!(c.api_provider, "anthropic");
+        assert_eq!(
+            c.api_endpoint(),
+            (crate::providers::ApiProtocol::Anthropic, "https://api.anthropic.com/v1".to_string())
+        );
+
+        // An unrecognised URL stays exactly as the user configured it.
+        let c = Config::from_json(r#"{"api_base_url": "http://localhost:1234/v1"}"#, &app_folder());
+        assert_eq!(c.api_provider, crate::providers::CUSTOM);
+        assert_eq!(c.api_endpoint().1, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn the_provider_round_trips() {
+        let mut c = Config::from_json("{}", &app_folder());
+        c.api_provider = "mistral".into();
+        let again = Config::from_json(&c.to_json(), &app_folder());
+        assert_eq!(again.api_provider, "mistral");
+    }
+
     #[test]
     fn api_base_url_loses_its_trailing_slash() {
         let c = Config::from_json(r#"{"api_base_url": "https://api.openai.com/v1/"}"#, &app_folder());

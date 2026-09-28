@@ -56,6 +56,7 @@ fn config_for(folder: &Path, output: &Path, title: &str, resume: ResumePoint) ->
             provider: SummaryProvider::Ollama,
             ollama_model: std::env::var("MA_TEST_OLLAMA")
                 .expect("set MA_TEST_OLLAMA to an installed Ollama model"),
+            api_protocol: meeting_core::providers::ApiProtocol::OpenAiCompatible,
             api_base_url: String::new(),
             api_model: String::new(),
         },

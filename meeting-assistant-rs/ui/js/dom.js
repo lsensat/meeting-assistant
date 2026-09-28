@@ -38,10 +38,13 @@ export function fillSelect(select, options, selected) {
  * keychain", so a blank field with a stored key is complete, while a blank field
  * with no stored key is not.
  *
- * @param {{api_base_url?: string, api_model?: string}} config
+ * The URL is required only for "custom": a listed provider carries its own.
+ *
+ * @param {{api_provider?: string, api_base_url?: string, api_model?: string}} config
  * @param {{typedKey: string, hasStoredKey: boolean}} key
  */
 export function isRemoteProviderConfigured(config, { typedKey, hasStoredKey }) {
   const haveKey = Boolean(typedKey) || hasStoredKey;
-  return Boolean(config.api_base_url) && Boolean(config.api_model) && haveKey;
+  const haveUrl = config.api_provider !== "custom" || Boolean(config.api_base_url);
+  return haveUrl && Boolean(config.api_model) && haveKey;
 }

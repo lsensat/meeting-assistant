@@ -5,6 +5,7 @@
 //! unchanged between Windows and macOS. This crate adds audio capture, and in
 //! later phases transcription, the Ollama client and the Tauri shell.
 
+pub mod anthropic;
 pub mod audio;
 pub mod commands;
 pub mod diagnostics;

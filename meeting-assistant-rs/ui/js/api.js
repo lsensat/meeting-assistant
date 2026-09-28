@@ -147,6 +147,27 @@ export const setApiKey = (key) => invoke("set_api_key", { key });
 /** @returns {Promise<boolean>} whether a key is stored (never the key itself) */
 export const hasApiKey = () => invoke("has_api_key");
 
+/**
+ * The stored key's last four characters: `null` when no key is saved, `""`
+ * when one is saved but too short to show any of it. Never the key itself.
+ * @returns {Promise<string|null>}
+ */
+export const apiKeyHint = () => invoke("api_key_hint");
+
+/** @returns {Promise<{id: string, label: string}[]>} the providers known by name */
+export const apiProviders = () => invoke("api_providers");
+
+/**
+ * A provider's models, which also tests the key. Uses the form's current
+ * values; an empty `key` means the stored one.
+ * @param {string} provider
+ * @param {string} baseUrl only used for "custom"
+ * @param {string} key
+ * @returns {Promise<string[]>}
+ */
+export const listApiModels = (provider, baseUrl, key) =>
+  invoke("list_api_models", { provider, baseUrl, key });
+
 /** @returns {Promise<number>} */
 export const elapsedSeconds = () => invoke("elapsed_seconds");
 
