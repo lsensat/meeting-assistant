@@ -56,6 +56,11 @@ Each meeting becomes one folder, named with the time and the title you give it:
 Plain files in a folder you choose. Nothing is locked in a database, and you can
 delete a meeting by deleting its folder.
 
+Summaries can be edited in the Library window: press the pencil to switch to
+the editor, format with the toolbar or the usual shortcuts (Ctrl/⌘+B, I, K, Z),
+and your changes are saved as you type. If the file is changed by something else
+while you edit, the app asks which version to keep rather than overwriting it.
+
 ## What it is not
 
 - **Not a speaker identifier.** It separates *your microphone* from *the

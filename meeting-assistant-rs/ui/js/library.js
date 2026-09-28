@@ -14,6 +14,8 @@ import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
 import { render } from "./markdown.js";
+import { createEditor } from "./editor.js";
+import { Autosave } from "./autosave.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -26,7 +28,63 @@ const ui = {
   empty: el("library-empty"),
   openTranscript: el("open-transcript"),
   openFolder: el("open-folder"),
+  toggleEdit: el("toggle-edit"),
+  editor: el("doc-editor"),
+  editorText: el("editor-text"),
+  editorStatus: el("editor-status"),
+  undo: el("editor-undo"),
+  redo: el("editor-redo"),
+  conflict: el("editor-conflict"),
+  reload: el("editor-reload"),
+  keep: el("editor-keep"),
 };
+
+/** Whether the document pane shows the editor rather than the rendered page. */
+let editing = false;
+/**
+ * The meeting whose source is in the editor. Saves go to this id, never to
+ * `selectedId`: a save that lands after the selection moved must still write
+ * to the document it came from.
+ */
+let editingId = null;
+
+const editor = createEditor(ui.editorText, {
+  onChange: (text) => autosave.changed(text),
+  onHistory: (canUndo, canRedo) => {
+    ui.undo.disabled = !canUndo;
+    ui.redo.disabled = !canRedo;
+  },
+  linkPlaceholder: () => tr("editor_link_text"),
+});
+
+const autosave = new Autosave({
+  save: (text, baseVersion) => api.saveSummary(editingId, text, baseVersion),
+  onState: showSaveState,
+});
+
+/**
+ * @param {import("./autosave.js").SaveState} state
+ * @param {string} [detail]
+ */
+function showSaveState(state, detail) {
+  ui.conflict.hidden = state !== "conflict";
+  ui.editorStatus.classList.toggle("is-error", state === "error");
+  ui.editorStatus.textContent =
+    state === "saved" ? tr("editor_saved")
+    : state === "pending" ? tr("editor_pending")
+    : state === "saving" ? tr("editor_saving")
+    : state === "error" ? tr("editor_save_failed", { error: detail ?? "" })
+    : "";
+
+  // The list's preview line is the summary's first prose line, which an edit
+  // can change. Re-read it once the edit is on disk.
+  if (state === "saved" && editingId) {
+    api.listLibrary().then((latest) => {
+      entries = latest;
+      drawList();
+    });
+  }
+}
 
 /** The meeting on screen, so a refresh can keep it selected. */
 let selectedId = null;
@@ -122,6 +180,15 @@ function markSelected() {
  * @param {string} id
  */
 async function select(id) {
+  // Unsaved edits are written before the selection moves. The one case where
+  // that cannot happen is a conflict the user has not resolved: moving on would
+  // quietly discard their version, so the selection stays and the choice is
+  // put in front of them again.
+  if (!(await leaveDocument())) {
+    markSelected();
+    return;
+  }
+
   selectedId = id;
   markSelected();
 
@@ -135,6 +202,11 @@ async function select(id) {
   ui.head.hidden = false;
   ui.empty.hidden = true;
 
+  if (editing) {
+    await loadSource(id);
+    return;
+  }
+
   const tokens = await api.readSummary(id);
 
   // Two clicks in quick succession can resolve out of order, and the header is
@@ -145,12 +217,76 @@ async function select(id) {
   // `onLink`: a plain <a> in a Tauri webview navigates the window, replacing
   // the app with the page and offering no way back. Rust opens it instead, and
   // re-checks the scheme there rather than trusting this call.
-  render(ui.body, tokens, (url) => {
-    api.openExternalUrl(url).catch((error) => {
-      throw error;
-    });
-  });
+  render(ui.body, tokens, openLink);
   ui.body.scrollTop = 0;
+}
+
+/**
+ * Save what is in the editor before showing something else.
+ *
+ * @returns {Promise<boolean>} false when an unresolved conflict means leaving
+ *   would lose the user's text
+ */
+async function leaveDocument() {
+  if (!editingId) return true;
+  await autosave.flush();
+  if (autosave.blocked && autosave.unsaved) {
+    ui.conflict.hidden = false;
+    ui.editorText.focus();
+    return false;
+  }
+  editingId = null;
+  return true;
+}
+
+/** Put a meeting's source in the editor, as a fresh document. */
+async function loadSource(id) {
+  const source = await api.readSummarySource(id);
+  if (selectedId !== id) return;
+  editingId = id;
+  editor.load(source.text);
+  autosave.reset(source.version);
+  ui.editorText.focus();
+}
+
+/**
+ * Switch between the rendered page and the editor.
+ *
+ * @param {boolean} on
+ */
+async function setEditing(on) {
+  if (on === editing || !selectedId) return;
+
+  if (on) {
+    editing = true;
+    ui.body.hidden = true;
+    ui.editor.hidden = false;
+    await loadSource(selectedId);
+  } else {
+    // Rendered from the editor's own text rather than re-read from disk, so
+    // Read shows the document as it is this instant — including during a
+    // conflict, when what is on disk is somebody else's version.
+    const text = editor.text;
+    if (!(await leaveDocument())) return;
+    editing = false;
+    render(ui.body, await api.renderMarkdown(text), openLink);
+    ui.editor.hidden = true;
+    ui.body.hidden = false;
+    ui.body.scrollTop = 0;
+  }
+
+  ui.toggleEdit.setAttribute("aria-pressed", String(editing));
+  const label = editing ? "library_read" : "library_edit";
+  ui.toggleEdit.dataset.tooltip = label;
+  ui.toggleEdit.dataset.i18nLabel = label;
+  ui.toggleEdit.setAttribute("aria-label", tr(label));
+}
+
+/** A link in a rendered document. See `select` for why it is not a plain <a>. */
+function openLink(url) {
+  api.openExternalUrl(url).catch((error) => {
+    throw error;
+  });
 }
 
 /** Re-read the list; keep the selection if it still exists. */
@@ -167,7 +303,12 @@ async function refresh() {
   // The selected meeting was deleted from disk while the window was open.
   if (selectedId && !entries.some((e) => e.id === selectedId)) {
     selectedId = null;
+    editingId = null;
+    editing = false;
     ui.head.hidden = true;
+    ui.editor.hidden = true;
+    ui.body.hidden = false;
+    ui.toggleEdit.setAttribute("aria-pressed", "false");
     ui.body.replaceChildren();
   }
 }
@@ -178,6 +319,45 @@ async function main() {
   setLanguage(String(config.language ?? "en"));
   applyLanguage();
   initTooltips(el("tooltip"));
+
+  ui.toggleEdit.addEventListener("click", () => setEditing(!editing));
+
+  // Toolbar buttons act on the text without taking focus from it: cancelling
+  // mousedown keeps the textarea's selection, which is what the button needs.
+  for (const button of ui.editor.querySelectorAll(".editor-tool")) {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => editor.actions[button.dataset.action]?.());
+  }
+
+  // The file changed on disk. "Reload" is recorded as an edit, so Undo still
+  // reaches the user's own version if they change their mind.
+  ui.reload.addEventListener("click", async () => {
+    if (!editingId) return;
+    const source = await api.readSummarySource(editingId);
+    editor.replace(source.text);
+    autosave.reset(source.version);
+  });
+  ui.keep.addEventListener("click", () => autosave.overwrite());
+
+  // Ctrl/Cmd+S out of habit. Autosave has usually done it already; this makes
+  // "saved" true the instant it is pressed.
+  document.addEventListener("keydown", (event) => {
+    const modifier = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
+    if (modifier && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      autosave.flush();
+    }
+  });
+
+  // Last-chance saves. The window can be closed within the autosave delay of a
+  // keystroke; losing focus is the earliest sign, and `pagehide` the last one.
+  // The latter cannot await, but the command is sent before the page goes.
+  window.addEventListener("blur", () => autosave.flush());
+  window.addEventListener("pagehide", () => {
+    if (editingId && autosave.unsaved && !autosave.blocked) {
+      api.saveSummary(editingId, editor.text, autosave.version);
+    }
+  });
 
   ui.openFolder.addEventListener("click", async () => {
     if (!selectedId) return;

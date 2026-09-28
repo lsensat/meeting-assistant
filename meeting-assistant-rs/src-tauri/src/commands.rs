@@ -952,6 +952,49 @@ pub fn read_summary(
     Ok(crate::markdown::to_tokens(&text))
 }
 
+/// One meeting's summary as Markdown source, for the editor.
+///
+/// Resolved through `library::summary_path` exactly like `read_summary`: the
+/// editor gets no wider access than the reader had.
+#[tauri::command(async)]
+pub fn read_summary_source(
+    id: String,
+    state: State<AppState>,
+) -> Result<crate::library::Source, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    crate::library::read_source(&path).map_err(|e| e.to_string())
+}
+
+/// Save an edited summary. See `library::save_source` for the conflict check.
+///
+/// `base_version` is the version the editor loaded, or `None` to overwrite
+/// whatever is on disk — only ever sent after the user chose to.
+///
+/// The id still has to name an **existing** summary: this can rewrite one, it
+/// cannot create a file anywhere.
+#[tauri::command(async)]
+pub fn save_summary(
+    id: String,
+    text: String,
+    base_version: Option<String>,
+    state: State<AppState>,
+) -> Result<crate::library::SaveOutcome, String> {
+    let root = state.config_snapshot().output_folder;
+    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    crate::library::save_source(&path, &text, base_version.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Render Markdown the editor has not saved yet.
+///
+/// The same token stream `read_summary` produces, from a string rather than a
+/// file, so switching from Edit to Read shows what is in the editor this
+/// instant instead of waiting for the next autosave. Pure: no file is touched.
+#[tauri::command(async)]
+pub fn render_markdown(source: String) -> Vec<crate::markdown::Token> {
+    crate::markdown::to_tokens(&source)
+}
+
 /// The absolute path of a meeting's folder, for "open in the default app".
 #[tauri::command(async)]
 pub fn library_folder(id: String, state: State<AppState>) -> Result<String, String> {

@@ -1557,6 +1557,109 @@ input[type="password"] { cursor: text; }
   cursor: default;
 }
 
+/* ------------------------------------------------------------- the editor */
+
+/* The Read/Edit toggle shows the mode it switches *to*. */
+#toggle-edit .when-editing { display: none; }
+#toggle-edit[aria-pressed="true"] .when-reading { display: none; }
+#toggle-edit[aria-pressed="true"] .when-editing { display: block; }
+
+/*
+ * Laid out exactly where `.library-body` sits, with the same light page, so
+ * switching mode changes what is on the page and not where the page is.
+ */
+.library-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 10px 12px 12px;
+  border: var(--border);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  border-bottom: var(--border);
+  background: var(--panel-recess);
+}
+
+/* Flat until pointed at: a row of eleven bevelled keys would outweigh the text
+   they format. */
+.editor-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: 13px/1 var(--font);
+  cursor: pointer;
+}
+.editor-tool svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.editor-tool:hover:not(:disabled) { background: var(--amber); }
+.editor-tool:disabled { opacity: 0.35; cursor: default; }
+
+.editor-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--steel);
+}
+
+/* Pushed to the far end, where a glance finds it without reading the tools. */
+.editor-status {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.editor-status.is-error { color: var(--red-dark); opacity: 1; }
+
+.editor-conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  background: var(--faceplate-2);
+  border-bottom: var(--border);
+}
+.editor-conflict span { flex: 1; }
+.editor-conflict .btn { height: 24px; font-size: 11px; }
+
+.editor-text {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 14px 16px 22px;
+  border: 0;
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: 12px/1.6 var(--font-mono);
+  tab-size: 2;
+}
+
 .library-empty {
   margin: auto;
   padding: 0 24px;

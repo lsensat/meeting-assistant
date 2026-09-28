@@ -120,6 +120,89 @@ pub fn transcript_path(output_folder: &Path, id: &str) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// A summary's Markdown source, for the editor.
+#[derive(Debug, Clone, Serialize)]
+pub struct Source {
+    pub text: String,
+    /// What the file held when it was read. Sent back with every save so a
+    /// file changed behind the editor's back is noticed rather than
+    /// overwritten — see [`save_source`].
+    pub version: String,
+}
+
+/// What a save did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "t", rename_all = "lowercase")]
+pub enum SaveOutcome {
+    /// Written. `version` is what the next save must quote.
+    Saved { version: String },
+    /// Not written: the file on disk is no longer the one the editor loaded.
+    Conflict,
+}
+
+/// The largest document the editor will write. A summary is a few kilobytes;
+/// this only exists so a runaway paste cannot fill the disk one autosave at a
+/// time.
+pub const MAX_SOURCE_BYTES: usize = 5 * 1024 * 1024;
+
+/// A short fingerprint of a document's bytes.
+///
+/// A digest rather than the modification time: two writes within the same
+/// timestamp tick are real on FAT and on some network shares, and a digest
+/// cannot be fooled by that. The first 16 hex digits are plenty to tell two
+/// versions of one file apart.
+pub fn version_of(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Read a summary for editing.
+pub fn read_source(path: &Path) -> std::io::Result<Source> {
+    let text = std::fs::read_to_string(path)?;
+    let version = version_of(&text);
+    Ok(Source { text, version })
+}
+
+/// Write an edited summary, unless the file changed since it was loaded.
+///
+/// # Why the check
+///
+/// The editor autosaves, so a save is not a decision the user made at that
+/// moment — it is a timer. If the file was changed meanwhile (a retry that
+/// re-summarised the meeting, another editor, a sync client), a blind write
+/// would silently throw that change away. So the caller quotes the version it
+/// loaded, and a mismatch is reported as [`SaveOutcome::Conflict`] for the user
+/// to resolve. `base: None` is the user choosing to overwrite.
+///
+/// # Why a rename
+///
+/// Through a `.partial` and a rename, like `queue::save`. Autosave writes often,
+/// and a crash halfway through a plain write would leave half a summary — the
+/// one file the user was actively working on.
+pub fn save_source(path: &Path, text: &str, base: Option<&str>) -> std::io::Result<SaveOutcome> {
+    if text.len() > MAX_SOURCE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the document is too large to save",
+        ));
+    }
+
+    if let Some(base) = base {
+        let current = std::fs::read_to_string(path)?;
+        if version_of(&current) != base {
+            return Ok(SaveOutcome::Conflict);
+        }
+    }
+
+    let partial = path.with_extension("md.partial");
+    std::fs::write(&partial, text)?;
+    std::fs::rename(&partial, path)?;
+    Ok(SaveOutcome::Saved {
+        version: version_of(text),
+    })
+}
+
 /// The first line worth showing as a preview.
 ///
 /// Skips headings, bullets and the bold-only lines the summary prompt produces
@@ -259,6 +342,78 @@ mod tests {
         assert_eq!(listed[0].title, "");
         assert_eq!(listed[0].duration_seconds, None);
         assert_eq!(listed[0].preview, "Just prose.");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_save_round_trips_and_moves_the_version_on() {
+        let root = std::env::temp_dir().join(format!("ma-library-save-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let path = root.join(SUMMARY_FILENAME);
+        std::fs::write(&path, "# Old\n").expect("write");
+
+        let loaded = read_source(&path).expect("read");
+        let outcome = save_source(&path, "# New\n", Some(&loaded.version)).expect("save");
+        let SaveOutcome::Saved { version } = outcome else {
+            panic!("an unchanged file must save, got {outcome:?}");
+        };
+
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "# New\n");
+        assert_ne!(version, loaded.version);
+        assert_eq!(version, read_source(&path).expect("read").version);
+        assert!(!path.with_extension("md.partial").exists(), "no temporary left behind");
+
+        // The next autosave quotes the version the last one returned.
+        assert!(matches!(
+            save_source(&path, "# Newer\n", Some(&version)).expect("save"),
+            SaveOutcome::Saved { .. }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_file_changed_behind_the_editor_is_not_overwritten() {
+        let root = std::env::temp_dir().join(format!("ma-library-conflict-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let path = root.join(SUMMARY_FILENAME);
+        std::fs::write(&path, "loaded\n").expect("write");
+        let loaded = read_source(&path).expect("read");
+
+        // Something else rewrites the summary — a retry, another editor.
+        std::fs::write(&path, "rewritten elsewhere\n").expect("write");
+
+        assert_eq!(
+            save_source(&path, "my edit\n", Some(&loaded.version)).expect("save"),
+            SaveOutcome::Conflict
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "rewritten elsewhere\n",
+            "the other change must survive"
+        );
+
+        // Overwriting is still possible, as a deliberate choice.
+        assert!(matches!(
+            save_source(&path, "my edit\n", None).expect("save"),
+            SaveOutcome::Saved { .. }
+        ));
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "my edit\n");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_oversized_document_is_refused() {
+        let root = std::env::temp_dir().join(format!("ma-library-big-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let path = root.join(SUMMARY_FILENAME);
+        std::fs::write(&path, "x\n").expect("write");
+
+        let big = "x".repeat(MAX_SOURCE_BYTES + 1);
+        assert!(save_source(&path, &big, None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "x\n");
 
         std::fs::remove_dir_all(&root).ok();
     }

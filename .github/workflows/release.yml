@@ -192,6 +192,13 @@ jobs:
         working-directory: meeting-assistant-rs
         run: node ui/test-markdown.mjs
 
+      # The editor's toolbar formatting, undo history and autosave. Autosave is
+      # the one that can lose a user's writing, so its ordering and conflict
+      # rules are tested here rather than trusted.
+      - name: Test the Markdown editor
+        working-directory: meeting-assistant-rs
+        run: node ui/test-editor.mjs
+
       # Cheap, and it catches a Windows-only compile break in meeting-core
       # before the much slower bundling step runs.
       - name: Test
