@@ -1345,6 +1345,18 @@ input[type="password"] { cursor: text; }
   padding: 6px;
 }
 
+.library-open {
+  width: 100%;
+  height: 30px;
+  margin-bottom: 6px;
+}
+
+/* An opened file, as opposed to a meeting. Its second line is the folder it
+   came from, so where a document lives is never a guess. */
+.library-row--file .library-row-when {
+  font-style: italic;
+}
+
 /* A row is a button so it is focusable and keyboard-operable for free. */
 .library-row {
   display: block;
@@ -1555,6 +1567,28 @@ input[type="password"] { cursor: text; }
   color: inherit;
   text-decoration: underline dotted;
   cursor: default;
+}
+
+/* Quiet on purpose: information, not a warning. It sits in the chrome above
+   the page, in the chrome's own muted ink, so it reads as the app speaking
+   and never as part of the file. */
+.library-readonly {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 14px -2px;
+  font-size: 10px;
+  opacity: 0.6;
+}
+.library-readonly svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* ------------------------------------------------------------- the editor */

@@ -929,33 +929,53 @@ pub fn open_sound_settings(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Every meeting with a summary, newest first.
+/// Every opened file, then every meeting with a summary, newest first.
 #[tauri::command(async)]
 pub fn list_library(state: State<AppState>) -> Vec<crate::library::LibraryEntry> {
-    crate::library::entries(&state.config_snapshot().output_folder)
+    let mut entries = crate::library::document_entries(&state.documents);
+    entries.extend(crate::library::entries(&state.config_snapshot().output_folder));
+    entries
 }
 
-/// One meeting's summary, as a token stream for the frontend's DOM builder.
+/// The file behind a library id: a meeting's summary, or an opened file.
+///
+/// The one place both kinds of id are resolved, so the commands below cannot
+/// disagree about which files are readable. Neither branch accepts a path: a
+/// meeting id is matched against a folder name by `library::summary_path`, and
+/// a file id is looked up in the registry `documents` filled from what the OS
+/// handed over.
+fn document_path(state: &AppState, id: &str) -> Result<std::path::PathBuf, String> {
+    if crate::documents::is_document_id(id) {
+        state
+            .documents
+            .path(id)
+            .ok_or_else(|| "that file is no longer open".to_string())
+    } else {
+        let root = state.config_snapshot().output_folder;
+        crate::library::summary_path(&root, id).ok_or_else(|| "no summary for that meeting".into())
+    }
+}
+
+/// One document, as a token stream for the frontend's DOM builder.
 ///
 /// Takes an **id**, not a path. Every other file-touching command here derives
-/// its path from an id and this one keeps that property — see
-/// `library::summary_path`, which matches the id against a folder name so `..`,
-/// an absolute path or a separator simply fails to resolve.
+/// its path from an id and this one keeps that property — see `document_path`.
 #[tauri::command(async)]
 pub fn read_summary(
     id: String,
     state: State<AppState>,
 ) -> Result<Vec<crate::markdown::Token>, String> {
-    let root = state.config_snapshot().output_folder;
-    let path = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    let path = document_path(&state, &id)?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     Ok(crate::markdown::to_tokens(&text))
 }
 
 /// One meeting's summary as Markdown source, for the editor.
 ///
-/// Resolved through `library::summary_path` exactly like `read_summary`: the
-/// editor gets no wider access than the reader had.
+/// Resolved through `library::summary_path` **only**, not `document_path`:
+/// summaries are editable, a file opened from outside the app is not. That is
+/// enforced here and in `save_summary`, not just by the frontend hiding the
+/// editor — a `file:N` id contains `:`, which `summary_path` refuses.
 #[tauri::command(async)]
 pub fn read_summary_source(
     id: String,
@@ -995,11 +1015,11 @@ pub fn render_markdown(source: String) -> Vec<crate::markdown::Token> {
     crate::markdown::to_tokens(&source)
 }
 
-/// The absolute path of a meeting's folder, for "open in the default app".
+/// The absolute path of the folder a document lives in, for "open in the
+/// default app".
 #[tauri::command(async)]
 pub fn library_folder(id: String, state: State<AppState>) -> Result<String, String> {
-    let root = state.config_snapshot().output_folder;
-    let summary = crate::library::summary_path(&root, &id).ok_or("no summary for that meeting")?;
+    let summary = document_path(&state, &id)?;
 
     // The **folder**, not the file. This returned the summary's own path, so
     // "Open this meeting's folder" handed `summary.md` to the OS and opened it
@@ -1011,6 +1031,64 @@ pub fn library_folder(id: String, state: State<AppState>) -> Result<String, Stri
         .to_path_buf();
 
     Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Ask the user for a Markdown file, and show it in the library.
+///
+/// The dialog runs **here**, not in the frontend. The frontend's own
+/// `dialog:allow-open` returns a path, and a path from the frontend is exactly
+/// what the library never accepts. Picked in Rust, the path goes straight into
+/// the registry and the frontend is handed an id, as with a double-click.
+///
+/// Returns `None` when the user cancels.
+#[tauri::command(async)]
+pub fn pick_markdown_file(app: AppHandle, state: State<AppState>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &crate::documents::EXTENSIONS);
+    if let Some(window) = app.get_webview_window("library") {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(picked) = dialog.blocking_pick_file() else {
+        return Ok(None);
+    };
+
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    state
+        .documents
+        .register(&path)
+        .map(Some)
+        .ok_or_else(|| format!("{} is not a Markdown file", path.display()))
+}
+
+/// Show files the OS asked the app to open, in the library.
+///
+/// Called for every way a file arrives: the command line at launch (Windows,
+/// Linux), a second launch forwarded by the single-instance plugin (Windows,
+/// Linux), and `RunEvent::Opened` (macOS). Paths that are not Markdown files
+/// are dropped by the registry, so a launch with none left is a no-op and the
+/// caller decides what else to do.
+///
+/// Returns whether anything was opened.
+pub fn open_documents(app: &AppHandle, paths: &[std::path::PathBuf]) -> bool {
+    let state = app.state::<AppState>();
+    // Every file is listed; the last one is shown. Selecting each in turn would
+    // race the window's own startup and land on whichever arrived last anyway.
+    let last = paths
+        .iter()
+        .filter_map(|path| state.documents.register(path))
+        .last();
+
+    let Some(id) = last else {
+        return false;
+    };
+    if let Err(error) = open_library(app.clone(), Some(id)) {
+        eprintln!("[documents] could not open the library: {error}");
+    }
+    true
 }
 
 /// The absolute path of a meeting's transcript.

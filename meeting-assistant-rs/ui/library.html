@@ -16,7 +16,17 @@
     piece of state to earn rather than assume.
   -->
   <div class="library">
-    <aside class="library-list" id="library-list" aria-label="Meetings"></aside>
+    <aside class="library-list">
+      <!--
+        Any Markdown file, not only summaries. The dialog runs in Rust, which
+        hands back an id — see `pick_markdown_file` for why the path never
+        reaches this page.
+      -->
+      <button class="btn btn--secondary library-open" id="open-file" data-i18n="library_open_file">
+        Open a Markdown file…
+      </button>
+      <div id="library-list" aria-label="Meetings"></div>
+    </aside>
 
     <main class="library-doc">
       <!--
@@ -56,6 +66,16 @@
         Built entirely by `markdown.js` from Rust's token stream. Nothing writes
         markup into this element as a string.
       -->
+      <!--
+        Files opened from outside the app are read-only: there is no Edit
+        button for them, and this line says why rather than leaving it to be
+        guessed.
+      -->
+      <p class="library-readonly" id="doc-readonly" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>
+        <span data-i18n="library_read_only">Read only. Only meeting summaries can be edited here.</span>
+      </p>
+
       <article class="library-body" id="doc-body"></article>
 
       <!--

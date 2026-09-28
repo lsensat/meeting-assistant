@@ -28,6 +28,8 @@ const ui = {
   empty: el("library-empty"),
   openTranscript: el("open-transcript"),
   openFolder: el("open-folder"),
+  openFile: el("open-file"),
+  readOnly: el("doc-readonly"),
   toggleEdit: el("toggle-edit"),
   editor: el("doc-editor"),
   editorText: el("editor-text"),
@@ -86,6 +88,9 @@ function showSaveState(state, detail) {
   }
 }
 
+/** @param {{kind?: string}|undefined} entry */
+const isFile = (entry) => entry?.kind === "file";
+
 /** The meeting on screen, so a refresh can keep it selected. */
 let selectedId = null;
 /** The last list drawn, so a refresh can tell whether anything changed. */
@@ -127,13 +132,17 @@ function formatDuration(seconds) {
  * discarded: 11 of 14 first headings read "Meeting Minutes", which is the
  * summary *type*, not the meeting.
  *
- * @param {{id: string, title: string, preview: string, duration_seconds: number|null}} entry
+ * An opened file has no date to show — its id is `file:N`, not a timestamp — so
+ * it is labelled as a file and previewed like a summary.
+ *
+ * @param {{id: string, title: string, preview: string, duration_seconds: number|null,
+ *          kind?: string, location?: string}} entry
  */
 function row(entry) {
-  const when = whenOf(entry.id);
+  const when = isFile(entry) ? { date: entry.title, time: tr("library_file") } : whenOf(entry.id);
 
   const button = document.createElement("button");
-  button.className = "library-row";
+  button.className = isFile(entry) ? "library-row library-row--file" : "library-row";
   button.dataset.id = entry.id;
 
   const head = document.createElement("div");
@@ -193,12 +202,34 @@ async function select(id) {
   markSelected();
 
   const entry = entries.find((e) => e.id === id);
-  const when = whenOf(id);
 
-  ui.title.textContent = entry?.title || when.date;
-  ui.meta.textContent = entry?.duration_seconds
-    ? `${when.time} · ${formatDuration(entry.duration_seconds)}`
-    : when.time;
+  if (isFile(entry)) {
+    // A file has no meeting behind it: its name is the title, its folder is
+    // the only context there is, and there is no transcript to open.
+    ui.title.textContent = entry.title;
+    ui.meta.textContent = entry.location ?? "";
+    ui.openTranscript.hidden = true;
+    ui.openFolder.dataset.tooltip = "library_open_file_folder";
+    // Only summaries are editable. A file opened from outside the app shows no
+    // Edit button and no toolbar — nothing that suggests it could be changed —
+    // and one quiet line saying so, so its absence is not a mystery.
+    //
+    // Arriving here in Edit mode drops back to Read: `leaveDocument` above has
+    // already saved the summary that was being edited.
+    if (editing) closeEditor();
+    ui.toggleEdit.hidden = true;
+    ui.readOnly.hidden = false;
+  } else {
+    const when = whenOf(id);
+    ui.title.textContent = entry?.title || when.date;
+    ui.meta.textContent = entry?.duration_seconds
+      ? `${when.time} · ${formatDuration(entry.duration_seconds)}`
+      : when.time;
+    ui.openTranscript.hidden = false;
+    ui.openFolder.dataset.tooltip = "library_open_folder";
+    ui.toggleEdit.hidden = false;
+    ui.readOnly.hidden = true;
+  }
   ui.head.hidden = false;
   ui.empty.hidden = true;
 
@@ -207,7 +238,17 @@ async function select(id) {
     return;
   }
 
-  const tokens = await api.readSummary(id);
+  let tokens;
+  try {
+    tokens = await api.readSummary(id);
+  } catch (error) {
+    // An opened file can be moved or deleted behind the app's back. Say so in
+    // place rather than leaving the previous document on screen.
+    if (selectedId !== id) return;
+    ui.body.replaceChildren();
+    ui.meta.textContent = String(error);
+    return;
+  }
 
   // Two clicks in quick succession can resolve out of order, and the header is
   // set synchronously above — without this, meeting A's body renders under
@@ -256,6 +297,8 @@ async function loadSource(id) {
  */
 async function setEditing(on) {
   if (on === editing || !selectedId) return;
+  // The button is hidden for opened files; this keeps any other route in too.
+  if (on && isFile(entries.find((e) => e.id === selectedId))) return;
 
   if (on) {
     editing = true;
@@ -268,13 +311,27 @@ async function setEditing(on) {
     // conflict, when what is on disk is somebody else's version.
     const text = editor.text;
     if (!(await leaveDocument())) return;
-    editing = false;
+    closeEditor();
     render(ui.body, await api.renderMarkdown(text), openLink);
-    ui.editor.hidden = true;
-    ui.body.hidden = false;
     ui.body.scrollTop = 0;
   }
 
+  syncToggle();
+}
+
+/**
+ * Hide the editor and show the page, without rendering anything into it. The
+ * caller has saved (see `leaveDocument`) and renders what comes next.
+ */
+function closeEditor() {
+  editing = false;
+  ui.editor.hidden = true;
+  ui.body.hidden = false;
+  syncToggle();
+}
+
+/** The Read/Edit button shows the mode it switches to. */
+function syncToggle() {
   ui.toggleEdit.setAttribute("aria-pressed", String(editing));
   const label = editing ? "library_read" : "library_edit";
   ui.toggleEdit.dataset.tooltip = label;
@@ -306,9 +363,8 @@ async function refresh() {
     editingId = null;
     editing = false;
     ui.head.hidden = true;
-    ui.editor.hidden = true;
-    ui.body.hidden = false;
-    ui.toggleEdit.setAttribute("aria-pressed", "false");
+    ui.readOnly.hidden = true;
+    closeEditor();
     ui.body.replaceChildren();
   }
 }
@@ -319,6 +375,18 @@ async function main() {
   setLanguage(String(config.language ?? "en"));
   applyLanguage();
   initTooltips(el("tooltip"));
+
+  ui.openFile.addEventListener("click", async () => {
+    try {
+      const id = await api.pickMarkdownFile();
+      if (!id) return; // cancelled
+      await refresh();
+      await select(id);
+    } catch (error) {
+      ui.empty.hidden = false;
+      ui.empty.textContent = String(error);
+    }
+  });
 
   ui.toggleEdit.addEventListener("click", () => setEditing(!editing));
 

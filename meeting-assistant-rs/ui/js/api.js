@@ -78,6 +78,12 @@ export const renderMarkdown = (source) => invoke("render_markdown", { source });
 export const libraryFolder = (id) => invoke("library_folder", { id });
 /** Absolute path of a meeting's transcript. */
 export const libraryTranscript = (id) => invoke("library_transcript", { id });
+/**
+ * Let the user pick any Markdown file. The dialog runs in Rust and only an id
+ * comes back — never the path.
+ * @returns {Promise<string|null>} the new document's id, or null if cancelled
+ */
+export const pickMarkdownFile = () => invoke("pick_markdown_file");
 /** @param {string} [id] meeting to select on open */
 export const openLibrary = (id) => invoke("open_library", { id: id ?? null });
 /**

@@ -20,6 +20,11 @@ use crate::queue;
 /// The file this viewer exists to show.
 pub const SUMMARY_FILENAME: &str = "summary.md";
 
+/// [`LibraryEntry::kind`] for a meeting.
+pub const KIND_MEETING: &str = "meeting";
+/// [`LibraryEntry::kind`] for a file opened from outside the app.
+pub const KIND_FILE: &str = "file";
+
 /// One row in the list.
 #[derive(Debug, Clone, Serialize)]
 pub struct LibraryEntry {
@@ -34,6 +39,12 @@ pub struct LibraryEntry {
     pub preview: String,
     /// Seconds of audio, when known.
     pub duration_seconds: Option<f64>,
+    /// `"meeting"` for a summary in the output folder, `"file"` for a Markdown
+    /// file opened from outside the app. The frontend decides what the row and
+    /// the header show from this, not from the shape of the id.
+    pub kind: &'static str,
+    /// For a `"file"`, the folder it lives in. Empty for a meeting.
+    pub location: String,
 }
 
 /// Every meeting with a summary, **newest first**.
@@ -63,12 +74,40 @@ pub fn entries(output_folder: &Path) -> Vec<LibraryEntry> {
                     .unwrap_or_default(),
                 preview: preview_of(&summary),
                 duration_seconds: folder.state.as_ref().and_then(|s| s.duration_seconds),
+                kind: KIND_MEETING,
+                location: String::new(),
             }
         })
         .collect();
 
     found.reverse();
     found
+}
+
+/// Rows for the files opened this session, previewed like a summary.
+///
+/// Listed **above** the meetings: a file the user just double-clicked is the
+/// thing they came to read, and burying it under a month of meetings would make
+/// the double-click look like it did nothing.
+pub fn document_entries(documents: &crate::documents::Documents) -> Vec<LibraryEntry> {
+    documents
+        .list()
+        .into_iter()
+        .map(|doc| {
+            let text = documents
+                .path(&doc.id)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            LibraryEntry {
+                id: doc.id,
+                title: doc.name,
+                preview: preview_of(&text),
+                duration_seconds: None,
+                kind: KIND_FILE,
+                location: doc.folder,
+            }
+        })
+        .collect()
 }
 
 /// Resolve a library id to the summary file it names.
