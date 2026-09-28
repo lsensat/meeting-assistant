@@ -1080,7 +1080,7 @@ pub fn open_documents(app: &AppHandle, paths: &[std::path::PathBuf]) -> bool {
     let last = paths
         .iter()
         .filter_map(|path| state.documents.register(path))
-        .last();
+        .next_back();
 
     let Some(id) = last else {
         return false;
