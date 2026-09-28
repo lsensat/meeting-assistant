@@ -10,6 +10,7 @@
 // Installed before anything that can throw, so a failure below is reported on
 // screen rather than leaving a blank window.
 import "./errors.js";
+import "./theme.js";
 import * as api from "./api.js";
 
 const target = document.getElementById("licenses-text");

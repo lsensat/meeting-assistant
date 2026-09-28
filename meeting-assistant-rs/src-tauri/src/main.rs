@@ -173,8 +173,10 @@ fn main() {
             // The main window is built from `tauri.conf.json` rather than by a
             // `WebviewWindowBuilder`, so it misses the hook the other three get
             // on construction — and it is the window people actually look at.
+            // Its theme too: `tauri.conf.json` can only name one, and the
+            // appearance is a setting.
             if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
-                commands::match_title_bar(&window);
+                commands::apply_appearance(&window, config.appearance);
             }
 
             commands::spawn_worker(app.handle().clone());

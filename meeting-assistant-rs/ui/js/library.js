@@ -10,6 +10,7 @@
 // First, so a failure in anything below is reported on screen rather than
 // leaving a window that looks merely unfinished.
 import "./errors.js";
+import "./theme.js";
 import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
