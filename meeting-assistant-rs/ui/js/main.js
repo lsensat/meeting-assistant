@@ -331,8 +331,8 @@ function stageLabel(job) {
  * Everything about a meeting that the card itself has no room for.
  *
  * The card shows a clipped title and a stage; this is where the whole title,
- * the start time, the length and the stage go, for a window 375px wide that
- * cannot show them inline.
+ * the start time, the length and the stage go, for a window too narrow to show
+ * them inline.
  */
 function jobTooltip(job) {
   const lines = [job.title || tr("queue_untitled")];
@@ -378,9 +378,8 @@ function queueCard(job) {
   stage.className = "queue-card-stage";
   stage.textContent = stageLabel(job);
 
-  // Fixed width and on the line, not a full-width rule beneath it. A bar that
-  // spans the card reads as a divider between meetings rather than as the
-  // progress of one, and at this size the row has the space for it.
+  // Beside its stage label, so it reads as that stage's progress rather than as
+  // a rule dividing one meeting from the next.
   const bar = document.createElement("div");
   bar.className = "queue-bar";
   const fill = document.createElement("div");
@@ -390,8 +389,14 @@ function queueCard(job) {
   fill.style.width = `${percentFor(job)}%`;
   bar.append(fill);
 
-  line.append(time, title, stage, bar);
-  body.append(line);
+  // Two lines: which meeting, then how far along. One line held all four at
+  // 375px; in the narrower window it left no room for the title at all.
+  const progress = document.createElement("div");
+  progress.className = "queue-card-line queue-card-progress";
+
+  line.append(time, title);
+  progress.append(stage, bar);
+  body.append(line, progress);
   card.append(body);
 
   // The parts a poll changes, kept on the element. A tick then writes three
@@ -622,10 +627,26 @@ function queueIsOpen() {
   return ui.queueToggle.getAttribute("aria-expanded") === "true";
 }
 
+/**
+ * How long Finalize ignores clicks after it replaces Record. Long enough to
+ * swallow the tail of a double-click, short enough that nobody meaning to stop
+ * will ever notice.
+ */
+const STOP_ARM_MS = 600;
+let stopArmedAt = 0;
+
 function setRecording(active) {
   recording = active;
-  ui.start.disabled = active;
-  ui.stop.disabled = !active;
+  // Record and Finalize swap in one place. If the button being hidden had
+  // focus, focus follows to its replacement rather than falling to <body>, so
+  // a keyboard user can press Space to start and Space again to finish.
+  const handOver = document.activeElement === (active ? ui.start : ui.stop);
+  ui.start.hidden = active;
+  ui.stop.hidden = !active;
+  if (handOver) (active ? ui.stop : ui.start).focus();
+  // Finalize now appears exactly where Record was clicked, so the second click
+  // of a double-click would stop a meeting a few hundred milliseconds old.
+  if (active) stopArmedAt = Date.now() + STOP_ARM_MS;
   ui.cancel.disabled = !active;
 
   if (active) {
@@ -1209,7 +1230,10 @@ function wireControls() {
     }
   });
 
-  ui.stop.addEventListener("click", stopFlow);
+  ui.stop.addEventListener("click", () => {
+    if (Date.now() < stopArmedAt) return;
+    stopFlow();
+  });
   ui.cancel.addEventListener("click", cancelFlow);
 
   ui.mute.addEventListener("click", () => api.toggleMute());

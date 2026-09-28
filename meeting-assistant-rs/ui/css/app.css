@@ -315,32 +315,35 @@ html, body {
    * chrome, so the space was doing the same job twice.
    */
   margin: 10px 12px 4px;
-  /* 9px, not 12: a 25% tighter gutter, which is the space to the left of the
-     timer well. Also returns 6px of width to the transport row. */
-  padding: 8px 9px 10px;
+  padding: 8px 9px;
   color: var(--ink);
+  /* Readout left, transport right. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Status above, timer below. Takes whatever width the transport leaves. */
+.readout {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .status-row {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  margin-bottom: 2px;
-  /* Anchors the lamps, and the symmetric padding keeps a long message from
-   * running underneath them while leaving it centred. */
-  position: relative;
-  padding: 0 24px;
-  /* Insurance only: the inline icon fits beside every current message, but a
-   * longer translation must wrap rather than overflow. `resizeToContent` grows
-   * the window to match. */
-  flex-wrap: wrap;
+  min-height: 20px;
+  padding: 0 2px;
 }
 
 /*
  * Not a `.btn`. This sits inside a sentence rather than in a row of peers, so
- * it carries no fill, border or bevel — the amber is the whole affordance, and
- * a chromed button here would compete with the transport controls right below.
+ * it carries no fill, border or bevel — a chromed button here would compete
+ * with the transport controls beside it.
  */
 .status-action {
   display: inline-flex;
@@ -382,17 +385,14 @@ html, body {
 /*
  * Two readiness lamps: can this app transcribe, and can it summarise.
  *
- * Absolutely positioned against the row's vertical centre, which is exactly
- * where `align-items: center` puts the recording dot — so all three read as one
- * row of lamps at the same size, whichever are lit.
+ * The recording dot is the third lamp in the row while a meeting runs, at the
+ * same size, so all three read as one bank of indicators.
  */
 .status-lamps {
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
-  gap: 7px;
+  align-items: center;
+  gap: 5px;
+  flex: none;
 }
 
 /*
@@ -442,11 +442,22 @@ html, body {
   50%      { opacity: 0.35; }
 }
 
+/*
+ * Left-aligned beside the lamps, and two lines at most. The full text of a
+ * clipped message is in the tooltip (`setStatus` sets it), so a long error
+ * cannot push the window taller than the controls it describes.
+ */
 .status-line {
-  text-align: center;
-  font-size: 13px;
-  min-height: 17px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.3;
   color: var(--ink);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /*
@@ -455,18 +466,13 @@ html, body {
  */
 .timer {
   font-family: var(--font-mono);
-  font-size: 32px;
+  font-size: 22px;
   font-weight: bold;
   line-height: 1.1;
   color: var(--ink);
   background: var(--panel-recess);
   border-radius: var(--radius-panel);
-  /*
-   * 8px, not 12. The row is timer + 54 + 54 + 27 + gaps inside a 327px card;
-   * at 12px padding and a 12px gap that totalled 337px and pushed the cancel
-   * button out through the right edge of the faceplate.
-   */
-  padding: 2px 10px;
+  padding: 2px 8px;
   min-width: 0;
   /*
    * Flex-centred rather than `text-align: center`. That only handles the
@@ -481,17 +487,9 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Timer left, transport right, vertically centred against each other. */
-.session-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 /* `flex: none` so the transport can never be squeezed or clipped again; the
    timer beside it is what gives way if anything has to. */
-.transport { display: flex; align-items: center; gap: 8px; flex: none; }
+.transport { display: flex; align-items: center; gap: 6px; flex: none; }
 
 /*
  * Mixed fill/stroke icons (the mic pair). The global `.btn svg` rule forces
@@ -522,7 +520,7 @@ html, body {
 .btn--mic:not(.is-muted):hover .icon-mixed .cut { stroke: var(--amber); }
 
 /*
- * Cancel: half of Stop's 54px, so the primary action stays visually dominant.
+ * Cancel: about half of Record's 46px, so the primary action stays dominant.
  * Neutral at rest and red only on hover — destructive on approach, not at rest.
  * Deliberately NOT dimmed: this stylesheet already uses dimming to mean
  * "disabled", and a permanently faded control would read as unavailable.
@@ -530,9 +528,9 @@ html, body {
 #cancel-button {
   width: 27px;
   height: 27px;
-  /* Tighter than the 8px transport gap: cancel belongs to stop, not beside it
-     as a third equal control. */
-  margin-left: -4px;
+  /* Tighter than the transport gap: cancel belongs to the button beside it,
+     not a third equal control. */
+  margin-left: -2px;
   background: var(--steel-dark);
   color: var(--ink-invert);
 }
@@ -545,8 +543,8 @@ html, body {
  * things to regenerate whenever a colour moves.
  */
 .transport button {
-  width: 54px;
-  height: 54px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
   border: none;
   display: inline-flex;
@@ -573,8 +571,8 @@ html, body {
  * rounded corners and proper optical weight.
  */
 .transport button svg {
-  width: 24px;
-  height: 24px;
+  width: 21px;
+  height: 21px;
   fill: currentColor;
   stroke: none;
 }
@@ -910,12 +908,12 @@ input[type="password"] { cursor: text; }
   transition: opacity 90ms ease;
   /*
    * Wraps rather than running off the edge. `tooltip.js` clamps horizontally,
-   * but a `nowrap` tooltip longer than the 375px window is wider than anything
+   * but a `nowrap` tooltip longer than the 260px window is wider than anything
    * the clamp can fit: it pins to the left edge and the remainder overflows
    * right, off-screen. A ceiling narrower than the window means the clamp always
    * has somewhere to put it.
    */
-  max-width: 250px;
+  max-width: 230px;
   /*
    * `jobTooltip` builds one field per line and joins with "\n". The default
    * `normal` collapses those into a single run of text, so the fields ran
@@ -958,7 +956,9 @@ input[type="password"] { cursor: text; }
   border: var(--border);
   border-radius: var(--radius-card);
   padding: 14px 16px;
-  width: 300px;
+  /* Never wider than the window it sits in, with a gutter either side. */
+  width: min(300px, calc(100vw - 24px));
+  box-sizing: border-box;
   color: var(--ink-invert);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.5);
 }
@@ -1055,6 +1055,9 @@ input[type="password"] { cursor: text; }
 }
 
 .queue-card-time { flex: none; color: var(--steel-dark); }
+.queue-card-progress { margin-top: 3px; }
+/* On its own line the bar takes the width the stage label leaves. */
+.queue-card-progress .queue-bar { flex: 1; width: auto; }
 .queue-card-stage { flex: none; color: var(--steel-dark); }
 
 /*

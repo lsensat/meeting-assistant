@@ -16,69 +16,83 @@
   <main>
     <section class="session-card">
       <!--
-        The dot is a sibling of the status line, not a child: `setStatus` writes
-        `textContent`, which would wipe out any element nested inside it.
+        Two columns: a readout on the left (lamps and status above, the timer
+        below) and the transport on the right. The readout used to be a full
+        row above a timer-and-three-buttons row, which is what held the window
+        at 375px; stacking the timer under the status and giving Record and
+        Finalize one shared place is what lets it be narrower.
       -->
-      <div class="status-row">
+      <div class="readout">
         <!--
-          Readiness lamps, absolutely positioned so the status message stays
-          centred on the row regardless of them, and so a long message cannot
-          shift them. `role="img"` with an `aria-label` because the state is
-          otherwise carried by colour alone, which is not available to everyone;
-          the label and the tooltip say the same thing.
+          The dot is a sibling of the status line, not a child: `setStatus`
+          writes `textContent`, which would wipe out any element nested inside
+          it.
         -->
-        <div class="status-lamps">
-          <span class="lamp" id="lamp-whisper" role="img"
-                data-state="pending" data-tooltip="lamp_whisper_pending"></span>
-          <span class="lamp" id="lamp-summary" role="img"
-                data-state="pending" data-tooltip="lamp_ollama_pending"></span>
+        <div class="status-row">
+          <!--
+            Readiness lamps. `role="img"` with an `aria-label` because the state
+            is otherwise carried by colour alone, which is not available to
+            everyone; the label and the tooltip say the same thing.
+          -->
+          <div class="status-lamps">
+            <span class="lamp" id="lamp-whisper" role="img"
+                  data-state="pending" data-tooltip="lamp_whisper_pending"></span>
+            <span class="lamp" id="lamp-summary" role="img"
+                  data-state="pending" data-tooltip="lamp_ollama_pending"></span>
+            <span class="rec-dot" aria-hidden="true"></span>
+          </div>
+          <!--
+            Words, not an icon: "Ready", "Recording", "Transcribing…" are the
+            state, and hiding them behind an "i" would put the one thing this
+            window reports behind a hover. Two lines at most — a long sentence
+            is clipped here and shown whole in the tooltip.
+          -->
+          <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
+          <!--
+            The one action a status sentence can imply. The icon, tooltip and
+            behaviour are all set in JS because they depend on whether Ollama is
+            installed: offering to start something absent is a dead end, so that
+            case offers the download instead.
+
+            The `d` is swapped rather than toggling two `<svg>` elements —
+            `hidden` is an IDL attribute of HTMLElement and does nothing on an
+            SVGElement, which has caught this codebase once already.
+
+            `data-tooltip` must be present at init: `initTooltips` binds only
+            elements that already carry it, though it reads the value lazily on
+            hover, so JS can change which key it points at.
+          -->
+          <button class="status-action" id="status-action" hidden data-tooltip="setup_open_ollama">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
+          </button>
         </div>
-        <span class="rec-dot" aria-hidden="true"></span>
-        <div class="status-line" id="status" data-i18n="checking_environment">Checking environment...</div>
-        <!--
-          Sits inline with the message, as the one action that sentence implies.
-          The icon, tooltip and behaviour are all set in JS because they depend
-          on whether Ollama is installed: offering to start something absent is
-          a dead end, so that case offers the download instead.
-
-          The `d` is swapped rather than toggling two `<svg>` elements —
-          `hidden` is an IDL attribute of HTMLElement and does nothing on an
-          SVGElement, which has caught this codebase once already.
-
-          `data-tooltip` must be present at init: `initTooltips` binds only
-          elements that already carry it, though it reads the value lazily on
-          hover, so JS can change which key it points at.
-        -->
-        <button class="status-action" id="status-action" hidden data-tooltip="setup_open_ollama">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg>
-        </button>
+        <div class="timer" id="timer">00:00:00</div>
       </div>
 
-      <!--
-        Timer and transport share one row: timer left, buttons right. Stacking
-        them vertically pushes the result row past the fixed 275px window
-        height, and it is not what the original does.
-      -->
-      <div class="session-row">
-        <div class="timer" id="timer">00:00:00</div>
-        <div class="transport">
-          <button id="start-button" data-tooltip="tooltip_start" aria-label="Start">
-            <!-- Heroicons "play", solid: rounded nose and a true optical centre. -->
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.348a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
-          </button>
-          <button id="stop-button" data-tooltip="tooltip_stop" aria-label="Stop" disabled>
-            <!-- Heroicons "stop", solid: rounded corners rather than a bare rect. -->
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7.5a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9Z"/></svg>
-          </button>
-          <!--
-            Discard the meeting: stops recording and deletes the folder without
-            transcribing. Half the diameter of Stop so it cannot be mistaken for
-            the primary action, and disabled until a meeting is actually running.
-          -->
-          <button id="cancel-button" data-tooltip="tooltip_cancel" aria-label="Cancel" disabled>
-            <svg class="icon-outline" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M18 18 6 6"/></svg>
-          </button>
-        </div>
+      <div class="transport">
+        <!--
+          Record and Finalize share one place and swap: only one meeting can
+          record at a time, so the two are never both useful. Two buttons with
+          one hidden, rather than one button whose icon and handler change, so
+          each keeps its own label, tooltip and click handler — and the tray,
+          which drives the same flows, is unaffected.
+        -->
+        <button id="start-button" data-tooltip="tooltip_start" aria-label="Start">
+          <!-- Heroicons "play", solid: rounded nose and a true optical centre. -->
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.348a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
+        </button>
+        <button id="stop-button" data-tooltip="tooltip_stop" aria-label="Stop" hidden>
+          <!-- Heroicons "stop", solid: rounded corners rather than a bare rect. -->
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7.5a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9Z"/></svg>
+        </button>
+        <!--
+          Discard the meeting: stops recording and deletes the folder without
+          transcribing. Half the size of Record so it cannot be mistaken for the
+          primary action, and disabled until a meeting is actually running.
+        -->
+        <button id="cancel-button" data-tooltip="tooltip_cancel" aria-label="Cancel" disabled>
+          <svg class="icon-outline" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M18 18 6 6"/></svg>
+        </button>
       </div>
     </section>
 

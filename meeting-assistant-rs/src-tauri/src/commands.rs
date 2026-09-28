@@ -443,7 +443,7 @@ pub fn needs_setup(state: State<AppState>) -> bool {
 
 /// Open, or focus, the first-run wizard.
 ///
-/// Its own window: the main view is 375x275 and Settings is 590x610, and a
+/// Its own window: the main view is 260px wide and Settings is 590x610, and a
 /// 5-step wizard fits neither. See `open_settings` for why reusing or resizing
 /// an existing window was rejected.
 /// Open the inspector for a window when `MA_DEBUG=1`.
@@ -621,7 +621,11 @@ pub fn close_setup(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 /// The main window's fixed logical width.
-const MAIN_WIDTH: f64 = 375.0;
+///
+/// 260, down from 375, since Record and Finalize share one place and the timer
+/// moved under the status line. Narrower than this, the timer well is crushed
+/// against the transport. Matches `width` in `tauri.conf.json`.
+const MAIN_WIDTH: f64 = 260.0;
 
 /// The logical height the main window is currently pinned to, as `f64` bits.
 ///
@@ -636,7 +640,7 @@ static PINNED_HEIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// of the call**. Those physical numbers are what the window manager then
 /// enforces, and nothing recomputes them when the scale changes.
 ///
-/// So a window pinned to 375x430 on a 100% display carries a 375x430 *physical*
+/// So a window pinned to 260x430 on a 100% display carries a 260x430 *physical*
 /// clamp onto a 150% display, where the same window must be 562x645 physical to
 /// look the same size. The clamp is now smaller than the window, and Windows
 /// enforces it through `WM_GETMINMAXINFO` — the window is squeezed, and the
@@ -766,7 +770,7 @@ pub fn nudge_main_height(app: AppHandle, delta: f64) -> Result<f64, String> {
 ///
 /// # Why a second window and not a navigation
 ///
-/// Settings is its own 590x610 window while the main view is 375x275. Two
+/// Settings is its own 590x610 window while the main view is 260px wide. Two
 /// earlier approaches were both wrong:
 ///
 /// * `location.href` into the same window loaded the 590px-wide form into the
