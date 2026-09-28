@@ -4,6 +4,7 @@
 //! measured that even that needs no `cfg` split — see the module docs there.
 
 pub mod devices;
+pub mod level;
 pub mod system_mute;
 pub mod recorder;
 pub mod wav;

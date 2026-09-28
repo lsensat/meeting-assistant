@@ -172,6 +172,24 @@
     </div>
 
     <!--
+      The microphone is too quiet, said while the meeting is still running —
+      the same finding as `quiet_recording`, but early enough to act on. Not a
+      modal for the same reason as the notice above: it must never stand
+      between the user and their meeting. Hidden again by the app when the
+      level recovers or the recording ends.
+    -->
+    <div class="notice" id="mic-notice" role="status" hidden>
+      <div class="notice-text">
+        <strong data-i18n="mic_quiet_title">Your microphone is very quiet</strong>
+        <span data-i18n="mic_quiet_body">If you have been speaking, the transcript may miss it. Raise the input level in your sound settings.</span>
+        <button class="notice-link" id="mic-notice-settings" data-i18n="mic_quiet_open_settings">Open sound settings</button>
+      </div>
+      <button class="status-action" id="mic-notice-close" aria-label="Dismiss">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!--
       Absorbs any surplus window height, so a window taller than the content
       shows the toolbar sitting at the bottom edge rather than a dead gap below
       it. This is pure CSS and therefore the only part of the fit that still

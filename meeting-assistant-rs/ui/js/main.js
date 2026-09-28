@@ -42,6 +42,7 @@ const ui = {
   devicesToggle: el("devices-toggle"),
   devicesDetail: el("devices-detail"),
   captureNotice: el("capture-notice"),
+  micNotice: el("mic-notice"),
 };
 
 /**
@@ -637,6 +638,11 @@ function setRecording(active) {
   } else {
     clearInterval(tick);
     tick = null;
+    // It described the level of a meeting that is no longer recording.
+    if (!ui.micNotice.hidden) {
+      ui.micNotice.hidden = true;
+      resizeToContent();
+    }
   }
 }
 
@@ -1075,6 +1081,16 @@ function wireEvents() {
 
   api.on(api.EVENTS.muteState, applyMuted);
 
+  // Too quiet to transcribe well, found while there is still a meeting to
+  // save. "ok" takes it back once the level is raised, so the notice never
+  // outlives the problem it describes.
+  api.on(api.EVENTS.micLevel, (level) => {
+    const quiet = level === "quiet" && recording;
+    if (ui.micNotice.hidden === !quiet) return;
+    ui.micNotice.hidden = !quiet;
+    resizeToContent();
+  });
+
   // Finalize and Cancel from the tray. A native menu cannot prompt for a
   // meeting title or confirm a deletion, so it reveals this window and asks it
   // to run the flow that already does both.
@@ -1236,6 +1252,14 @@ function wireControls() {
         setStatus(String(error));
       }
     }
+  });
+
+  el("mic-notice-settings").addEventListener("click", () =>
+    api.openSoundSettings().catch((error) => setStatus(String(error))),
+  );
+  el("mic-notice-close").addEventListener("click", () => {
+    ui.micNotice.hidden = true;
+    resizeToContent();
   });
 
   el("capture-notice-close").addEventListener("click", () => {

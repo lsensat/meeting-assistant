@@ -191,6 +191,8 @@ export const EVENTS = {
   queueChanged: "queue_changed",
   /** boolean */
   muteState: "mute_state",
+  /** `"quiet"` or `"ok"`: the microphone level during a recording. */
+  micLevel: "mic_level",
   /** The tray asking this window to run a flow that needs user input. */
   requestStop: "request_stop",
   requestCancel: "request_cancel",

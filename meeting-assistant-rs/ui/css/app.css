@@ -1323,6 +1323,23 @@ input[type="password"] { cursor: text; }
 .notice-text span { display: block; white-space: pre-wrap; }
 
 .notice .status-action { flex: none; margin-top: -1px; }
+
+/* The one action a notice can offer, as a link inside its text rather than a
+   button competing with the transport above. */
+.notice-link {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: bold;
+  text-decoration: underline;
+  text-decoration-color: var(--amber-dark);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.notice-link:hover { color: var(--red-dark); }
 /* ------------------------------------------------------ markdown library */
 
 /*

@@ -44,6 +44,8 @@ pub struct TrackWriter {
     writer: hound::WavWriter<BufWriter<File>>,
     path: PathBuf,
     frames: u64,
+    /// Sees every real sample written, and nothing else. See [`Self::meter`].
+    meter: Option<std::sync::Arc<super::level::LevelMeter>>,
 }
 
 impl TrackWriter {
@@ -62,6 +64,7 @@ impl TrackWriter {
             .map_err(|e| WavError::Create(path.clone(), e))?;
 
         Ok(Self {
+            meter: None,
             writer,
             path,
             frames: 0,
@@ -73,7 +76,21 @@ impl TrackWriter {
     /// Conversion goes through [`f32_to_i16`], which scales by 32767 to match
     /// libsndfile. Do not inline a different scale factor here: the tests
     /// compare written bytes exactly, and 32768 would clip full-scale samples.
+    /// Report the level of what is written to `meter`.
+    ///
+    /// Here, rather than in the recorder loop, because this is the one point
+    /// every captured sample passes through and nothing else does: a muted
+    /// microphone and a device outage are written with
+    /// [`write_silence`](Self::write_silence), so neither can read as a quiet
+    /// microphone.
+    pub fn meter(&mut self, meter: std::sync::Arc<super::level::LevelMeter>) {
+        self.meter = Some(meter);
+    }
+
     pub fn write_samples(&mut self, samples: &[f32]) -> Result<(), WavError> {
+        if let Some(meter) = &self.meter {
+            meter.observe(samples);
+        }
         for &sample in samples {
             self.writer
                 .write_sample(f32_to_i16(sample))

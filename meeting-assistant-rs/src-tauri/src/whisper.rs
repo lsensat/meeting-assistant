@@ -255,6 +255,9 @@ struct Tuning {
     beam_size: i32,
     suppress_nst: bool,
     vad: bool,
+    /// Lift a quiet track before transcription. **Off** unless asked for — see
+    /// [`transcription_gain`] for why this is an experiment and not a default.
+    gain: bool,
 }
 
 impl Tuning {
@@ -283,6 +286,10 @@ impl Tuning {
             // quietly put whisper back to transcribing silence.
             vad: std::env::var("MEETING_ASSISTANT_WHISPER_VAD")
                 .map_or(true, |v| v.trim() != "0"),
+            // The opposite rule, because the default is the opposite: only an
+            // explicit "1" turns it on, so a typo cannot change a transcript.
+            gain: std::env::var("MEETING_ASSISTANT_WHISPER_GAIN")
+                .is_ok_and(|v| v.trim() == "1"),
         }
     }
 }
@@ -295,9 +302,53 @@ pub fn tuning_summary() -> String {
         .unwrap_or(1);
 
     format!(
-        "threads={} of {}, beam={}, suppress_nst={}, vad={}",
-        tuning.threads, available, tuning.beam_size, tuning.suppress_nst, tuning.vad
+        "threads={} of {}, beam={}, suppress_nst={}, vad={}, gain={}",
+        tuning.threads, available, tuning.beam_size, tuning.suppress_nst, tuning.vad, tuning.gain
     )
+}
+
+/// The level a quiet track is lifted to before transcription: -6 dBFS, the same
+/// headroom `vad` leaves before detection.
+const TRANSCRIPTION_PEAK: f32 = 0.5;
+
+/// At most +20 dB. A track that needs more than this is mostly noise, and
+/// multiplying noise is not the same as recovering speech.
+const MAX_TRANSCRIPTION_GAIN: f32 = 10.0;
+
+/// Tracks peaking below this (-20 dBFS) are lifted.
+///
+/// Not [`QUIET_PEAK`]: the measured quiet headset track in `vad.rs` peaked at
+/// 0.0529, just *above* that line, so gating on it would have left alone the
+/// one recording that motivated this.
+const LIFT_BELOW_PEAK: f32 = 0.1;
+
+/// How much to amplify a track before whisper sees it.
+///
+/// # Why this is behind a switch
+///
+/// The two measurements in this codebase disagree about whether it helps.
+/// `vad.rs` found whisper.cpp indifferent to level — a headset track 20 dB
+/// below normal "transcribes perfectly when asked" — and attributes that to the
+/// mel spectrogram being normalised internally. It is only partly normalised:
+/// whisper.cpp clamps the log-mel range relative to its maximum but then shifts
+/// it by a fixed offset, so a quieter input is not an identical input.
+/// [`QUIET_PEAK`] meanwhile records a quiet meeting that came back as repeated
+/// sentences — though that was before VAD stopped whisper transcribing silence,
+/// which is the more likely cause.
+///
+/// So this is a hypothesis with a cheap test, not a fix: set
+/// `MEETING_ASSISTANT_WHISPER_GAIN=1`, retry a meeting that was quiet, and
+/// compare the transcripts. If it helps, it becomes the default and this switch
+/// goes away, like the others in [`Tuning`].
+///
+/// Only a track below [`LIFT_BELOW_PEAK`] is touched, so a normally recorded
+/// one is transcribed from exactly the same samples whether the switch is on or
+/// off.
+fn transcription_gain(peak: f32) -> f32 {
+    if peak < SILENCE_PEAK || peak >= LIFT_BELOW_PEAK {
+        return 1.0;
+    }
+    (TRANSCRIPTION_PEAK / peak).min(MAX_TRANSCRIPTION_GAIN)
 }
 
 fn env_i32(key: &str) -> Option<i32> {
@@ -817,7 +868,7 @@ impl Transcriber {
         resume_from_seconds: f64,
         control: &TranscriptionControl,
     ) -> Result<TranscriptionOutcome, WhisperError> {
-        let samples = read_wav_as_16k_mono(audio_file)?;
+        let mut samples = read_wav_as_16k_mono(audio_file)?;
 
         // A silent track is skipped rather than transcribed.
         //
@@ -856,6 +907,22 @@ impl Transcriber {
         }
 
         let tuning = Tuning::from_env();
+
+        // Before VAD as well as before whisper, so both see the same audio.
+        // VAD's own detection lift adapts to the new peak rather than stacking
+        // on top of it: it aims at an absolute level, not a multiple.
+        if tuning.gain {
+            let gain = transcription_gain(level);
+            if gain > 1.0 {
+                for sample in &mut samples {
+                    *sample = (*sample * gain).clamp(-1.0, 1.0);
+                }
+                control.set_vad_summary(
+                    &format!("{speaker} gain"),
+                    format!("x{gain:.1} (peak {level:.4})"),
+                );
+            }
+        }
 
         // --- decide what whisper will actually see ------------------------
         //
@@ -1163,6 +1230,19 @@ mod tests {
         assert!(spec("large-v3").is_some());
         assert!(spec("enormous").is_none());
         assert!(!is_installed("enormous"));
+    }
+
+    #[test]
+    fn only_a_quiet_track_is_lifted() {
+        // Normal speech: untouched, so the switch cannot change a good track.
+        assert_eq!(transcription_gain(0.4), 1.0);
+        assert_eq!(transcription_gain(LIFT_BELOW_PEAK), 1.0);
+        // Silence is skipped before this point and must not be amplified.
+        assert_eq!(transcription_gain(0.0005), 1.0);
+        // The measured headset track: lifted to the target.
+        assert!((transcription_gain(0.0529) * 0.0529 - TRANSCRIPTION_PEAK).abs() < 0.01);
+        // Very quiet: capped at +20 dB.
+        assert_eq!(transcription_gain(0.01), MAX_TRANSCRIPTION_GAIN);
     }
 
     #[test]
