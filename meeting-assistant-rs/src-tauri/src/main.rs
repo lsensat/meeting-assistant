@@ -33,8 +33,19 @@ fn main() {
         // menu is the natural way to get a tray-only app back, and it must
         // behave as "reopen". `show_window` is what the macOS Dock click
         // already does via `RunEvent::Reopen`.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            meeting_assistant::tray::show_window(app);
+        //
+        // It is also how a double-clicked `.md` reaches a running app on
+        // Windows and Linux: the OS launches a second process with the file as
+        // its argument, and this is where that argument arrives. A launch that
+        // brought a file shows the file; any other launch shows the window.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            let files = meeting_assistant::documents::markdown_args(
+                argv.into_iter().skip(1),
+                std::path::Path::new(&cwd),
+            );
+            if !commands::open_documents(app, &files) {
+                meeting_assistant::tray::show_window(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -51,6 +62,7 @@ fn main() {
             commands::read_summary,
             commands::library_folder,
             commands::library_transcript,
+            commands::pick_markdown_file,
             commands::open_external_url,
             commands::ui_log,
             commands::list_devices,
@@ -160,6 +172,15 @@ fn main() {
             }
 
             commands::spawn_worker(app.handle().clone());
+
+            // A cold start from a double-clicked `.md` on Windows or Linux: the
+            // file is this process's own argument. macOS never passes it this
+            // way — it arrives as `RunEvent::Opened` below.
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let files =
+                meeting_assistant::documents::markdown_args(std::env::args_os().skip(1), &cwd);
+            commands::open_documents(app.handle(), &files);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -193,6 +214,16 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to start Meeting Assistant")
         .run(|_app, _event| {
+            // "Open with", a double-click or a drop on the Dock icon, on macOS —
+            // at launch as well as while running. The files arrive as `file://`
+            // URLs; anything else (a custom scheme) is not a document.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &_event {
+                let files: Vec<std::path::PathBuf> =
+                    urls.iter().filter_map(|url| url.to_file_path().ok()).collect();
+                commands::open_documents(_app, &files);
+            }
+
             // `RunEvent::Reopen` is the Dock-icon click and exists only on
             // macOS — the variant is not present in the enum on Windows, so
             // this must be cfg-gated rather than merely never fired.

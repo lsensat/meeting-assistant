@@ -16,7 +16,17 @@
     piece of state to earn rather than assume.
   -->
   <div class="library">
-    <aside class="library-list" id="library-list" aria-label="Meetings"></aside>
+    <aside class="library-list">
+      <!--
+        Any Markdown file, not only summaries. The dialog runs in Rust, which
+        hands back an id — see `pick_markdown_file` for why the path never
+        reaches this page.
+      -->
+      <button class="btn btn--secondary library-open" id="open-file" data-i18n="library_open_file">
+        Open a Markdown file…
+      </button>
+      <div id="library-list" aria-label="Meetings"></div>
+    </aside>
 
     <main class="library-doc">
       <!--

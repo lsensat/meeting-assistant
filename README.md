@@ -56,6 +56,23 @@ Each meeting becomes one folder, named with the time and the title you give it:
 Plain files in a folder you choose. Nothing is locked in a database, and you can
 delete a meeting by deleting its folder.
 
+### Reading any Markdown file
+
+The Library window, where summaries are read, also opens any `.md` file. Use
+**Open a Markdown file…** at the top of the list, or open the file from your
+system:
+
+- **macOS:** right-click the file → *Open With* → *Meeting Assistant*. To make
+  it the default, select the file, choose *Get Info* (⌘I), pick Meeting
+  Assistant under *Open with*, and press *Change All…*.
+- **Windows:** right-click the file → *Open with* → *Choose another app* →
+  *Meeting Assistant*, and tick *Always use this app* if you want it as the
+  default.
+
+The installer registers the app as a Markdown viewer so it appears in those
+menus. An app you have already chosen for `.md` files stays the default. Opened
+files are listed above your meetings until you quit the app.
+
 ## What it is not
 
 - **Not a speaker identifier.** It separates *your microphone* from *the

@@ -26,7 +26,11 @@ const ui = {
   empty: el("library-empty"),
   openTranscript: el("open-transcript"),
   openFolder: el("open-folder"),
+  openFile: el("open-file"),
 };
+
+/** @param {{kind?: string}|undefined} entry */
+const isFile = (entry) => entry?.kind === "file";
 
 /** The meeting on screen, so a refresh can keep it selected. */
 let selectedId = null;
@@ -69,13 +73,17 @@ function formatDuration(seconds) {
  * discarded: 11 of 14 first headings read "Meeting Minutes", which is the
  * summary *type*, not the meeting.
  *
- * @param {{id: string, title: string, preview: string, duration_seconds: number|null}} entry
+ * An opened file has no date to show — its id is `file:N`, not a timestamp — so
+ * it is labelled as a file and previewed like a summary.
+ *
+ * @param {{id: string, title: string, preview: string, duration_seconds: number|null,
+ *          kind?: string, location?: string}} entry
  */
 function row(entry) {
-  const when = whenOf(entry.id);
+  const when = isFile(entry) ? { date: entry.title, time: tr("library_file") } : whenOf(entry.id);
 
   const button = document.createElement("button");
-  button.className = "library-row";
+  button.className = isFile(entry) ? "library-row library-row--file" : "library-row";
   button.dataset.id = entry.id;
 
   const head = document.createElement("div");
@@ -126,16 +134,37 @@ async function select(id) {
   markSelected();
 
   const entry = entries.find((e) => e.id === id);
-  const when = whenOf(id);
 
-  ui.title.textContent = entry?.title || when.date;
-  ui.meta.textContent = entry?.duration_seconds
-    ? `${when.time} · ${formatDuration(entry.duration_seconds)}`
-    : when.time;
+  if (isFile(entry)) {
+    // A file has no meeting behind it: its name is the title, its folder is
+    // the only context there is, and there is no transcript to open.
+    ui.title.textContent = entry.title;
+    ui.meta.textContent = entry.location ?? "";
+    ui.openTranscript.hidden = true;
+    ui.openFolder.dataset.tooltip = "library_open_file_folder";
+  } else {
+    const when = whenOf(id);
+    ui.title.textContent = entry?.title || when.date;
+    ui.meta.textContent = entry?.duration_seconds
+      ? `${when.time} · ${formatDuration(entry.duration_seconds)}`
+      : when.time;
+    ui.openTranscript.hidden = false;
+    ui.openFolder.dataset.tooltip = "library_open_folder";
+  }
   ui.head.hidden = false;
   ui.empty.hidden = true;
 
-  const tokens = await api.readSummary(id);
+  let tokens;
+  try {
+    tokens = await api.readSummary(id);
+  } catch (error) {
+    // An opened file can be moved or deleted behind the app's back. Say so in
+    // place rather than leaving the previous document on screen.
+    if (selectedId !== id) return;
+    ui.body.replaceChildren();
+    ui.meta.textContent = String(error);
+    return;
+  }
 
   // Two clicks in quick succession can resolve out of order, and the header is
   // set synchronously above — without this, meeting A's body renders under
@@ -178,6 +207,18 @@ async function main() {
   setLanguage(String(config.language ?? "en"));
   applyLanguage();
   initTooltips(el("tooltip"));
+
+  ui.openFile.addEventListener("click", async () => {
+    try {
+      const id = await api.pickMarkdownFile();
+      if (!id) return; // cancelled
+      await refresh();
+      await select(id);
+    } catch (error) {
+      ui.empty.hidden = false;
+      ui.empty.textContent = String(error);
+    }
+  });
 
   ui.openFolder.addEventListener("click", async () => {
     if (!selectedId) return;
