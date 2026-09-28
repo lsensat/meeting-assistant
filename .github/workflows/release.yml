@@ -25,6 +25,20 @@ on:
         default: all
         type: choice
         options: [all, windows, macos]
+      # A draft release without pushing a tag first, for when a tag cannot be
+      # pushed (a session or machine that can push branches but not tags).
+      #
+      # The draft is pinned to the commit this run built. GitHub creates the
+      # tag itself when the draft is published, so nothing is tagged until a
+      # person decides the build is good. Empty: build only, as before.
+      draft_release:
+        description: 'Create a draft release with this tag (e.g. v0.2.24). Must match the version in tauri.conf.json. Empty = build only.'
+        default: ''
+        type: string
+      release_notes:
+        description: 'Body for that draft release (Markdown). Optional.'
+        default: ''
+        type: string
   # Check every pull request, on both platforms, WITHOUT bundling — see the `if`
   # on the "Build and bundle" step.
   #
@@ -223,6 +237,26 @@ jobs:
         working-directory: meeting-assistant-rs
         run: cargo clippy --all-targets -- -D warnings
 
+      # A draft named for one version but holding installers of another would
+      # be worse than no draft: the installer's own version is what Windows
+      # compares on upgrade. So the tag has to be the version being built.
+      - name: Check the draft release matches the version
+        if: inputs.draft_release != ''
+        shell: bash
+        # Through the environment, never interpolated into the script: an input
+        # spliced into `run:` is text the shell executes.
+        env:
+          tag: ${{ inputs.draft_release }}
+        run: |
+          version=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' meeting-assistant-rs/src-tauri/tauri.conf.json)
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$tag' is not a release tag like v0.2.24"; exit 1
+          fi
+          if [[ "$tag" != "v$version" ]]; then
+            echo "::error::draft_release is $tag but tauri.conf.json says $version"; exit 1
+          fi
+          echo "drafting $tag from $GITHUB_SHA"
+
       # Skipped on a pull request. The checks above are what catch a broken
       # change; bundling adds ~20 minutes and produces a .dmg and an .msi that
       # nobody downloads to review a diff. A tag still builds them.
@@ -234,10 +268,17 @@ jobs:
         with:
           # The directory CONTAINING src-tauri, not src-tauri itself.
           projectPath: meeting-assistant-rs
-          # Empty on workflow_dispatch, so no release is created when simply
-          # exercising the build.
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: Meeting Assistant ${{ github.ref_name }}
+          # Empty on a plain workflow_dispatch, so no release is created when
+          # simply exercising the build. `draft_release` fills it in — see the
+          # input for why.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.draft_release || '' }}
+          releaseName: Meeting Assistant ${{ github.ref_type == 'tag' && github.ref_name || inputs.draft_release }}
+          # The commit this run built. Only used when the tag does not exist
+          # yet, which is the `draft_release` case: publishing the draft then
+          # creates the tag here, not on whatever `main` has moved on to.
+          releaseCommitish: ${{ github.sha }}
+          # Empty on a tag push, as before.
+          releaseBody: ${{ inputs.release_notes }}
           # Never publish automatically. These builds are unsigned: macOS
           # Gatekeeper refuses a downloaded ad-hoc bundle outright, and Windows
           # shows a SmartScreen warning. The release notes must explain both
