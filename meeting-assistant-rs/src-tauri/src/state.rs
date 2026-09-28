@@ -27,6 +27,9 @@ pub struct AppState {
     /// the moment they are busiest was the thing worth fixing; the queue is what
     /// makes more than one meeting in flight safe instead.
     pub queue: Arc<crate::queue::Queue>,
+    /// Markdown files opened from outside the app this session. See
+    /// `documents` for why the frontend gets ids rather than paths.
+    pub documents: crate::documents::Documents,
     /// Where `config.json` lives, resolved once at startup.
     pub config_file: PathBuf,
     /// The folder the current recording is writing into.
@@ -85,6 +88,7 @@ impl AppState {
             session: Mutex::new(None),
             config: Mutex::new(config),
             queue: Arc::new(crate::queue::Queue::new()),
+            documents: crate::documents::Documents::new(),
             config_file,
             current_folder: Mutex::new(None),
             muted: Arc::new(AtomicBool::new(false)),

@@ -56,10 +56,34 @@ export const openLicenses = () => invoke("open_licenses");
 export const listLibrary = () => invoke("list_library");
 /** A meeting's summary as a token stream. @param {string} id */
 export const readSummary = (id) => invoke("read_summary", { id });
+/**
+ * A meeting's summary as Markdown source, for the editor.
+ * @param {string} id
+ * @returns {Promise<{text: string, version: string}>}
+ */
+export const readSummarySource = (id) => invoke("read_summary_source", { id });
+/**
+ * Save an edited summary. `baseVersion` is the version the editor loaded, or
+ * null to overwrite whatever is on disk.
+ * @param {string} id
+ * @param {string} text
+ * @param {string|null} baseVersion
+ * @returns {Promise<{t: "saved", version: string} | {t: "conflict"}>}
+ */
+export const saveSummary = (id, text, baseVersion) =>
+  invoke("save_summary", { id, text, baseVersion });
+/** Unsaved Markdown as a token stream, for the Read view. @param {string} source */
+export const renderMarkdown = (source) => invoke("render_markdown", { source });
 /** Absolute path of a meeting's **folder**, for "open in the default app". */
 export const libraryFolder = (id) => invoke("library_folder", { id });
 /** Absolute path of a meeting's transcript. */
 export const libraryTranscript = (id) => invoke("library_transcript", { id });
+/**
+ * Let the user pick any Markdown file. The dialog runs in Rust and only an id
+ * comes back — never the path.
+ * @returns {Promise<string|null>} the new document's id, or null if cancelled
+ */
+export const pickMarkdownFile = () => invoke("pick_markdown_file");
 /** @param {string} [id] meeting to select on open */
 export const openLibrary = (id) => invoke("open_library", { id: id ?? null });
 /**
