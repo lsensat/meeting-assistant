@@ -208,6 +208,10 @@ pub fn save_config(app: AppHandle, payload: String, state: State<AppState>) -> R
     // the DOM it has no way to re-read them. Nothing else tells Rust that the
     // language changed.
     crate::tray::rebuild(&app);
+    let appearance = state.config_snapshot().appearance;
+    for window in app.webview_windows().values() {
+        apply_appearance(window, appearance);
+    }
     let _ = app.emit(EV_CONFIG_CHANGED, ());
     Ok(())
 }
@@ -461,6 +465,32 @@ fn debug_inspect(window: &tauri::WebviewWindow) {
     }
 }
 
+/// The native window theme for the configured appearance. `None` hands the
+/// choice to the operating system, which is what "System" means.
+pub fn native_theme(appearance: meeting_core::config::Appearance) -> Option<tauri::Theme> {
+    use meeting_core::config::Appearance;
+    match appearance {
+        Appearance::Dark => Some(tauri::Theme::Dark),
+        Appearance::Light => Some(tauri::Theme::Light),
+        Appearance::System => None,
+    }
+}
+
+/// The configured appearance's native theme, for a window about to be built.
+fn configured_theme(app: &AppHandle) -> Option<tauri::Theme> {
+    let state = app.state::<AppState>();
+    let appearance = state.config_snapshot().appearance;
+    native_theme(appearance)
+}
+
+/// Re-theme a window that already exists: its title bar, and the colour scheme
+/// its page reports to CSS. The page itself switches palettes on
+/// `config_changed`.
+pub fn apply_appearance(window: &tauri::WebviewWindow, appearance: meeting_core::config::Appearance) {
+    let _ = window.set_theme(native_theme(appearance));
+    match_title_bar(window);
+}
+
 /// Paint the Windows title bar in the app's own background colour.
 ///
 /// The title bar is drawn by the OS, not the webview, so no amount of CSS
@@ -488,7 +518,15 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
     // COLORREF is 0x00BBGGRR — byte-reversed from the `#RRGGBB` in the
     // stylesheet. Writing it the familiar way round would tint the bar a
     // different colour entirely, and plausibly enough to look deliberate.
-    const APP_BG: u32 = 0x002E2D2B; // --body, #2B2D2E
+    const APP_BG_DARK: u32 = 0x002E2D2B; // --body, #2B2D2E
+    const APP_BG_LIGHT: u32 = 0x00DADBD9; // --alloy, #D9DBDA
+
+    // The window's theme is already resolved here: for "System" it is the
+    // operating system's current one.
+    let app_bg = match window.theme() {
+        Ok(tauri::Theme::Light) => APP_BG_LIGHT,
+        _ => APP_BG_DARK,
+    };
 
     // SAFETY: `handle` is a live window handle owned by Tauri, and the
     // attribute takes a `u32` by pointer with its size, both of which are
@@ -498,7 +536,7 @@ pub fn match_title_bar(window: &tauri::WebviewWindow) {
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_CAPTION_COLOR,
-            &APP_BG as *const u32 as *const std::ffi::c_void,
+            &app_bg as *const u32 as *const std::ffi::c_void,
             std::mem::size_of::<u32>() as u32,
         );
     }
@@ -550,9 +588,9 @@ pub fn open_setup(app: AppHandle) -> Result<(), String> {
             .maximizable(false)
             .center()
             // Windows 10 has no caption-colour attribute, so the theme is what
-            // keeps this window's title bar dark there. `tauri.conf.json`
-            // covers the main window; a builder does not read that list.
-            .theme(Some(tauri::Theme::Dark))
+            // keeps this window's title bar matching the app there. The main
+            // window gets it in `main.rs`; a builder does not read that list.
+            .theme(configured_theme(&app))
             .build()
             .map_err(|e| e.to_string())?;
 
@@ -810,9 +848,9 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
     .always_on_top(true)
     .maximizable(false)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
-    // this window's title bar dark there. `tauri.conf.json` covers the main
-    // window; a builder does not read that list.
-    .theme(Some(tauri::Theme::Dark))
+    // this window's title bar matching the app there. The main window gets
+    // it in `main.rs`; a builder does not read that list.
+    .theme(configured_theme(&app))
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -848,9 +886,9 @@ pub fn open_licenses(app: AppHandle) -> Result<(), String> {
     // Floating for the same reason as the main window — see `open_setup`.
     .always_on_top(true)
     // Windows 10 has no caption-colour attribute, so the theme is what keeps
-    // this window's title bar dark there. `tauri.conf.json` covers the main
-    // window; a builder does not read that list.
-    .theme(Some(tauri::Theme::Dark))
+    // this window's title bar matching the app there. The main window gets
+    // it in `main.rs`; a builder does not read that list.
+    .theme(configured_theme(&app))
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -1212,7 +1250,7 @@ pub fn open_library(app: AppHandle, id: Option<String>) -> Result<(), String> {
                 .always_on_top(true)
                 // Unlike Settings and the wizard, this one holds a document.
                 .inner_size(900.0, 640.0)
-                .theme(Some(tauri::Theme::Dark))
+                .theme(configured_theme(&app))
                 .build()
                 .map_err(|e| e.to_string())?;
 

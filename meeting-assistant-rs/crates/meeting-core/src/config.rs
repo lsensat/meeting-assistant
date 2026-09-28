@@ -42,6 +42,35 @@ impl Language {
     }
 }
 
+/// Light or dark windows. `System` follows the operating system's setting.
+/// Anything else in the file clamps to dark, the look the app always had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Dark,
+    Light,
+    System,
+}
+
+impl Appearance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Appearance::Dark => "dark",
+            Appearance::Light => "light",
+            Appearance::System => "system",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "dark" => Some(Appearance::Dark),
+            "light" => Some(Appearance::Light),
+            "system" => Some(Appearance::System),
+            _ => None,
+        }
+    }
+}
+
 /// Language forced on Whisper. `Auto` means let it detect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -188,6 +217,7 @@ pub const DEFAULT_WHISPER_MODEL: &str = "small";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub language: Language,
+    pub appearance: Appearance,
     pub transcription_language: TranscriptionLanguage,
     pub whisper_model: String,
     pub ollama_model: String,
@@ -276,6 +306,7 @@ impl Config {
     pub fn defaults(base: &Path) -> Self {
         Self {
             language: Language::En,
+            appearance: Appearance::Dark,
             transcription_language: TranscriptionLanguage::Auto,
             whisper_model: DEFAULT_WHISPER_MODEL.to_string(),
             ollama_model: String::new(),
@@ -318,6 +349,12 @@ impl Config {
                 .as_deref()
                 .and_then(Language::parse)
                 .unwrap_or(defaults.language),
+
+            appearance: raw
+                .appearance
+                .as_deref()
+                .and_then(Appearance::parse)
+                .unwrap_or(defaults.appearance),
 
             transcription_language: raw
                 .transcription_language
@@ -405,6 +442,7 @@ impl Config {
     pub fn to_json(&self) -> String {
         let raw = RawConfig {
             language: Some(self.language.as_str().to_string()),
+            appearance: Some(self.appearance.as_str().to_string()),
             transcription_language: Some(self.transcription_language.as_str().to_string()),
             whisper_model: Some(self.whisper_model.clone()),
             ollama_model: Some(self.ollama_model.clone()),
@@ -436,6 +474,8 @@ impl Config {
 struct RawConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    appearance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcription_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -761,6 +801,15 @@ mod tests {
     }
 
     #[test]
+    fn appearance_defaults_to_dark_and_clamps_to_it() {
+        assert_eq!(Config::from_json("{}", &app_folder()).appearance, Appearance::Dark);
+        let c = Config::from_json(r#"{"appearance": "sepia"}"#, &app_folder());
+        assert_eq!(c.appearance, Appearance::Dark);
+        let c = Config::from_json(r#"{"appearance": "system"}"#, &app_folder());
+        assert_eq!(c.appearance, Appearance::System);
+    }
+
+    #[test]
     fn invalid_transcription_language_clamps_to_auto() {
         let c = Config::from_json(r#"{"transcription_language": "de"}"#, &app_folder());
         assert_eq!(c.transcription_language, TranscriptionLanguage::Auto);
@@ -816,6 +865,7 @@ mod tests {
     fn round_trips_through_json() {
         let mut original = Config::defaults(&app_folder());
         original.language = Language::Es;
+        original.appearance = Appearance::Light;
         original.transcription_language = TranscriptionLanguage::Es;
         original.summary_type = SummaryType::Actions;
         original.ollama_model = "gemma3:4b".to_string();

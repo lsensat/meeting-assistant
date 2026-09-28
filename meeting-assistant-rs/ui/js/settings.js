@@ -9,6 +9,7 @@
 // Installed before anything that can throw, so a failure in the modules
 // below is reported on screen instead of leaving a blank or half-built window.
 import "./errors.js";
+import { applyAppearance } from "./theme.js";
 import * as api from "./api.js";
 import { fillSelect, isRemoteProviderConfigured } from "./dom.js";
 import { collectApiFields, initApiFields } from "./api-provider.js";
@@ -34,6 +35,11 @@ async function populateLanguages() {
       { value: "es", label: tr("app_language.es") },
     ],
     String(config.language ?? "en"),
+  );
+  fillSelect(
+    el("app-appearance"),
+    ["dark", "light", "system"].map((value) => ({ value, label: tr(`appearance.${value}`) })),
+    String(config.appearance ?? "dark"),
   );
 
   fillSelect(
@@ -372,6 +378,7 @@ function collect(base) {
   return collectApiFields(apiFields(), {
     ...base,
     language: el("app-language").value,
+    appearance: el("app-appearance").value,
     transcription_language: el("transcription-language").value,
     whisper_model: el("whisper-model").value,
     ollama_model: el("ollama-model").value,
@@ -395,6 +402,8 @@ function wire() {
     applyLanguage();
     await populateAll();
   });
+
+  el("app-appearance").addEventListener("change", () => applyAppearance(el("app-appearance").value));
 
   el("whisper-model").addEventListener("change", async () => {
     config = collect(config);

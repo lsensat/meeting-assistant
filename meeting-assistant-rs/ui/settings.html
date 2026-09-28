@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Meeting Assistant — Settings</title>
   <link rel="stylesheet" href="css/app.css" />
+  <script src="js/theme-boot.js"></script>
 </head>
 <body>
   <div class="settings-body">
@@ -20,6 +21,16 @@
       <div class="field">
         <label for="app-language" data-i18n="application_language">Application language</label>
         <select id="app-language"></select>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 data-i18n="appearance">Appearance</h2>
+      <div class="field">
+        <!-- Previewed in this window as soon as it changes; every other
+             window follows when Settings is saved. -->
+        <label for="app-appearance" data-i18n="appearance_theme">Theme</label>
+        <select id="app-appearance"></select>
       </div>
     </section>
 

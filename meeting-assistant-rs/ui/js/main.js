@@ -9,6 +9,7 @@
 // Installed before anything that can throw, so a failure in the modules
 // below is reported on screen instead of leaving a blank or half-built window.
 import "./errors.js";
+import "./theme.js";
 import * as api from "./api.js";
 import { applyLanguage, loadCatalog, setLanguage, tr } from "./i18n.js";
 import { initTooltips } from "./tooltip.js";
