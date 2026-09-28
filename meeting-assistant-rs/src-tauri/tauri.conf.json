@@ -14,8 +14,8 @@
         "alwaysOnTop": true,
         "title": "Meeting Assistant",
         "theme": "Dark",
-        "width": 375,
-        "height": 275,
+        "width": 260,
+        "height": 230,
         "resizable": true,
         "fullscreen": false,
         "maximizable": false
