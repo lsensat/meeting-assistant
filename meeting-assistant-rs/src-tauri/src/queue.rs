@@ -1070,8 +1070,12 @@ impl Queue {
             return false;
         }
         // Back to where it got to, not back to the beginning: the offsets and
-        // partial files are still on disk and still valid.
-        job.state.stage = if job.state.mic_offset_seconds > 0.0 {
+        // partial files are still on disk and still valid. A transcript on disk
+        // means transcription finished and the summary is what failed; the
+        // pipeline reuses it, so the card should say that is what is next.
+        job.state.stage = if job.folder.join(crate::pipeline::TRANSCRIPT_FILENAME).exists() {
+            Stage::Summary
+        } else if job.state.mic_offset_seconds > 0.0 {
             Stage::Whisper
         } else {
             Stage::Queued
@@ -1273,6 +1277,22 @@ mod queue_tests {
         let view = queue.view();
         assert_eq!(view[0].stage, Stage::Whisper, "work already done must not be repeated");
         assert!(view[0].error.is_none());
+    }
+
+    #[test]
+    fn a_failed_summary_retries_the_summary() {
+        let folder = std::env::temp_dir().join(format!("ma-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(crate::pipeline::TRANSCRIPT_FILENAME), "[00:00:01] ME: hi").unwrap();
+
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.folder = folder.clone();
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a"));
+        assert_eq!(queue.view()[0].stage, Stage::Summary, "the transcript must not be redone");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

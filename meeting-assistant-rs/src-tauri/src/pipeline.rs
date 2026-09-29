@@ -223,191 +223,212 @@ pub fn run(
 
     on_progress(Progress::Stage(Stage::Audio, StageState::Done));
 
-    // --- transcription ---------------------------------------------------
-    on_progress(Progress::Stage(Stage::Whisper, StageState::Working));
-    // Before the model loads, not after: loading takes a few seconds, and the
-    // status line would otherwise still say the recording is being saved. It
-    // used to say "Loading Whisper model small...", which the main window's
-    // status line had no room for.
-    on_progress(Progress::Status(
-        i18n::tr(config.language, "transcribing").to_string(),
-    ));
-
-    if !whisper::is_installed(&config.whisper_model) {
-        on_progress(Progress::Status(i18n::tr_args(
-            config.language,
-            "downloading_model",
-            &[("model", &config.whisper_model)],
-        )));
-        match whisper::download_model(&config.whisper_model, |percent| {
-            // Stops the transfer when a recording starts. Without this the hold
-            // could not interrupt the single longest thing this app ever does.
-            if control.is_aborted() {
-                return false;
-            }
-            on_progress(Progress::Status(i18n::tr_args(
-                config.language,
-                "downloading_model_percent",
-                &[("model", &config.whisper_model), ("percent", &percent.to_string())],
-            )));
-            true
-        }) {
-            // Stopping for a recording is not a failure. Propagated as an error
-            // it marked the meeting `Failed` with an error banner for doing
-            // exactly what the hold asked of it, leaving the user to find it and
-            // press Retry.
-            Err(whisper::WhisperError::Cancelled) => {
-                return Ok(RunOutcome::Paused(config.resume));
-            }
-            Err(other) => return Err(PipelineError::Whisper(other)),
-            Ok(_) => {}
-        }
-    }
-
-    // Loading large-v3 is seconds of disk and gigabytes of RAM. Do not start it
-    // for a job that has already been told to stop.
-    if control.is_aborted() {
-        return Ok(RunOutcome::Paused(config.resume));
-    }
-
-    let transcriber = Transcriber::load(
-        &config.whisper_model,
-        config.transcription_language.as_deref(),
-    )?;
-
-    // Only the microphone's length is needed here: it is where the system
-    // track's share of the meeting's timeline begins. The queue worker measures
-    // both itself, to size the bar.
-    let mic_duration = wav_duration(&mic_file).unwrap_or(0.0);
-
-    // Both tracks already share one origin: `RecordingSession::start` stamps a
-    // single `Instant` and hands it to both recorders, and each track's
-    // lead-in silence covers its own open latency. So the two tracks share an
-    // origin by construction and both offsets are zero — there is no per-track
-    // start stamp to reconcile.
     let partial_segments_file = folder.join(PARTIAL_SEGMENTS);
     let partial_summary_file = folder.join(PARTIAL_SUMMARY);
-
-    // Anything a previous, paused attempt already transcribed. Empty for a new
-    // meeting, which is why resuming needs no special case below.
-    //
-    // Dropped when the resume point is zero. A pause that failed to record its
-    // offset leaves a partial full of segments the next run will transcribe
-    // again, and `build_transcript` sorts but never dedups — so the transcript
-    // gains a duplicate of everything already in it. If we are starting both
-    // tracks from the beginning, whatever is in the partial is about to be
-    // produced again and keeping it can only duplicate.
-    let mut segments: Vec<Segment> = if config.resume.mic_offset_seconds > 0.0
-        || config.resume.system_offset_seconds > 0.0
-    {
-        read_partial(&partial_segments_file)
-    } else {
-        Vec::new()
-    };
     let mut resume = config.resume;
 
-    // No percentage here, deliberately.
+    // --- transcription ---------------------------------------------------
     //
-    // `full()` blocks this thread for the whole file, so this line is written
-    // once and cannot be updated. It used to carry a number, which meant it
-    // announced "0%" and sat there for the length of the track — a progress
-    // report that never progresses is worse than none, because it reads as a
-    // stall. The live figure is `control.seconds_done()`, which the queue worker
-    // polls from another thread and shows on the meeting's card.
-    // Again after a download, which replaces it with its own progress.
-    //
-    // Just "Transcribing". This used to be `format!("Transcribing {}...",
-    // config.speaker_me)` — English glued to a *localised* label, so a Spanish
-    // user got half a sentence in each language. "YO" is the tag written into
-    // the transcript to mark the microphone track, and which of the two files
-    // is being read is the app's business, not something to report.
-    on_progress(Progress::Status(
-        i18n::tr(config.language, "transcribing").to_string(),
-    ));
+    // Skipped when this meeting's transcript already exists. It is written only
+    // once transcription has finished, so its presence means the only thing
+    // left is the summary: a retry after the provider failed, or a resume
+    // after a pause during the summary. Both used to transcribe the meeting
+    // again — hours on a slow machine, to repeat one API call — and the resume
+    // was worse: it started from an empty segment list, so the summary was of
+    // almost nothing.
+    let existing = std::fs::read_to_string(&transcript_file)
+        .ok()
+        .filter(|text| !text.trim().is_empty());
 
-    // The microphone track opens the meeting's timeline.
-    control.set_base_seconds(0.0);
-    let mic = transcriber.transcribe(
-        &mic_file,
-        &config.speaker_me,
-        resume.mic_offset_seconds,
-        control,
-    )?;
-    let quiet_recording = mic.peak > 0.0 && mic.peak < whisper::QUIET_PEAK;
-    segments.extend(mic.segments);
-    resume.mic_offset_seconds = mic.last_end_seconds;
+    let (transcript, quiet_recording, segment_count) = if let Some(transcript) = existing {
+        // Not measured again: the level is a property of the recording, and
+        // reading both WAVs back to report it is not worth the time.
+        let count = transcript.lines().filter(|line| !line.trim().is_empty()).count();
+        (transcript, false, count)
+    } else {
+        on_progress(Progress::Stage(Stage::Whisper, StageState::Working));
+        // Before the model loads, not after: loading takes a few seconds, and the
+        // status line would otherwise still say the recording is being saved. It
+        // used to say "Loading Whisper model small...", which the main window's
+        // status line had no room for.
+        on_progress(Progress::Status(
+            i18n::tr(config.language, "transcribing").to_string(),
+        ));
 
-    if mic.aborted {
-        // Written before returning, so the work survives a quit as well as a
-        // pause. Nothing distinguishes the two by the time the app restarts.
-        write_partial(&partial_segments_file, &segments);
-        return Ok(RunOutcome::Paused(resume));
-    }
+        if !whisper::is_installed(&config.whisper_model) {
+            on_progress(Progress::Status(i18n::tr_args(
+                config.language,
+                "downloading_model",
+                &[("model", &config.whisper_model)],
+            )));
+            match whisper::download_model(&config.whisper_model, |percent| {
+                // Stops the transfer when a recording starts. Without this the hold
+                // could not interrupt the single longest thing this app ever does.
+                if control.is_aborted() {
+                    return false;
+                }
+                on_progress(Progress::Status(i18n::tr_args(
+                    config.language,
+                    "downloading_model_percent",
+                    &[("model", &config.whisper_model), ("percent", &percent.to_string())],
+                )));
+                true
+            }) {
+                // Stopping for a recording is not a failure. Propagated as an error
+                // it marked the meeting `Failed` with an error banner for doing
+                // exactly what the hold asked of it, leaving the user to find it and
+                // press Retry.
+                Err(whisper::WhisperError::Cancelled) => {
+                    return Ok(RunOutcome::Paused(config.resume));
+                }
+                Err(other) => return Err(PipelineError::Whisper(other)),
+                Ok(_) => {}
+            }
+        }
 
-    // The system track continues it, so progress keeps climbing instead of
-    // restarting when the first track finishes.
-    control.set_base_seconds(mic_duration);
-    let system = transcriber.transcribe(
-        &system_file,
-        &config.speaker_meeting,
-        resume.system_offset_seconds,
-        control,
-    )?;
-    segments.extend(system.segments);
-    resume.system_offset_seconds = system.last_end_seconds;
+        // Loading large-v3 is seconds of disk and gigabytes of RAM. Do not start it
+        // for a job that has already been told to stop.
+        if control.is_aborted() {
+            return Ok(RunOutcome::Paused(config.resume));
+        }
 
-    if system.aborted {
-        write_partial(&partial_segments_file, &segments);
-        return Ok(RunOutcome::Paused(resume));
-    }
+        let transcriber = Transcriber::load(
+            &config.whisper_model,
+            config.transcription_language.as_deref(),
+        )?;
 
-    // Interleaves the two speakers by timestamp and formats
-    // `[HH:MM:SS] SPEAKER: text`. The format is fixed: it is what the summary
-    // prompts are written against, and what a reader of `transcript.txt` sees.
-    let transcript = text::build_transcript(&mut segments);
+        // Only the microphone's length is needed here: it is where the system
+        // track's share of the meeting's timeline begins. The queue worker measures
+        // both itself, to size the bar.
+        let mic_duration = wav_duration(&mic_file).unwrap_or(0.0);
 
-    // Deliberately NOT written before the emptiness check.
-    //
-    // Writing it first and checking afterwards leaves a stray empty
-    // `transcript.txt` beside a meeting that has none — a file that looks like
-    // a transcript and is not one. Checking first costs nothing.
-    //
-    // # A meeting with nothing said in it is finished, not failed
-    //
-    // This used to return `PipelineError::NoVoice`, which put the meeting in the
-    // queue as **Failed**, in red, offering a retry that could only ever produce
-    // the same nothing. But nothing failed: the user muted the microphone, or
-    // said nothing, and the app did exactly what it was asked.
-    //
-    // So it writes a summary saying so and finishes. The meeting then behaves
-    // like any other — it is in the library, it can be opened, and it says why
-    // it is empty — instead of looking like a bug in the app.
-    if transcript.trim().is_empty() {
-        let note = format!(
-            "# {}\n\n{}\n",
-            i18n::tr(config.language, "summary_no_speech_title"),
-            i18n::tr(config.language, "summary_no_speech_body"),
-        );
-        std::fs::write(&summary_file, &note)?;
+        // Both tracks already share one origin: `RecordingSession::start` stamps a
+        // single `Instant` and hands it to both recorders, and each track's
+        // lead-in silence covers its own open latency. So the two tracks share an
+        // origin by construction and both offsets are zero — there is no per-track
+        // start stamp to reconcile.
 
-        let _ = std::fs::remove_file(&partial_segments_file);
-        let _ = std::fs::remove_file(&partial_summary_file);
+        // Anything a previous, paused attempt already transcribed. Empty for a new
+        // meeting, which is why resuming needs no special case below.
+        //
+        // Dropped when the resume point is zero. A pause that failed to record its
+        // offset leaves a partial full of segments the next run will transcribe
+        // again, and `build_transcript` sorts but never dedups — so the transcript
+        // gains a duplicate of everything already in it. If we are starting both
+        // tracks from the beginning, whatever is in the partial is about to be
+        // produced again and keeping it can only duplicate.
+        let mut segments: Vec<Segment> = if config.resume.mic_offset_seconds > 0.0
+            || config.resume.system_offset_seconds > 0.0
+        {
+            read_partial(&partial_segments_file)
+        } else {
+            Vec::new()
+        };
 
+        // No percentage here, deliberately.
+        //
+        // `full()` blocks this thread for the whole file, so this line is written
+        // once and cannot be updated. It used to carry a number, which meant it
+        // announced "0%" and sat there for the length of the track — a progress
+        // report that never progresses is worse than none, because it reads as a
+        // stall. The live figure is `control.seconds_done()`, which the queue worker
+        // polls from another thread and shows on the meeting's card.
+        // Again after a download, which replaces it with its own progress.
+        //
+        // Just "Transcribing". This used to be `format!("Transcribing {}...",
+        // config.speaker_me)` — English glued to a *localised* label, so a Spanish
+        // user got half a sentence in each language. "YO" is the tag written into
+        // the transcript to mark the microphone track, and which of the two files
+        // is being read is the app's business, not something to report.
+        on_progress(Progress::Status(
+            i18n::tr(config.language, "transcribing").to_string(),
+        ));
+
+        // The microphone track opens the meeting's timeline.
+        control.set_base_seconds(0.0);
+        let mic = transcriber.transcribe(
+            &mic_file,
+            &config.speaker_me,
+            resume.mic_offset_seconds,
+            control,
+        )?;
+        let quiet_recording = mic.peak > 0.0 && mic.peak < whisper::QUIET_PEAK;
+        segments.extend(mic.segments);
+        resume.mic_offset_seconds = mic.last_end_seconds;
+
+        if mic.aborted {
+            // Written before returning, so the work survives a quit as well as a
+            // pause. Nothing distinguishes the two by the time the app restarts.
+            write_partial(&partial_segments_file, &segments);
+            return Ok(RunOutcome::Paused(resume));
+        }
+
+        // The system track continues it, so progress keeps climbing instead of
+        // restarting when the first track finishes.
+        control.set_base_seconds(mic_duration);
+        let system = transcriber.transcribe(
+            &system_file,
+            &config.speaker_meeting,
+            resume.system_offset_seconds,
+            control,
+        )?;
+        segments.extend(system.segments);
+        resume.system_offset_seconds = system.last_end_seconds;
+
+        if system.aborted {
+            write_partial(&partial_segments_file, &segments);
+            return Ok(RunOutcome::Paused(resume));
+        }
+
+        // Interleaves the two speakers by timestamp and formats
+        // `[HH:MM:SS] SPEAKER: text`. The format is fixed: it is what the summary
+        // prompts are written against, and what a reader of `transcript.txt` sees.
+        let transcript = text::build_transcript(&mut segments);
+
+        // Deliberately NOT written before the emptiness check.
+        //
+        // Writing it first and checking afterwards leaves a stray empty
+        // `transcript.txt` beside a meeting that has none — a file that looks like
+        // a transcript and is not one. Checking first costs nothing.
+        //
+        // # A meeting with nothing said in it is finished, not failed
+        //
+        // This used to return `PipelineError::NoVoice`, which put the meeting in the
+        // queue as **Failed**, in red, offering a retry that could only ever produce
+        // the same nothing. But nothing failed: the user muted the microphone, or
+        // said nothing, and the app did exactly what it was asked.
+        //
+        // So it writes a summary saying so and finishes. The meeting then behaves
+        // like any other — it is in the library, it can be opened, and it says why
+        // it is empty — instead of looking like a bug in the app.
+        if transcript.trim().is_empty() {
+            let note = format!(
+                "# {}\n\n{}\n",
+                i18n::tr(config.language, "summary_no_speech_title"),
+                i18n::tr(config.language, "summary_no_speech_body"),
+            );
+            std::fs::write(&summary_file, &note)?;
+
+            let _ = std::fs::remove_file(&partial_segments_file);
+            let _ = std::fs::remove_file(&partial_summary_file);
+
+            on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
+            on_progress(Progress::Stage(Stage::Summary, StageState::Done));
+
+            return Ok(RunOutcome::Finished(PipelineOutput {
+                quiet_recording,
+                folder,
+                transcript_file,
+                summary_file,
+                segment_count: 0,
+                no_speech: true,
+            }));
+        }
+
+        std::fs::write(&transcript_file, &transcript)?;
         on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
-        on_progress(Progress::Stage(Stage::Summary, StageState::Done));
-
-        return Ok(RunOutcome::Finished(PipelineOutput {
-            quiet_recording,
-            folder,
-            transcript_file,
-            summary_file,
-            segment_count: 0,
-            no_speech: true,
-        }));
-    }
-
-    std::fs::write(&transcript_file, &transcript)?;
-    on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
+        (transcript, quiet_recording, segments.len())
+    };
 
     // --- summary ---------------------------------------------------------
     on_progress(Progress::Stage(Stage::Summary, StageState::Working));
@@ -458,7 +479,7 @@ pub fn run(
             summary_file,
             quiet_recording,
             no_speech: false,
-            segment_count: segments.len(),
+            segment_count,
         }));
     }
 
@@ -499,7 +520,7 @@ pub fn run(
         folder,
         transcript_file,
         summary_file,
-        segment_count: segments.len(),
+        segment_count,
     }))
 }
 
