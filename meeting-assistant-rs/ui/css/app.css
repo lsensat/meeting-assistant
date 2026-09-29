@@ -1211,7 +1211,16 @@ input[type="password"] { cursor: text; }
 
 .queue-card-time { flex: none; color: var(--steel-dark); }
 .queue-card-progress { margin-top: 3px; }
-.queue-card-stage { flex: none; color: var(--steel-dark); }
+.queue-card-stage { flex: 1; min-width: 0; color: var(--steel-dark); }
+/* The percentage and its ring, pushed to the right edge of the line. */
+.queue-card-amount {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--steel-dark);
+  font-variant-numeric: tabular-nums;
+}
 
 /*
  * A ring beside the stage label rather than a bar: it reads as one meeting's

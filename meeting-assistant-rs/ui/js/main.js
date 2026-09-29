@@ -448,6 +448,15 @@ function percentFor(job) {
   return smoother.value();
 }
 
+/**
+ * The number beside the ring, for a running job; empty otherwise. The number
+ * as well as the ring: on a slow machine the arc can move too little to see,
+ * and a still ring is indistinguishable from a frozen app.
+ */
+function percentLabel(job) {
+  return job.running && STAGE_STEP[job.stage] ? `· ${percentFor(job)}%` : "";
+}
+
 function stageLabel(job) {
   if (job.stage === "failed") return tr("queue_stage_failed");
   // Paused work is not "waiting its turn"; say which it is.
@@ -462,12 +471,7 @@ function stageLabel(job) {
   const step = STAGE_STEP[job.stage];
   if (!step) return name;
 
-  // The number as well as the bar. Transcription advances once per 30 seconds
-  // of audio, so on a slow machine a 44px bar can sit still for a long time and
-  // is indistinguishable from a frozen app — which is how it was read.
-  return job.running
-    ? `${name} ${step}/3 · ${percentFor(job)}%`
-    : `${name} ${step}/3`;
+  return `${name} ${step}/3`;
 }
 
 /**
@@ -483,7 +487,7 @@ function jobTooltip(job) {
   if (job.duration_seconds) {
     lines.push(`${tr("queue_tip_length")}: ${formatDuration(job.duration_seconds)}`);
   }
-  lines.push(`${tr("queue_tip_stage")}: ${stageLabel(job)}`);
+  lines.push(`${tr("queue_tip_stage")}: ${[stageLabel(job), percentLabel(job)].filter(Boolean).join(" ")}`);
   // The failure, last: it is the longest and the least predictable.
   if (job.error) lines.push(job.error);
   return lines.join("\n");
@@ -531,7 +535,13 @@ function queueCard(job) {
   progress.className = "queue-card-line queue-card-progress";
 
   line.append(time, title);
-  progress.append(stage, ring);
+  // What it is doing on the left, how far on the right.
+  const amount = document.createElement("span");
+  amount.className = "queue-card-amount";
+  const percent = document.createElement("span");
+  percent.textContent = percentLabel(job);
+  amount.append(percent, ring);
+  progress.append(stage, amount);
   body.append(line, progress);
   card.append(body);
 
@@ -540,7 +550,7 @@ function queueCard(job) {
   // is what made opening and closing this panel feel heavy: the rebuild landed
   // on top of the toggle's own resize.
   card.dataset.id = job.id;
-  card._parts = { time, title, stage, fill };
+  card._parts = { time, title, stage, percent, fill };
   card._job = job;
 
   if (job.stage === "failed") {
@@ -649,6 +659,7 @@ async function renderQueue() {
     card.dataset.state = job.stage;
     parts.title.textContent = job.title || tr("queue_untitled");
     parts.stage.textContent = stageLabel(job);
+    parts.percent.textContent = percentLabel(job);
     setRing(parts.fill, percentFor(job));
     card.setAttribute("data-tooltip-text", jobTooltip(job));
     // Kept so the animation frame below can advance this card between polls.
@@ -720,6 +731,7 @@ function startProgressAnimation() {
       const job = card._job;
       if (!job?.running || !card._parts) continue;
       card._parts.stage.textContent = stageLabel(job);
+      card._parts.percent.textContent = percentLabel(job);
       setRing(card._parts.fill, percentFor(job));
     }
   }, 250);
