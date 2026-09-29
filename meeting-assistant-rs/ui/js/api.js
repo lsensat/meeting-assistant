@@ -177,6 +177,11 @@ export const openPath = (path) => invoke("open_path", { path });
 export const openSoundSettings = () => invoke("open_sound_settings");
 
 export const startupCheck = () => invoke("startup_check");
+/**
+ * Re-check only the summarizer, after Settings changed it. May start Ollama.
+ * @returns {Promise<{summary_provider: string, summary_ready: boolean, ollama: {running: boolean, models: string[]}, ollama_installed: boolean}>}
+ */
+export const checkSummarizer = () => invoke("check_summarizer");
 
 /** Settings is its own 590x610 window, so closing it closes settings, not the app. */
 export const openSettings = () => invoke("open_settings");

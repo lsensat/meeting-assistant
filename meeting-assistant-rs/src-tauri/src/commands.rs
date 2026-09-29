@@ -148,13 +148,16 @@ pub struct CompleteDto {
     pub summary_file: String,
 }
 
+/// The summarizer half of the startup check, on its own so it can be re-run
+/// when Settings changes the provider — the lamp used to keep describing the
+/// provider the app was launched with.
 #[derive(Serialize, Clone)]
-pub struct StartupResultDto {
+pub struct SummarizerDto {
     /// Which provider is configured, so the frontend knows whether the Ollama
     /// fields below mean anything.
     pub summary_provider: String,
     /// True when the configured summary path looks usable: Ollama running with
-    /// a model, or a remote endpoint with a base URL, model and stored key.
+    /// a model, or a remote provider with an endpoint, a model and a stored key.
     pub summary_ready: bool,
     pub ollama: OllamaStatusDto,
     /// Whether an `ollama` executable was found on this machine at all.
@@ -163,6 +166,14 @@ pub struct StartupResultDto {
     /// "Start Ollama" or "Get Ollama" — offering to start something absent is a
     /// dead end.
     pub ollama_installed: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct StartupResultDto {
+    /// Flattened: the frontend reads these fields at the top level, as it
+    /// always has.
+    #[serde(flatten)]
+    pub summarizer: SummarizerDto,
     pub whisper_installed: Vec<String>,
     pub folder_ok: bool,
     pub has_microphone: bool,
@@ -1359,34 +1370,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
             let _ = app.emit(EV_LOG, message);
         }
 
-        // Probe Ollama only when it is the configured provider. Launching a
-        // local server for someone who chose a remote endpoint is both
-        // surprising and slow, and its "not running" state would be reported
-        // as a startup error they cannot act on.
-        let uses_ollama = config.summary_provider == SummaryProvider::Ollama;
-        // Short-circuited: a user on a remote endpoint should not pay for a
-        // filesystem search for a binary they have no use for.
-        let ollama_installed = uses_ollama && platform::find_ollama().is_some();
-
-        let ollama_status = if uses_ollama {
-        emit_status("checking_ollama");
-            let status = list_ollama_models();
-
-            // Ollama is started when it is installed but not running, and
-            // then waited for properly rather than asking the user to reopen
-            // the app. The main window offers a retry if it still fails.
-            if !status.running && ollama_installed && platform::start_ollama().is_ok() {
-                wait_for_ollama()
-            } else {
-                status
-            }
-        } else {
-            OllamaStatusDto {
-                running: false,
-                models: Vec::new(),
-                error: None,
-            }
-        };
+        let summarizer = summarizer_status(&config, &emit_status);
         emit_status("searching_models");
         let whisper_installed = whisper::installed_models();
 
@@ -1400,16 +1384,7 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
         let _ = app.emit(
             EV_STARTUP_RESULT,
             StartupResultDto {
-                summary_provider: config.summary_provider.as_str().to_string(),
-                summary_ready: if uses_ollama {
-                    ollama_status.running && !ollama_status.models.is_empty()
-                } else {
-                    !config.api_base_url.is_empty()
-                        && !config.api_model.is_empty()
-                        && crate::summary::has_api_key()
-                },
-                ollama: ollama_status,
-                ollama_installed,
+                summarizer,
                 whisper_installed,
                 folder_ok,
                 has_microphone: !mics.is_empty(),
@@ -1419,6 +1394,68 @@ pub async fn startup_check(app: AppHandle, state: State<'_, AppState>) -> Result
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Whether the configured summarizer can be used. Blocking: it may start
+/// Ollama and wait for it.
+///
+/// No network call for a remote provider: this checks the setup (endpoint,
+/// model, stored key), not that the key is accepted. "Load models" in Settings
+/// is the check that talks to the provider.
+fn summarizer_status(config: &Config, emit_status: &dyn Fn(&str)) -> SummarizerDto {
+    // Probe Ollama only when it is the configured provider. Launching a
+    // local server for someone who chose a remote endpoint is both
+    // surprising and slow, and its "not running" state would be reported
+    // as a startup error they cannot act on.
+    let uses_ollama = config.summary_provider == SummaryProvider::Ollama;
+    // Short-circuited: a user on a remote endpoint should not pay for a
+    // filesystem search for a binary they have no use for.
+    let ollama_installed = uses_ollama && platform::find_ollama().is_some();
+
+    let ollama = if uses_ollama {
+        emit_status("checking_ollama");
+        let status = list_ollama_models();
+
+        // Ollama is started when it is installed but not running, and
+        // then waited for properly rather than asking the user to reopen
+        // the app. The main window offers a retry if it still fails.
+        if !status.running && ollama_installed && platform::start_ollama().is_ok() {
+            wait_for_ollama()
+        } else {
+            status
+        }
+    } else {
+        OllamaStatusDto {
+            running: false,
+            models: Vec::new(),
+            error: None,
+        }
+    };
+
+    let summary_ready = if uses_ollama {
+        ollama.running && !ollama.models.is_empty()
+    } else {
+        config.api_configured() && crate::summary::has_api_key()
+    };
+
+    SummarizerDto {
+        summary_provider: config.summary_provider.as_str().to_string(),
+        summary_ready,
+        ollama,
+        ollama_installed,
+    }
+}
+
+/// Re-check only the summarizer, after Settings changed it.
+///
+/// Not `startup_check` again: that also re-reads devices and rewrites the
+/// status line, which would talk over a recording in progress.
+#[tauri::command]
+pub async fn check_summarizer(state: State<'_, AppState>) -> Result<SummarizerDto, String> {
+    let config = state.config_snapshot();
+    tauri::async_runtime::spawn_blocking(move || summarizer_status(&config, &|_| {}))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // --- recording ---------------------------------------------------------

@@ -288,6 +288,16 @@ impl Config {
         crate::providers::endpoint(&self.api_provider, &self.api_base_url)
     }
 
+    /// Whether the remote provider has an endpoint and a model. The key is
+    /// checked separately: it lives in the OS keychain, not in this struct.
+    ///
+    /// The endpoint, not `api_base_url`: a listed provider carries its own URL
+    /// and leaves that field empty, and checking the field reported every
+    /// listed provider as unconfigured.
+    pub fn api_configured(&self) -> bool {
+        !self.api_endpoint().1.trim().is_empty() && !self.api_model.trim().is_empty()
+    }
+
     /// Defaults.
     ///
     /// `base` is the user's documents directory, and recordings default to
@@ -798,6 +808,30 @@ mod tests {
     fn invalid_language_clamps_to_english() {
         let c = Config::from_json(r#"{"language": "fr"}"#, &app_folder());
         assert_eq!(c.language, Language::En);
+    }
+
+    #[test]
+    fn a_listed_provider_is_configured_without_a_url() {
+        let mut c = Config::defaults(&app_folder());
+        c.api_provider = "anthropic".into();
+        c.api_base_url = String::new();
+        c.api_model = "claude-opus-5".into();
+        assert!(c.api_configured());
+
+        c.api_model = " ".into();
+        assert!(!c.api_configured(), "a model is still required");
+    }
+
+    #[test]
+    fn a_custom_provider_needs_its_url() {
+        let mut c = Config::defaults(&app_folder());
+        c.api_provider = crate::providers::CUSTOM.into();
+        c.api_model = "local-model".into();
+        c.api_base_url = String::new();
+        assert!(!c.api_configured());
+
+        c.api_base_url = "http://localhost:1234/v1".into();
+        assert!(c.api_configured());
     }
 
     #[test]

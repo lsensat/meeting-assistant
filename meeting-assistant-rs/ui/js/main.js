@@ -165,6 +165,98 @@ function setLamp(lamp, state, key) {
   lamp.setAttribute("aria-label", tr(key));
 }
 
+/**
+ * The summarizer lamp, from a startup or summarizer check.
+ *
+ * `summary_ready` is Rust's own verdict and already covers both providers:
+ * Ollama running with at least one model, or a remote provider with an
+ * endpoint, a model and a stored key.
+ *
+ * @param {{summary_ready: boolean}} result
+ */
+function showSummarizerLamp(result) {
+  const keys = summaryLampKeys();
+  setLamp(ui.lampSummary, result.summary_ready ? "on" : "off",
+          result.summary_ready ? keys.on : keys.off);
+}
+
+/**
+ * The status message for a summarizer that cannot run, or null.
+ *
+ * Ollama's state is only worth reporting when Ollama is the configured engine.
+ * A user on a remote endpoint would otherwise see "Ollama is not responding"
+ * on every launch, about a component they deliberately are not using.
+ *
+ * @param {{summary_provider: string, summary_ready: boolean, ollama: {running: boolean, models: string[]}}} result
+ * @returns {string|null} an i18n key
+ */
+function summarizerProblem(result) {
+  const usesOllama = result.summary_provider === "ollama";
+  if (usesOllama && !result.ollama.running) return "ollama_not_responding";
+  if (usesOllama && result.ollama.models.length === 0) return "ollama_no_models";
+  if (!usesOllama && !result.summary_ready) return "api_incomplete";
+  return null;
+}
+
+/** The keys `summarizerProblem` can return, to recognise one on the status line. */
+const SUMMARIZER_PROBLEMS = ["ollama_not_responding", "ollama_no_models", "api_incomplete"];
+
+/** @param {{ollama_installed: boolean}} result @param {string} problem */
+function showSummarizerProblem(result, problem) {
+  setStatus(tr(problem));
+  if (problem === "ollama_not_responding") offerOllamaAction(result.ollama_installed === true);
+}
+
+/** The settings a summarizer check depends on. The key is in the keychain,
+ * not the config; Settings saves it together with these, so a save covers it. */
+const SUMMARIZER_FIELDS = ["summary_provider", "ollama_model", "api_provider", "api_base_url", "api_model"];
+
+/**
+ * Re-check the summarizer after Settings saved.
+ *
+ * The lamp used to be decided once, at launch: switch to the API in Settings
+ * and it went on reporting "Summarizer (Ollama): On" for an engine no longer
+ * in use.
+ *
+ * The status line is only touched while idle, and only for the summarizer's
+ * own messages: a recording's status is not this check's to overwrite.
+ *
+ * @param {Record<string, unknown>} before the config the lamp was showing
+ * @param {Record<string, unknown>} after
+ */
+async function recheckSummarizer(before, after) {
+  const changed = SUMMARIZER_FIELDS.some((field) => before[field] !== after[field]);
+  // A remote check is local and cheap, so it also runs when only the key may
+  // have changed. An Ollama check can start Ollama and wait for it, so only
+  // when something it depends on did change.
+  if (!changed && after.summary_provider === "ollama") return;
+
+  // Amber only for a check that can take a while. A remote check answers at
+  // once, and main's own saves (a panel opened or closed) land here too.
+  if (after.summary_provider === "ollama") setLamp(ui.lampSummary, "pending", summaryLampKeys().pending);
+  let result;
+  try {
+    result = await api.checkSummarizer();
+  } catch {
+    showSummarizerLamp({ summary_ready: false });
+    return;
+  }
+  // Settings may have changed again while Ollama was starting.
+  if (currentConfig !== after) return;
+  showSummarizerLamp(result);
+
+  if (recording) return;
+  const shown = ui.status.textContent;
+  const problem = summarizerProblem(result);
+  if (problem) {
+    hideStatusAction();
+    showSummarizerProblem(result, problem);
+  } else if (SUMMARIZER_PROBLEMS.some((key) => tr(key) === shown)) {
+    hideStatusAction();
+    setStatus(tr("ready"));
+  }
+}
+
 /** Which lamp keys apply, given the configured summary provider. */
 function summaryLampKeys() {
   return currentConfig.summary_provider === "openai_compatible"
@@ -1045,26 +1137,11 @@ function wireEvents() {
       whisperReady ? "lamp_whisper_on" : "lamp_whisper_off",
     );
 
-    // `summary_ready` is Rust's own verdict and already covers both providers —
-    // Ollama running with at least one model, or a remote endpoint with a base
-    // URL, a model and a stored key.
-    const keys = summaryLampKeys();
-    setLamp(ui.lampSummary, result.summary_ready ? "on" : "off",
-            result.summary_ready ? keys.on : keys.off);
+    showSummarizerLamp(result);
+    const problem = summarizerProblem(result);
 
-    // Ollama's state is only worth reporting when Ollama is the configured
-    // engine. A user on a remote endpoint would otherwise see
-    // "Ollama is not responding" on every launch, about a component they
-    // deliberately are not using.
-    const usesOllama = result.summary_provider === "ollama";
-
-    if (usesOllama && !result.ollama.running) {
-      setStatus(tr("ollama_not_responding"));
-      offerOllamaAction(result.ollama_installed === true);
-    } else if (usesOllama && result.ollama.models.length === 0) {
-      setStatus(tr("ollama_no_models"));
-    } else if (!usesOllama && !result.summary_ready) {
-      setStatus(tr("api_incomplete"));
+    if (problem) {
+      showSummarizerProblem(result, problem);
     } else if (!result.has_microphone) {
       setStatus(tr("startup_no_mic"));
     } else if (!result.has_system_audio) {
@@ -1389,6 +1466,7 @@ async function main() {
   async function adoptConfig(force = false) {
     if (recording && !force) return;
     const latest = await api.getConfig();
+    const previous = currentConfig;
     currentConfig = latest;
     setLanguage(String(latest.language ?? "en"));
     applyLanguage();
@@ -1397,6 +1475,7 @@ async function main() {
     // touches `[data-i18n]` elements — does not reach them. Without this the
     // stage labels stay in the old language until the next poll.
     renderQueue();
+    if (force) recheckSummarizer(previous, latest);
   }
 
   // Settings saved. This is the reliable signal: `focus` only fires if the user
