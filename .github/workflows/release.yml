@@ -213,6 +213,12 @@ jobs:
         working-directory: meeting-assistant-rs
         run: node ui/test-editor.mjs
 
+      # The queue card's percentage smoother. It once held a card at 79% for
+      # over an hour while transcription was really at 42-70%.
+      - name: Test the progress estimate
+        working-directory: meeting-assistant-rs
+        run: node ui/test-progress.mjs
+
       # Cheap, and it catches a Windows-only compile break in meeting-core
       # before the much slower bundling step runs.
       - name: Test

@@ -26,7 +26,19 @@
  *   is a prediction; two would be an invention.
  * - It never reaches 100% on its own. Completion is a fact reported by Rust,
  *   not something a timer is allowed to conclude.
+ * - It learns only from windows. A jump bigger than `MAX_WINDOW_STEP` is a
+ *   checkpoint — a stage boundary, or a silent track skipped in seconds — and
+ *   is shown as it is, without becoming the prediction. A microphone track
+ *   with no speech jumped 5% to 42% in three seconds; read as one window, it
+ *   had the card draw 79% and hold it for over an hour while the real figure
+ *   climbed from 42.
  */
+
+/**
+ * The largest jump still treated as one window. A 30-second window is under a
+ * point on a long meeting and a few on a short one; a skipped track is dozens.
+ */
+const MAX_WINDOW_STEP = 10;
 
 /** Per-job estimate. Keyed by job id by the caller. */
 export class Smoother {
@@ -65,6 +77,16 @@ export class Smoother {
     const now = performance.now();
     const elapsed = now - this.realAt;
     const jump = percent - this.real;
+
+    if (jump > MAX_WINDOW_STEP) {
+      // A checkpoint: show it, predict nothing from it. The rate learned from
+      // real windows so far still applies to the ones that follow.
+      this.step = 0;
+      this.real = percent;
+      this.realAt = now;
+      if (this.shown < percent) this.shown = percent;
+      return;
+    }
 
     if (elapsed > 0) {
       const observed = jump / elapsed;
