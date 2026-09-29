@@ -97,6 +97,7 @@ fn main() {
             commands::open_settings,
             commands::close_settings,
             commands::startup_check,
+            commands::check_summarizer,
             commands::list_jobs,
             commands::is_processing_paused,
             commands::processing_blocked_reason,
