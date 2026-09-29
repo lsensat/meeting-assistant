@@ -501,7 +501,10 @@ html, body {
   font-size: 12px;
   line-height: 1.3;
   color: var(--ink);
-  overflow-wrap: anywhere;
+  /* Breaks inside a word only when the word alone is wider than the line — a
+     long path in an error. `anywhere` also broke words that would have fitted
+     on the next line, leaving "Transcribing." above ".." */
+  overflow-wrap: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;

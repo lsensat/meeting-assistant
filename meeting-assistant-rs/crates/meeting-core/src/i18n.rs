@@ -57,8 +57,8 @@ pub fn tr(language: Language, key: &str) -> &str {
 ///
 /// ```
 /// # use meeting_core::{config::Language, i18n::tr_args};
-/// let s = tr_args(Language::En, "summarizing", &[("model", "gemma3:4b")]);
-/// assert_eq!(s, "Summarizing with gemma3:4b...");
+/// let s = tr_args(Language::En, "loading_model", &[("model", "small")]);
+/// assert_eq!(s, "Loading Whisper model small...");
 /// ```
 ///
 /// Placeholders with no matching argument are left as-is: substituting what is
@@ -175,12 +175,12 @@ mod tests {
     #[test]
     fn substitutes_arguments() {
         assert_eq!(
-            tr_args(Language::En, "summarizing", &[("model", "gemma3:4b")]),
-            "Summarizing with gemma3:4b..."
+            tr_args(Language::En, "loading_model", &[("model", "small")]),
+            "Loading Whisper model small..."
         );
         assert_eq!(
-            tr_args(Language::Es, "summarizing", &[("model", "gemma3:4b")]),
-            "Resumiendo con gemma3:4b..."
+            tr_args(Language::Es, "loading_model", &[("model", "small")]),
+            "Cargando el modelo Whisper small..."
         );
     }
 
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn unmatched_placeholder_is_left_alone() {
-        let s = tr_args(Language::En, "summarizing", &[]);
+        let s = tr_args(Language::En, "loading_model", &[]);
         assert!(s.contains("{model}"), "got {s:?}");
     }
 

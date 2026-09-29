@@ -225,6 +225,13 @@ pub fn run(
 
     // --- transcription ---------------------------------------------------
     on_progress(Progress::Stage(Stage::Whisper, StageState::Working));
+    // Before the model loads, not after: loading takes a few seconds, and the
+    // status line would otherwise still say the recording is being saved. It
+    // used to say "Loading Whisper model small...", which the main window's
+    // status line had no room for.
+    on_progress(Progress::Status(
+        i18n::tr(config.language, "transcribing").to_string(),
+    ));
 
     if !whisper::is_installed(&config.whisper_model) {
         on_progress(Progress::Status(i18n::tr_args(
@@ -255,12 +262,6 @@ pub fn run(
             Err(other) => return Err(PipelineError::Whisper(other)),
             Ok(_) => {}
         }
-    } else {
-        on_progress(Progress::Status(i18n::tr_args(
-            config.language,
-            "loading_model",
-            &[("model", &config.whisper_model)],
-        )));
     }
 
     // Loading large-v3 is seconds of disk and gigabytes of RAM. Do not start it
@@ -313,7 +314,9 @@ pub fn run(
     // report that never progresses is worse than none, because it reads as a
     // stall. The live figure is `control.seconds_done()`, which the queue worker
     // polls from another thread and shows on the meeting's card.
-    // Just "Transcribing...". This used to be `format!("Transcribing {}...",
+    // Again after a download, which replaces it with its own progress.
+    //
+    // Just "Transcribing". This used to be `format!("Transcribing {}...",
     // config.speaker_me)` — English glued to a *localised* label, so a Spanish
     // user got half a sentence in each language. "YO" is the tag written into
     // the transcript to mark the microphone track, and which of the two files
@@ -408,6 +411,12 @@ pub fn run(
 
     // --- summary ---------------------------------------------------------
     on_progress(Progress::Stage(Stage::Summary, StageState::Working));
+    // One word for the whole stage, as for transcription: the main window's
+    // status line has room for about fourteen characters, and the blocks and
+    // the model are on the meeting's card.
+    on_progress(Progress::Status(
+        i18n::tr(config.language, "summarizing").to_string(),
+    ));
 
     // Refuse to summarise what has nothing in it.
     //
@@ -459,7 +468,6 @@ pub fn run(
         resume.summary_chunk,
         &partial_summary_file,
         control,
-        &mut on_progress,
     )? {
         Some(summary) => summary,
         None => {
@@ -509,7 +517,6 @@ fn summarize(
     start_chunk: usize,
     partial_file: &Path,
     control: &whisper::TranscriptionControl,
-    on_progress: &mut impl FnMut(Progress),
 ) -> Result<Option<String>, PipelineError> {
     let chunks = text::split_transcript(transcript, text::DEFAULT_CHUNK_CHARS);
     let system = prompts::system_prompt(config.language);
@@ -534,17 +541,11 @@ fn summarize(
     let single_chunk = total <= 1;
     let to_extract: &[String] = if single_chunk { &[] } else { &chunks };
 
-    for (index, chunk) in to_extract.iter().enumerate().skip(partials.len()) {
+    for chunk in to_extract.iter().skip(partials.len()) {
         if control.is_aborted() {
             write_partial(partial_file, &partials);
             return Ok(None);
         }
-
-        on_progress(Progress::Status(format!(
-            "Summarizing block {}/{total} with {}...",
-            index + 1,
-            config.provider.ollama_model
-        )));
 
         let user = prompts::extraction_message(config.language, chunk);
         let started = std::time::Instant::now();
@@ -558,8 +559,6 @@ fn summarize(
         write_partial(partial_file, &partials);
         return Ok(None);
     }
-
-    on_progress(Progress::Status("Generating the final summary...".into()));
 
     let combined = if single_chunk {
         transcript.to_string()
