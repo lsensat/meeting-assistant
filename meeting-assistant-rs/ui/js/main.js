@@ -381,6 +381,45 @@ function jobTime(id) {
   return match ? `${match[1]}:${match[2]}` : id;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * A small progress ring: a steel track and a green arc drawn clockwise from
+ * the top. `pathLength="100"` makes the arc's length the percentage itself.
+ *
+ * @returns {{ring: SVGSVGElement, fill: SVGCircleElement}}
+ */
+function progressRing() {
+  const ring = document.createElementNS(SVG_NS, "svg");
+  ring.setAttribute("class", "queue-ring");
+  ring.setAttribute("viewBox", "0 0 16 16");
+  ring.setAttribute("aria-hidden", "true");
+  const circle = (className) => {
+    const c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("class", className);
+    c.setAttribute("cx", "8");
+    c.setAttribute("cy", "8");
+    c.setAttribute("r", "6");
+    c.setAttribute("pathLength", "100");
+    return c;
+  };
+  const fill = circle("queue-ring-fill");
+  ring.append(circle("queue-ring-track"), fill);
+  return { ring, fill };
+}
+
+/**
+ * Through the CSSOM, not a `style` attribute: the CSP has no `unsafe-inline`
+ * in `style-src`, which would block the attribute form.
+ *
+ * @param {SVGCircleElement} fill @param {number} percent
+ */
+function setRing(fill, percent) {
+  fill.style.strokeDashoffset = String(100 - percent);
+  // An empty arc still draws its rounded end as a dot, which reads as progress.
+  fill.style.visibility = percent > 0 ? "visible" : "hidden";
+}
+
 /** Which of the three processing steps a stage is. */
 const STAGE_STEP = { audio: 1, whisper: 2, summary: 3 };
 
@@ -482,16 +521,9 @@ function queueCard(job) {
   stage.className = "queue-card-stage";
   stage.textContent = stageLabel(job);
 
-  // Beside its stage label, so it reads as that stage's progress rather than as
-  // a rule dividing one meeting from the next.
-  const bar = document.createElement("div");
-  bar.className = "queue-bar";
-  const fill = document.createElement("div");
-  fill.className = "queue-bar-fill";
-  // Through the CSSOM, not a `style` attribute: the CSP has no
-  // `unsafe-inline` in `style-src`, which would block the attribute form.
-  fill.style.width = `${percentFor(job)}%`;
-  bar.append(fill);
+  // Beside its stage label, so it reads as that stage's progress.
+  const { ring, fill } = progressRing();
+  setRing(fill, percentFor(job));
 
   // Two lines: which meeting, then how far along. One line held all four at
   // 375px; in the narrower window it left no room for the title at all.
@@ -499,7 +531,7 @@ function queueCard(job) {
   progress.className = "queue-card-line queue-card-progress";
 
   line.append(time, title);
-  progress.append(stage, bar);
+  progress.append(stage, ring);
   body.append(line, progress);
   card.append(body);
 
@@ -617,7 +649,7 @@ async function renderQueue() {
     card.dataset.state = job.stage;
     parts.title.textContent = job.title || tr("queue_untitled");
     parts.stage.textContent = stageLabel(job);
-    parts.fill.style.width = `${percentFor(job)}%`;
+    setRing(parts.fill, percentFor(job));
     card.setAttribute("data-tooltip-text", jobTooltip(job));
     // Kept so the animation frame below can advance this card between polls.
     card._job = job;
@@ -688,7 +720,7 @@ function startProgressAnimation() {
       const job = card._job;
       if (!job?.running || !card._parts) continue;
       card._parts.stage.textContent = stageLabel(job);
-      card._parts.fill.style.width = `${percentFor(job)}%`;
+      setRing(card._parts.fill, percentFor(job));
     }
   }, 250);
 }
