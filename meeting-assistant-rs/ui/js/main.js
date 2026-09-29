@@ -553,14 +553,19 @@ function queueCard(job) {
   card._parts = { time, title, stage, percent, fill };
   card._job = job;
 
+  // Stacked at the card's right edge: retry on top when there is one, the bin
+  // always at the bottom, so the bin sits in the same place on every card.
+  const actions = document.createElement("div");
+  actions.className = "queue-card-actions";
   if (job.stage === "failed") {
-    card.append(
+    actions.append(
       iconButton("retry-button", ICON_RETRY, "queue_retry", () => retryJob(job.id)),
     );
   }
-  card.append(
+  actions.append(
     iconButton("trash-button", ICON_TRASH, "queue_discard", () => confirmDiscard(job)),
   );
+  card.append(actions);
 
   card.setAttribute("data-tooltip-text", jobTooltip(job));
 

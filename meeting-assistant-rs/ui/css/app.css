@@ -1261,6 +1261,16 @@ input[type="password"] { cursor: text; }
 }
 .queue-card[data-state="failed"] .queue-card-stage { color: var(--red-dark); }
 
+.queue-card-actions {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.queue-card-actions .trash-button { margin-top: auto; }
+
 .queue-card .trash-button,
 .queue-card .retry-button {
   display: inline-flex;
