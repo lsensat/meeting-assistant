@@ -449,12 +449,17 @@ function percentFor(job) {
 }
 
 /**
- * The number beside the ring, for a running job; empty otherwise. The number
- * as well as the ring: on a slow machine the arc can move too little to see,
- * and a still ring is indistinguishable from a frozen app.
+ * The percentage, for a running job; empty otherwise. The number as well as
+ * the ring: on a slow machine the arc can move too little to see, and a still
+ * ring is indistinguishable from a frozen app.
  */
 function percentLabel(job) {
   return job.running && STAGE_STEP[job.stage] ? `${percentFor(job)}%` : "";
+}
+
+/** The line beside the ring: "62% · Transcribing 2/3", or just "Waiting". */
+function progressText(job) {
+  return [percentLabel(job), stageLabel(job)].filter(Boolean).join(" · ");
 }
 
 function stageLabel(job) {
@@ -523,9 +528,10 @@ function queueCard(job) {
 
   const stage = document.createElement("span");
   stage.className = "queue-card-stage";
-  stage.textContent = stageLabel(job);
+  stage.textContent = progressText(job);
 
-  // Beside its stage label, so it reads as that stage's progress.
+  // Leading the line, so the rings of every card form one column and the line
+  // reads left to right: how far, then what.
   const { ring, fill } = progressRing();
   setRing(fill, percentFor(job));
 
@@ -535,13 +541,7 @@ function queueCard(job) {
   progress.className = "queue-card-line queue-card-progress";
 
   line.append(time, title);
-  // What it is doing on the left, how far on the right.
-  const amount = document.createElement("span");
-  amount.className = "queue-card-amount";
-  const percent = document.createElement("span");
-  percent.textContent = percentLabel(job);
-  amount.append(percent, ring);
-  progress.append(stage, amount);
+  progress.append(ring, stage);
   body.append(line, progress);
   card.append(body);
 
@@ -550,7 +550,7 @@ function queueCard(job) {
   // is what made opening and closing this panel feel heavy: the rebuild landed
   // on top of the toggle's own resize.
   card.dataset.id = job.id;
-  card._parts = { time, title, stage, percent, fill };
+  card._parts = { time, title, stage, fill };
   card._job = job;
 
   // Stacked at the card's right edge: retry on top when there is one, the bin
@@ -663,8 +663,7 @@ async function renderQueue() {
 
     card.dataset.state = job.stage;
     parts.title.textContent = job.title || tr("queue_untitled");
-    parts.stage.textContent = stageLabel(job);
-    parts.percent.textContent = percentLabel(job);
+    parts.stage.textContent = progressText(job);
     setRing(parts.fill, percentFor(job));
     card.setAttribute("data-tooltip-text", jobTooltip(job));
     // Kept so the animation frame below can advance this card between polls.
@@ -735,8 +734,7 @@ function startProgressAnimation() {
     for (const card of ui.queueList.children) {
       const job = card._job;
       if (!job?.running || !card._parts) continue;
-      card._parts.stage.textContent = stageLabel(job);
-      card._parts.percent.textContent = percentLabel(job);
+      card._parts.stage.textContent = progressText(job);
       setRing(card._parts.fill, percentFor(job));
     }
   }, 250);

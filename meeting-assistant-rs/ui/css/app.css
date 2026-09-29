@@ -1179,7 +1179,7 @@ input[type="password"] { cursor: text; }
 .queue-card {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   background: var(--panel-recess);
   border-radius: var(--radius-chip);
   padding: 6px 8px;
@@ -1210,14 +1210,13 @@ input[type="password"] { cursor: text; }
 }
 
 .queue-card-time { flex: none; color: var(--steel-dark); }
-.queue-card-progress { margin-top: 3px; }
-.queue-card-stage { flex: 1; min-width: 0; color: var(--steel-dark); }
-/* The percentage and its ring, pushed to the right edge of the line. */
-.queue-card-amount {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.queue-card-progress { margin-top: 3px; gap: 4px; }
+.queue-card-stage {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--steel-dark);
   font-variant-numeric: tabular-nums;
 }
