@@ -381,6 +381,45 @@ function jobTime(id) {
   return match ? `${match[1]}:${match[2]}` : id;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * A small progress ring: a steel track and a green arc drawn clockwise from
+ * the top. `pathLength="100"` makes the arc's length the percentage itself.
+ *
+ * @returns {{ring: SVGSVGElement, fill: SVGCircleElement}}
+ */
+function progressRing() {
+  const ring = document.createElementNS(SVG_NS, "svg");
+  ring.setAttribute("class", "queue-ring");
+  ring.setAttribute("viewBox", "0 0 16 16");
+  ring.setAttribute("aria-hidden", "true");
+  const circle = (className) => {
+    const c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("class", className);
+    c.setAttribute("cx", "8");
+    c.setAttribute("cy", "8");
+    c.setAttribute("r", "6");
+    c.setAttribute("pathLength", "100");
+    return c;
+  };
+  const fill = circle("queue-ring-fill");
+  ring.append(circle("queue-ring-track"), fill);
+  return { ring, fill };
+}
+
+/**
+ * Through the CSSOM, not a `style` attribute: the CSP has no `unsafe-inline`
+ * in `style-src`, which would block the attribute form.
+ *
+ * @param {SVGCircleElement} fill @param {number} percent
+ */
+function setRing(fill, percent) {
+  fill.style.strokeDashoffset = String(100 - percent);
+  // An empty arc still draws its rounded end as a dot, which reads as progress.
+  fill.style.visibility = percent > 0 ? "visible" : "hidden";
+}
+
 /** Which of the three processing steps a stage is. */
 const STAGE_STEP = { audio: 1, whisper: 2, summary: 3 };
 
@@ -409,6 +448,20 @@ function percentFor(job) {
   return smoother.value();
 }
 
+/**
+ * The percentage, for a running job; empty otherwise. The number as well as
+ * the ring: on a slow machine the arc can move too little to see, and a still
+ * ring is indistinguishable from a frozen app.
+ */
+function percentLabel(job) {
+  return job.running && STAGE_STEP[job.stage] ? `${percentFor(job)}%` : "";
+}
+
+/** The line beside the ring: "62% · Transcribing 2/3", or just "Waiting". */
+function progressText(job) {
+  return [percentLabel(job), stageLabel(job)].filter(Boolean).join(" · ");
+}
+
 function stageLabel(job) {
   if (job.stage === "failed") return tr("queue_stage_failed");
   // Paused work is not "waiting its turn"; say which it is.
@@ -423,12 +476,7 @@ function stageLabel(job) {
   const step = STAGE_STEP[job.stage];
   if (!step) return name;
 
-  // The number as well as the bar. Transcription advances once per 30 seconds
-  // of audio, so on a slow machine a 44px bar can sit still for a long time and
-  // is indistinguishable from a frozen app — which is how it was read.
-  return job.running
-    ? `${name} ${step}/3 · ${percentFor(job)}%`
-    : `${name} ${step}/3`;
+  return `${name} ${step}/3`;
 }
 
 /**
@@ -444,7 +492,7 @@ function jobTooltip(job) {
   if (job.duration_seconds) {
     lines.push(`${tr("queue_tip_length")}: ${formatDuration(job.duration_seconds)}`);
   }
-  lines.push(`${tr("queue_tip_stage")}: ${stageLabel(job)}`);
+  lines.push(`${tr("queue_tip_stage")}: ${[stageLabel(job), percentLabel(job)].filter(Boolean).join(" · ")}`);
   // The failure, last: it is the longest and the least predictable.
   if (job.error) lines.push(job.error);
   return lines.join("\n");
@@ -480,18 +528,12 @@ function queueCard(job) {
 
   const stage = document.createElement("span");
   stage.className = "queue-card-stage";
-  stage.textContent = stageLabel(job);
+  stage.textContent = progressText(job);
 
-  // Beside its stage label, so it reads as that stage's progress rather than as
-  // a rule dividing one meeting from the next.
-  const bar = document.createElement("div");
-  bar.className = "queue-bar";
-  const fill = document.createElement("div");
-  fill.className = "queue-bar-fill";
-  // Through the CSSOM, not a `style` attribute: the CSP has no
-  // `unsafe-inline` in `style-src`, which would block the attribute form.
-  fill.style.width = `${percentFor(job)}%`;
-  bar.append(fill);
+  // Leading the line, so the rings of every card form one column and the line
+  // reads left to right: how far, then what.
+  const { ring, fill } = progressRing();
+  setRing(fill, percentFor(job));
 
   // Two lines: which meeting, then how far along. One line held all four at
   // 375px; in the narrower window it left no room for the title at all.
@@ -499,7 +541,7 @@ function queueCard(job) {
   progress.className = "queue-card-line queue-card-progress";
 
   line.append(time, title);
-  progress.append(stage, bar);
+  progress.append(ring, stage);
   body.append(line, progress);
   card.append(body);
 
@@ -511,14 +553,19 @@ function queueCard(job) {
   card._parts = { time, title, stage, fill };
   card._job = job;
 
+  // Stacked at the card's right edge: retry on top when there is one, the bin
+  // always at the bottom, so the bin sits in the same place on every card.
+  const actions = document.createElement("div");
+  actions.className = "queue-card-actions";
   if (job.stage === "failed") {
-    card.append(
+    actions.append(
       iconButton("retry-button", ICON_RETRY, "queue_retry", () => retryJob(job.id)),
     );
   }
-  card.append(
+  actions.append(
     iconButton("trash-button", ICON_TRASH, "queue_discard", () => confirmDiscard(job)),
   );
+  card.append(actions);
 
   card.setAttribute("data-tooltip-text", jobTooltip(job));
 
@@ -616,8 +663,8 @@ async function renderQueue() {
 
     card.dataset.state = job.stage;
     parts.title.textContent = job.title || tr("queue_untitled");
-    parts.stage.textContent = stageLabel(job);
-    parts.fill.style.width = `${percentFor(job)}%`;
+    parts.stage.textContent = progressText(job);
+    setRing(parts.fill, percentFor(job));
     card.setAttribute("data-tooltip-text", jobTooltip(job));
     // Kept so the animation frame below can advance this card between polls.
     card._job = job;
@@ -687,8 +734,8 @@ function startProgressAnimation() {
     for (const card of ui.queueList.children) {
       const job = card._job;
       if (!job?.running || !card._parts) continue;
-      card._parts.stage.textContent = stageLabel(job);
-      card._parts.fill.style.width = `${percentFor(job)}%`;
+      card._parts.stage.textContent = progressText(job);
+      setRing(card._parts.fill, percentFor(job));
     }
   }, 250);
 }

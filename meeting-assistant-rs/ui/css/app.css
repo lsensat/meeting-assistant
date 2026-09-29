@@ -1179,7 +1179,7 @@ input[type="password"] { cursor: text; }
 .queue-card {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   background: var(--panel-recess);
   border-radius: var(--radius-chip);
   padding: 6px 8px;
@@ -1210,41 +1210,67 @@ input[type="password"] { cursor: text; }
 }
 
 .queue-card-time { flex: none; color: var(--steel-dark); }
-.queue-card-progress { margin-top: 3px; }
-/* On its own line the bar takes the width the stage label leaves. */
-.queue-card-progress .queue-bar { flex: 1; width: auto; }
-.queue-card-stage { flex: none; color: var(--steel-dark); }
+/* A step smaller than the title line: the title says which meeting, this line
+ * is detail about it. It also leaves the Spanish stage room to breathe. */
+.queue-card-progress { margin-top: 3px; gap: 5px; font-size: 10px; }
+.queue-card-stage {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--steel-dark);
+  font-variant-numeric: tabular-nums;
+}
 
 /*
- * Fixed width, on the same line as the title.
- *
- * A full-width bar under the row read as a rule separating meetings rather than
- * as one meeting's progress, and it cost the card a second line for information
- * that fits on the first.
+ * A ring beside the stage label rather than a bar: it reads as one meeting's
+ * progress at a glance and needs no width of its own, which the narrow window
+ * does not have. Same colours the bar had.
  */
-.queue-bar {
+.queue-ring {
   flex: none;
-  width: 44px;
-  height: 4px;
-  border-radius: 2px;
-  /* `--steel`, not `--alloy-2`: `--panel-recess` IS `--alloy-2`, so the empty
-   * track was the same colour as the card and a job at 0% showed no bar at all
-   * — indistinguishable from a card that has no bar. */
-  background: var(--steel);
-  overflow: hidden;
+  width: 16px;
+  height: 16px;
+  /* The arc starts at twelve o'clock and runs clockwise. */
+  transform: rotate(-90deg);
+}
+.queue-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+/* `--steel`, not `--alloy-2`: `--panel-recess` IS `--alloy-2`, so an empty
+ * track that colour vanished into the card, and a job at 0% showed no ring. */
+.queue-ring-track { stroke: var(--steel); }
+.queue-ring-fill {
+  stroke: var(--green-lamp);
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transition: stroke-dashoffset 200ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-ring-fill { transition: none; }
 }
 
-.queue-bar-fill {
-  height: 100%;
-  width: 0;
-  background: var(--green-lamp);
-  transition: width 200ms linear;
-}
-
-/* A failure is not progress. Colouring the bar rather than only the text means
+/* A failure is not progress. Colouring the ring rather than only the text means
  * the state is legible at a glance in a list of several. */
-.queue-card[data-state="failed"] .queue-bar-fill { background: var(--red); width: 100%; }
+.queue-card[data-state="failed"] .queue-ring-fill {
+  stroke: var(--red);
+  stroke-dashoffset: 0 !important;
+  visibility: visible !important;
+}
 .queue-card[data-state="failed"] .queue-card-stage { color: var(--red-dark); }
+
+.queue-card-actions {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.queue-card-actions .trash-button { margin-top: auto; }
 
 .queue-card .trash-button,
 .queue-card .retry-button {

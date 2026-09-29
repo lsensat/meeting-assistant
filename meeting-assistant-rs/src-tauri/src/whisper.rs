@@ -742,6 +742,14 @@ impl TranscriptionControl {
     }
 }
 
+/// Where in the track a run has reached, from whisper's percentage through it.
+///
+/// Clamped: whisper reports its own progress, and a value outside 0-100 must
+/// not send the bar past the run or backwards.
+fn position_in_run_cs(shift_cs: i64, run_len_cs: i64, percent: i32) -> i64 {
+    shift_cs + run_len_cs * i64::from(percent.clamp(0, 100)) / 100
+}
+
 /// Below this peak amplitude a track is quiet enough to be worth mentioning.
 ///
 /// Roughly -26 dBFS. Speech recorded at a sensible input level peaks far above
@@ -1081,8 +1089,10 @@ impl Transcriber {
                         if let Some(slot) = last_end_cs.upgrade() {
                             slot.store(absolute_end_cs, Ordering::Relaxed);
                         }
+                        // `fetch_max`: the progress callback below may already
+                        // have reported a point past this segment's end.
                         if let Some(slot) = progress_cs.upgrade() {
-                            slot.store(absolute_end_cs, Ordering::Relaxed);
+                            slot.fetch_max(absolute_end_cs, Ordering::Relaxed);
                         }
 
                         // Blank segments are dropped before they reach the
@@ -1104,6 +1114,30 @@ impl Transcriber {
                         }
                     },
                 );
+            }
+
+            // --- progress within the run -----------------------------------
+            //
+            // Segments alone move the bar only when whisper finishes a sentence,
+            // so a hard stretch (noise, music, crosstalk) held it still for
+            // minutes: a meeting sat at 79% while whisper worked through its
+            // last minute. whisper.cpp also reports how far through the slice
+            // it has decoded, one call per window, and that keeps it moving.
+            //
+            // The safe setter is sound here, unlike the abort one below: its
+            // trampoline is instantiated for `Box<dyn FnMut(i32)>`, which is the
+            // type it stores. It leaks the box like the segment callback does,
+            // hence `Weak` for the same reason.
+            {
+                let progress_cs = Arc::downgrade(&control.progress_cs);
+                params.set_progress_callback_safe(move |percent: i32| {
+                    if let Some(slot) = progress_cs.upgrade() {
+                        slot.fetch_max(
+                            position_in_run_cs(shift_cs, run_len_cs, percent),
+                            Ordering::Relaxed,
+                        );
+                    }
+                });
             }
 
             // --- cancellation ---------------------------------------------
@@ -1222,6 +1256,16 @@ pub(crate) fn read_wav_as_16k_mono(path: &Path) -> Result<Vec<f32>, WhisperError
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn progress_within_a_run_stays_inside_it() {
+        // A run 20s long starting 60s into the track.
+        assert_eq!(position_in_run_cs(6_000, 2_000, 0), 6_000);
+        assert_eq!(position_in_run_cs(6_000, 2_000, 50), 7_000);
+        assert_eq!(position_in_run_cs(6_000, 2_000, 100), 8_000);
+        assert_eq!(position_in_run_cs(6_000, 2_000, 250), 8_000);
+        assert_eq!(position_in_run_cs(6_000, 2_000, -5), 6_000);
+    }
+
     use super::*;
 
     #[test]
