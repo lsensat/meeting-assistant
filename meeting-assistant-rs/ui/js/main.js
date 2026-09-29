@@ -454,7 +454,7 @@ function percentFor(job) {
  * and a still ring is indistinguishable from a frozen app.
  */
 function percentLabel(job) {
-  return job.running && STAGE_STEP[job.stage] ? `· ${percentFor(job)}%` : "";
+  return job.running && STAGE_STEP[job.stage] ? `${percentFor(job)}%` : "";
 }
 
 function stageLabel(job) {
@@ -487,7 +487,7 @@ function jobTooltip(job) {
   if (job.duration_seconds) {
     lines.push(`${tr("queue_tip_length")}: ${formatDuration(job.duration_seconds)}`);
   }
-  lines.push(`${tr("queue_tip_stage")}: ${[stageLabel(job), percentLabel(job)].filter(Boolean).join(" ")}`);
+  lines.push(`${tr("queue_tip_stage")}: ${[stageLabel(job), percentLabel(job)].filter(Boolean).join(" · ")}`);
   // The failure, last: it is the longest and the least predictable.
   if (job.error) lines.push(job.error);
   return lines.join("\n");
