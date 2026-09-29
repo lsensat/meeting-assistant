@@ -1210,7 +1210,9 @@ input[type="password"] { cursor: text; }
 }
 
 .queue-card-time { flex: none; color: var(--steel-dark); }
-.queue-card-progress { margin-top: 3px; gap: 4px; }
+/* A step smaller than the title line: the title says which meeting, this line
+ * is detail about it. It also leaves the Spanish stage room to breathe. */
+.queue-card-progress { margin-top: 3px; gap: 5px; font-size: 10px; }
 .queue-card-stage {
   flex: 1;
   min-width: 0;
