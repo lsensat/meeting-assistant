@@ -210,6 +210,47 @@ export const openUrl = (url) => opener.openUrl(url);
 /** Native folder picker. */
 export const browseFolder = () => open({ directory: true, multiple: false });
 
+// --- the teleprompter ---------------------------------------------------------
+// Every window operation is a Rust command: the capabilities file grants this
+// window no JS window permissions.
+
+/** @typedef {{script: string, font_size: number, speed: number, overlay_opacity: number, text_opacity: number, use_in_pipeline: boolean}} TeleprompterSettings */
+
+export const openTeleprompter = () => invoke("open_teleprompter");
+export const closeTeleprompter = () => invoke("close_teleprompter");
+/** @returns {Promise<TeleprompterSettings>} */
+export const getTeleprompter = () => invoke("get_teleprompter");
+/**
+ * Persist the settings. Rust clamps them; adopt what comes back.
+ * @param {TeleprompterSettings} settings
+ * @returns {Promise<TeleprompterSettings>}
+ */
+export const saveTeleprompter = (settings) => invoke("save_teleprompter", { settings });
+/**
+ * Pick a .md/.txt file (dialog and read both in Rust). Does not save.
+ * @returns {Promise<string|null>} the text, or null if cancelled
+ */
+export const importTeleprompterScript = () => invoke("import_teleprompter_script");
+/**
+ * While pinned the window stays interactive even when the pointer is away.
+ * @param {boolean} pinned
+ */
+export const teleprompterSetPinned = (pinned) => invoke("teleprompter_set_pinned", { pinned });
+export const teleprompterStartDrag = () => invoke("teleprompter_start_drag");
+/**
+ * @param {"n"|"s"|"e"|"w"|"ne"|"nw"|"se"|"sw"} direction
+ * @returns {Promise<boolean>} true if the OS took over the resize; false means
+ *   the caller must drive it with `teleprompterResizeBy`
+ */
+export const teleprompterStartResize = (direction) =>
+  invoke("teleprompter_start_resize", { direction });
+/**
+ * Fallback resize: cumulative logical delta since `teleprompterStartResize`.
+ * @param {number} dx
+ * @param {number} dy
+ */
+export const teleprompterResizeBy = (dx, dy) => invoke("teleprompter_resize_by", { dx, dy });
+
 /**
  * Every event the backend can send. One list, so a name cannot be invented at
  * either end and silently never fire.
@@ -246,6 +287,8 @@ export const EVENTS = {
   /** The tray asking this window to run a flow that needs user input. */
   requestStop: "request_stop",
   requestCancel: "request_cancel",
+  /** boolean: the pointer is over the teleprompter (Rust polls it for click-through). */
+  teleprompterHover: "teleprompter_hover",
 };
 
 /**

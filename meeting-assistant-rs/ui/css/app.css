@@ -1903,3 +1903,249 @@ input[type="password"] { cursor: text; }
   font-size: 11px;
   opacity: 0.6;
 }
+
+/* Teleprompter */
+
+/*
+ * The teleprompter window is frameless and transparent, so its page must not
+ * paint the app background. Its own colours are the two fixed values below:
+ * white text and black shadow. Everything else reads a token.
+ */
+html.tp {
+  --tp-ink: #fff;
+  --tp-shade: #000;
+  --tp-font-size: 44px;
+  --tp-text-opacity: 1;
+  --tp-overlay-opacity: 0.4;
+}
+html.tp, html.tp body {
+  background: transparent;
+  overflow: hidden;
+}
+
+.tp-stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  background: rgb(0 0 0 / var(--tp-overlay-opacity));
+}
+
+.tp-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.tp-text {
+  padding: 0.5em 32px 100vh;
+  color: var(--tp-ink);
+  opacity: var(--tp-text-opacity);
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: var(--tp-font-size);
+  font-weight: 600;
+  line-height: 1.35;
+  text-shadow:
+    0.05em 0 var(--tp-shade), -0.05em 0 var(--tp-shade),
+    0 0.05em var(--tp-shade), 0 -0.05em var(--tp-shade),
+    0.05em 0.05em var(--tp-shade), -0.05em -0.05em var(--tp-shade),
+    0.05em -0.05em var(--tp-shade), -0.05em 0.05em var(--tp-shade),
+    0 0 0.2em var(--tp-shade);
+  will-change: transform;
+}
+.tp-heading {
+  margin: 0 0 0.4em;
+  font-size: 1.1em;
+  font-weight: 700;
+}
+.tp-para {
+  margin: 0 0 0.8em;
+}
+
+.tp-empty {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--tp-ink);
+  text-shadow: 0 0 0.2em var(--tp-shade);
+}
+body.is-empty .tp-empty { display: flex; }
+
+/* Controls and resize edges are invisible until the pointer hovers the window. */
+.tp-controls,
+.tp-edge {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.tp-body.is-hovered .tp-controls,
+.tp-body.is-hovered .tp-edge {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tp-controls {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius-card);
+  background: var(--body);
+  box-shadow: var(--lift);
+}
+
+.tp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-button);
+  background: var(--steel-dark);
+  color: var(--ink-invert);
+  box-shadow: var(--bevel);
+  font: 700 14px/1 var(--font);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tp-btn:hover { background: var(--steel); }
+.tp-btn:active { box-shadow: var(--bevel-pressed); }
+.tp-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.tp-btn--text {
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+  font-size: 12px;
+}
+.tp-btn--text:hover { background: var(--panel-recess); }
+.tp-btn--primary {
+  background: var(--amber);
+  color: var(--body);
+}
+.tp-btn--primary:hover { background: var(--amber-dark); color: var(--faceplate); }
+
+.tp-value {
+  min-width: 3ch;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-invert);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Settings and editor panels cover the text while open. */
+.tp-panel {
+  position: fixed;
+  inset: 12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow: auto;
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--lift);
+}
+.tp-panel[hidden],
+.tp-error[hidden] { display: none; }
+
+.tp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.tp-field--check {
+  flex-direction: row;
+  align-items: center;
+}
+.tp-hint {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.tp-script {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  resize: none;
+  outline: none;
+  background: var(--panel-recess);
+  color: var(--ink);
+  font: 12px/1.6 var(--font-mono);
+  tab-size: 2;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.tp-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tp-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--red-dark);
+}
+
+/* Resize handles. Corners are larger so diagonal drags are easy to grab. */
+.tp-edge { position: fixed; z-index: 4; }
+.tp-edge--n,
+.tp-edge--s {
+  left: 12px;
+  right: 12px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.tp-edge--n { top: 0; }
+.tp-edge--s { bottom: 0; }
+.tp-edge--e,
+.tp-edge--w {
+  top: 12px;
+  bottom: 12px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.tp-edge--e { right: 0; }
+.tp-edge--w { left: 0; }
+.tp-edge--ne,
+.tp-edge--nw,
+.tp-edge--se,
+.tp-edge--sw {
+  width: 12px;
+  height: 12px;
+}
+.tp-edge--ne { top: 0; right: 0; cursor: nesw-resize; }
+.tp-edge--sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.tp-edge--nw { top: 0; left: 0; cursor: nwse-resize; }
+.tp-edge--se { bottom: 0; right: 0; cursor: nwse-resize; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-controls,
+  .tp-edge { transition: none; }
+}

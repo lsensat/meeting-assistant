@@ -219,6 +219,12 @@ jobs:
         working-directory: meeting-assistant-rs
         run: node ui/test-progress.mjs
 
+      # The teleprompter's scroll clock, keyboard map and script split. Pure
+      # logic: no window and no Tauri, so it needs nothing beyond node.
+      - name: Test the teleprompter logic
+        working-directory: meeting-assistant-rs
+        run: node ui/test-teleprompter.mjs
+
       # Cheap, and it catches a Windows-only compile break in meeting-core
       # before the much slower bundling step runs.
       - name: Test

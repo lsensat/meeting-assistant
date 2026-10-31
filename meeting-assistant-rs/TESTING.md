@@ -231,3 +231,51 @@ Unchanged and still outstanding — see the migration plan. 15 s of audio, then
 not fire while the render endpoint is idle, `system_audio.wav` comes out far
 shorter than the meeting **and looks perfectly fine in any short test where
 audio plays throughout**.
+
+### 7. Teleprompter (macOS and Windows)
+
+Frameless, transparent windows with click-through are drawn by the OS, and
+capture exclusion is only as good as each platform's screen-share stack. Run
+this on both systems. Each step names what must be true afterwards.
+
+1. **Tray item.** Open the tray menu in English and in Spanish. "Add
+   Teleprompter" / "Añadir teleprompter" must appear between the folder and the
+   settings entries.
+2. **Window.** Open it. It must be frameless, transparent, and above other
+   windows, and it must appear on every desktop or Space.
+3. **Capture.** Share the screen in Zoom, Teams and Meet, and record a
+   screenshot and an OBS preview. The window must not appear. This is best
+   effort, not a guarantee: say so if it leaks on a platform.
+4. **Hover and click-through.** Move the pointer over the window and wait; the
+   controls and resize edges must appear. Move it away: the controls fade, and
+   clicks must pass through to the window underneath.
+5. **Drag.** Drag from the middle of the text, from a control's gap, and from
+   the background. Every one must move the window.
+6. **Resize.** Drag all eight edges and corners. On macOS, the native resize
+   may be unavailable; the fallback must still resize every direction and keep
+   the opposite edge fixed.
+7. **Keys.** Space plays and pauses, the arrows change speed, `+` and `−`
+   change text size, and Esc closes the window. Nothing else must react to the
+   same keys.
+8. **Editor.** Open the editor. Esc closes only the editor. Paste a script, then
+   import a `.md` file and a `.txt` file. Import a 3 MB file: it must be
+   refused with the import error, and the script must not change.
+9. **Restart.** Quit the app and launch it again. The script, settings and
+   window position must all be restored.
+10. **Monitor.** Put the window on a second monitor, quit, and unplug that
+    monitor before relaunching. The window must come back centred on the
+    primary monitor.
+11. **Meeting with the window open.** Start a meeting, keep the teleprompter
+    open with a script that names people and terms, and speak some of them.
+    The `meeting.json` must contain `script`. The transcript should spell those
+    names as written in the script, and the summary must not present anything
+    from the script as said unless the meeting confirms it.
+12. **Meeting without the window.** Record a meeting with the window never
+    opened. `meeting.json` must have no `script` field.
+13. **Toggle off.** Turn off "Use this script for the transcript and summary"
+    and record with the window open. There must be no `script` field.
+14. **Multi-DPI (Windows).** Move the window between a 100% and a 150% (or
+    higher) monitor. It must keep its size and stay within the screen, and
+    resizing must still follow the pointer.
+15. **Known limitation (macOS).** The window does not appear over a full-screen
+    app. Confirm that this is what happens, and that nothing crashes.
