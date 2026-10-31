@@ -39,6 +39,12 @@ pub const MEETING_SCRIPT_MAX_CHARS: usize = 20_000;
 pub const WHISPER_PROMPT_MAX_CHARS: usize = 400;
 /// Sent only with the final summary pass, so a small local model's context survives.
 pub const SUMMARY_SCRIPT_MAX_CHARS: usize = 3_000;
+/// The most characters the transcript (or combined partials) plus the script may
+/// total in the final summary message, so the instructions are not pushed out of
+/// a small Ollama context.
+pub const SUMMARY_PROMPT_BUDGET_CHARS: usize = 14_000;
+/// A script shorter than this after shrinking is not worth attaching.
+pub const SUMMARY_SCRIPT_MIN_CHARS: usize = 300;
 
 /// Window sizes, logical pixels.
 pub const MIN_WIDTH: u32 = 240;
@@ -102,7 +108,10 @@ fn clamp_opacity(value: f64, min: f64, default: f64) -> f64 {
 
 /// Strip `\0` (it would panic a C string) and `\r`, then cap the length.
 fn clean_script(script: &str) -> String {
-    let stripped: String = script.chars().filter(|c| *c != '\0' && *c != '\r').collect();
+    let stripped: String = script
+        .chars()
+        .filter(|c| *c != '\0' && *c != '\r')
+        .collect();
     truncate_chars(&stripped, SCRIPT_MAX_CHARS).to_string()
 }
 
@@ -488,7 +497,10 @@ pub fn whisper_prompt(script: &str, max_chars: usize) -> String {
 
 /// The script as context for the final summary pass, capped at `max_chars`.
 pub fn summary_context(script: &str, max_chars: usize) -> String {
-    let stripped: String = script.chars().filter(|c| *c != '\0' && *c != '\r').collect();
+    let stripped: String = script
+        .chars()
+        .filter(|c| *c != '\0' && *c != '\r')
+        .collect();
 
     let mut text = String::with_capacity(stripped.len());
     let mut newlines = 0;
@@ -510,6 +522,20 @@ pub fn summary_context(script: &str, max_chars: usize) -> String {
     format!("{}\n[…]", cut_at_whitespace(&text, max_chars))
 }
 
+/// The script to attach to the final summary given `combined_chars` of
+/// transcript, or `None` when there is no room left. Shrinks `summary_context`'s
+/// cap to fit `budget`, down to dropping the script.
+pub fn fit_summary_script(script: &str, combined_chars: usize, budget: usize) -> Option<String> {
+    // Room for the "\n[…]" marker `summary_context` may add.
+    let room = budget.saturating_sub(combined_chars).saturating_sub(8);
+    let max = room.min(SUMMARY_SCRIPT_MAX_CHARS);
+    if max < SUMMARY_SCRIPT_MIN_CHARS {
+        return None;
+    }
+    let text = summary_context(script, max);
+    (!text.is_empty()).then_some(text)
+}
+
 // ---- Geometry -----------------------------------------------------------------
 
 /// A monitor or window rectangle in physical pixels.
@@ -528,6 +554,41 @@ pub fn inside(rect: Rect, px: f64, py: f64, margin: f64) -> bool {
     let right = rect.x as f64 + rect.width as f64 + margin;
     let bottom = rect.y as f64 + rect.height as f64 + margin;
     px >= left && px < right && py >= top && py < bottom
+}
+
+/// Whether the cursor is over the window (grown by [`EDGE_MARGIN`]).
+///
+/// On macOS tao converts the cursor with the *primary* monitor's scale while the
+/// window's position and size use the window's own, so on mixed-DPI setups the
+/// two disagree. There everything is compared in logical points: the cursor by
+/// `primary_scale`, the window by `window_scale`, with the margin unscaled.
+/// Elsewhere all values are physical pixels and the margin is scaled.
+pub fn cursor_over_window(
+    macos: bool,
+    cursor: (f64, f64),
+    position: (i32, i32),
+    size: (u32, u32),
+    window_scale: f64,
+    primary_scale: f64,
+) -> bool {
+    let sane = |s: f64| if s.is_finite() && s > 0.0 { s } else { 1.0 };
+    let (ws, ps) = (sane(window_scale), sane(primary_scale));
+    if macos {
+        let left = position.0 as f64 / ws - EDGE_MARGIN;
+        let top = position.1 as f64 / ws - EDGE_MARGIN;
+        let right = left + size.0 as f64 / ws + 2.0 * EDGE_MARGIN;
+        let bottom = top + size.1 as f64 / ws + 2.0 * EDGE_MARGIN;
+        let (cx, cy) = (cursor.0 / ps, cursor.1 / ps);
+        cx >= left && cx < right && cy >= top && cy < bottom
+    } else {
+        let rect = Rect {
+            x: position.0,
+            y: position.1,
+            width: size.0,
+            height: size.1,
+        };
+        inside(rect, cursor.0, cursor.1, EDGE_MARGIN * ws)
+    }
 }
 
 /// Whether a window placed at `(x, y)` would have a grabbable corner on some
@@ -631,6 +692,124 @@ pub fn ignore_cursor(hovered: bool, pinned: bool, tracking_available: bool) -> b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cursor_over_window_physical_scales_the_margin() {
+        // 2x window at (100,100), 400x200 physical.
+        assert!(cursor_over_window(
+            false,
+            (100.0 - 15.0, 150.0),
+            (100, 100),
+            (400, 200),
+            2.0,
+            1.0
+        ));
+        assert!(!cursor_over_window(
+            false,
+            (100.0 - 17.0, 150.0),
+            (100, 100),
+            (400, 200),
+            2.0,
+            1.0
+        ));
+        assert!(cursor_over_window(
+            false,
+            (300.0, 150.0),
+            (100, 100),
+            (400, 200),
+            2.0,
+            1.0
+        ));
+    }
+
+    #[test]
+    fn cursor_over_window_macos_mixed_dpi_uses_logical_points() {
+        // Window on a 2x display at physical (400,200) size 800x400 => logical
+        // (200,100) 400x200. Cursor in logical points on a 1x primary: (300,150).
+        assert!(cursor_over_window(
+            true,
+            (300.0, 150.0),
+            (400, 200),
+            (800, 400),
+            2.0,
+            1.0
+        ));
+        // Same physical comparison would miss it.
+        assert!(!cursor_over_window(
+            false,
+            (300.0, 150.0),
+            (400, 200),
+            (800, 400),
+            2.0,
+            1.0
+        ));
+        // Unscaled margin: 8 points out is in, 9 is out.
+        assert!(cursor_over_window(
+            true,
+            (192.0, 150.0),
+            (400, 200),
+            (800, 400),
+            2.0,
+            1.0
+        ));
+        assert!(!cursor_over_window(
+            true,
+            (191.0, 150.0),
+            (400, 200),
+            (800, 400),
+            2.0,
+            1.0
+        ));
+        // Cursor scaled by the primary's 2x.
+        assert!(cursor_over_window(
+            true,
+            (600.0, 300.0),
+            (400, 200),
+            (800, 400),
+            2.0,
+            2.0
+        ));
+        // Bad scales fall back to 1.
+        assert!(cursor_over_window(
+            true,
+            (10.0, 10.0),
+            (0, 0),
+            (100, 100),
+            0.0,
+            f64::NAN
+        ));
+    }
+
+    #[test]
+    fn fit_summary_script_shrinks_then_drops() {
+        let script = "word ".repeat(2_000);
+        let full = fit_summary_script(&script, 0, SUMMARY_PROMPT_BUDGET_CHARS).unwrap();
+        assert!(full.chars().count() <= SUMMARY_SCRIPT_MAX_CHARS + 4);
+        let combined = SUMMARY_PROMPT_BUDGET_CHARS - 1_000;
+        let small = fit_summary_script(&script, combined, SUMMARY_PROMPT_BUDGET_CHARS).unwrap();
+        assert!(combined + small.chars().count() <= SUMMARY_PROMPT_BUDGET_CHARS);
+        assert!(small.chars().count() < full.chars().count());
+        assert_eq!(
+            fit_summary_script(
+                &script,
+                SUMMARY_PROMPT_BUDGET_CHARS - 100,
+                SUMMARY_PROMPT_BUDGET_CHARS
+            ),
+            None
+        );
+        assert_eq!(
+            fit_summary_script(
+                &script,
+                SUMMARY_PROMPT_BUDGET_CHARS * 2,
+                SUMMARY_PROMPT_BUDGET_CHARS
+            ),
+            None
+        );
+        assert_eq!(
+            fit_summary_script("   ", 0, SUMMARY_PROMPT_BUDGET_CHARS),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -727,7 +906,9 @@ mod tests {
         assert_eq!((g.x, g.y), (-5, 7));
         assert_eq!(g.width, MIN_WIDTH as f64);
         assert_eq!(g.height, GEOMETRY_MAX);
-        assert!(Stored::from_json(r#"{"geometry":{"x":"a"}}"#).geometry.is_none());
+        assert!(Stored::from_json(r#"{"geometry":{"x":"a"}}"#)
+            .geometry
+            .is_none());
     }
 
     #[test]
@@ -780,7 +961,10 @@ mod tests {
 
     #[test]
     fn strip_markdown_leaves_unprefixed_text_alone() {
-        assert_eq!(strip_markdown("#hashtag 3 apples -5"), "#hashtag 3 apples -5");
+        assert_eq!(
+            strip_markdown("#hashtag 3 apples -5"),
+            "#hashtag 3 apples -5"
+        );
     }
 
     #[test]
@@ -888,24 +1072,54 @@ mod tests {
     #[test]
     fn resize_moves_the_right_edges() {
         let start = (100.0, 100.0, 400.0, 300.0);
-        assert_eq!(resize_rect(start, "e", 50.0, 99.0), (100.0, 100.0, 450.0, 300.0));
-        assert_eq!(resize_rect(start, "s", 99.0, 50.0), (100.0, 100.0, 400.0, 350.0));
-        assert_eq!(resize_rect(start, "w", 50.0, 0.0), (150.0, 100.0, 350.0, 300.0));
-        assert_eq!(resize_rect(start, "n", 0.0, 50.0), (100.0, 150.0, 400.0, 250.0));
-        assert_eq!(resize_rect(start, "nw", 10.0, 20.0), (110.0, 120.0, 390.0, 280.0));
-        assert_eq!(resize_rect(start, "se", 10.0, 20.0), (100.0, 100.0, 410.0, 320.0));
+        assert_eq!(
+            resize_rect(start, "e", 50.0, 99.0),
+            (100.0, 100.0, 450.0, 300.0)
+        );
+        assert_eq!(
+            resize_rect(start, "s", 99.0, 50.0),
+            (100.0, 100.0, 400.0, 350.0)
+        );
+        assert_eq!(
+            resize_rect(start, "w", 50.0, 0.0),
+            (150.0, 100.0, 350.0, 300.0)
+        );
+        assert_eq!(
+            resize_rect(start, "n", 0.0, 50.0),
+            (100.0, 150.0, 400.0, 250.0)
+        );
+        assert_eq!(
+            resize_rect(start, "nw", 10.0, 20.0),
+            (110.0, 120.0, 390.0, 280.0)
+        );
+        assert_eq!(
+            resize_rect(start, "se", 10.0, 20.0),
+            (100.0, 100.0, 410.0, 320.0)
+        );
     }
 
     #[test]
     fn resize_clamps_to_the_minimum_keeping_the_far_edge() {
         let start = (100.0, 100.0, 400.0, 300.0);
         let (min_w, min_h) = (MIN_WIDTH as f64, MIN_HEIGHT as f64);
-        assert_eq!(resize_rect(start, "e", -1000.0, 0.0), (100.0, 100.0, min_w, 300.0));
-        assert_eq!(resize_rect(start, "s", 0.0, -1000.0), (100.0, 100.0, 400.0, min_h));
+        assert_eq!(
+            resize_rect(start, "e", -1000.0, 0.0),
+            (100.0, 100.0, min_w, 300.0)
+        );
+        assert_eq!(
+            resize_rect(start, "s", 0.0, -1000.0),
+            (100.0, 100.0, 400.0, min_h)
+        );
         // west: the right edge (x + w = 500) stays put
-        assert_eq!(resize_rect(start, "w", 1000.0, 0.0), (500.0 - min_w, 100.0, min_w, 300.0));
+        assert_eq!(
+            resize_rect(start, "w", 1000.0, 0.0),
+            (500.0 - min_w, 100.0, min_w, 300.0)
+        );
         // north: the bottom edge (y + h = 400) stays put
-        assert_eq!(resize_rect(start, "n", 0.0, 1000.0), (100.0, 400.0 - min_h, 400.0, min_h));
+        assert_eq!(
+            resize_rect(start, "n", 0.0, 1000.0),
+            (100.0, 400.0 - min_h, 400.0, min_h)
+        );
         assert_eq!(
             resize_rect(start, "nw", 1000.0, 1000.0),
             (500.0 - min_w, 400.0 - min_h, min_w, min_h)

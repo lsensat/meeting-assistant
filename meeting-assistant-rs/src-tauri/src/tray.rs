@@ -426,6 +426,8 @@ mod tests {
             "summary_no_speech_body",
             "queue_stage_recording",
             "tray_teleprompter",
+            "teleprompter_save_failed",
+            "teleprompter_import_too_large",
         ] {
             for language in [Language::En, Language::Es] {
                 let text = meeting_core::i18n::tr(language, key);

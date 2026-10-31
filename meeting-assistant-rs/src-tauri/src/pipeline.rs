@@ -595,10 +595,14 @@ fn summarize(
     };
     // Only this pass sees the script: the extraction passes run on chunks of a
     // local model's limited context, and the script would be repeated in each.
-    let script = config
-        .script
-        .as_deref()
-        .map(|s| teleprompter::summary_context(s, teleprompter::SUMMARY_SCRIPT_MAX_CHARS));
+    // Shrunk, or dropped, so that transcript plus script stay within budget.
+    let script = config.script.as_deref().and_then(|s| {
+        teleprompter::fit_summary_script(
+            s,
+            combined.chars().count(),
+            teleprompter::SUMMARY_PROMPT_BUDGET_CHARS,
+        )
+    });
     let user = prompts::final_message_with_script(
         config.language,
         config.summary_type,

@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use meeting_core::teleprompter::{
     self as core, Geometry, Hover, Rect, Settings, Stored, DEFAULT_HEIGHT, DEFAULT_WIDTH,
-    EDGE_MARGIN, MEETING_SCRIPT_MAX_CHARS, MIN_HEIGHT, MIN_WIDTH,
+    MEETING_SCRIPT_MAX_CHARS, MIN_HEIGHT, MIN_WIDTH,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -56,6 +56,9 @@ pub struct TeleprompterState {
     stored: Mutex<Stored>,
     /// The page has an editor or panel open, or no script: stay clickable.
     pinned: AtomicBool,
+    /// Set when the user re-selects the window to recover it: the poll loop
+    /// keeps it interactive until the next genuine hover transition to true.
+    force_interactive: AtomicBool,
     /// The window was open at some point while a recording ran.
     seen_during_recording: AtomicBool,
     /// Logical `(x, y, width, height)` and edge when a resize drag began, for
@@ -77,6 +80,7 @@ impl TeleprompterState {
             file,
             stored: Mutex::new(stored),
             pinned: AtomicBool::new(false),
+            force_interactive: AtomicBool::new(false),
             seen_during_recording: AtomicBool::new(false),
             resize_origin: Mutex::new(None),
             geometry_dirty_at: Mutex::new(None),
@@ -134,7 +138,9 @@ impl TeleprompterState {
 
     /// A recording has just started.
     pub fn note_recording_started(&self, window_open: bool) {
-        self.seen_during_recording.store(window_open, Ordering::Relaxed);
+        // OR, not store: a window opened between the session starting and this
+        // call has already marked the recording as seen.
+        self.seen_during_recording.fetch_or(window_open, Ordering::Relaxed);
     }
 
     /// The window was opened while a recording ran.
@@ -179,12 +185,20 @@ impl TeleprompterState {
 #[tauri::command(async)]
 pub fn open_teleprompter(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(LABEL) {
+        // Escape hatch: re-selecting the item always recovers a stuck window.
+        let state = app.state::<AppState>();
+        state.teleprompter.force_interactive.store(true, Ordering::SeqCst);
+        let _ = existing.unminimize();
         existing.show().map_err(|e| e.to_string())?;
         existing.set_focus().map_err(|e| e.to_string())?;
+        existing.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
         return Ok(());
     }
 
     let state = app.state::<AppState>();
+    // A fresh window starts with no pinning claim until the page reports one.
+    state.teleprompter.pinned.store(false, Ordering::Relaxed);
+    state.teleprompter.force_interactive.store(false, Ordering::SeqCst);
     let geometry = state.teleprompter.stored.lock().expect("teleprompter poisoned").geometry;
     let (width, height) = geometry
         .map(|g| (g.width, g.height))
@@ -240,6 +254,7 @@ pub fn open_teleprompter(app: AppHandle) -> Result<(), String> {
         }
     }
     window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
     crate::commands::debug_inspect(&window);
 
     // Flush on close. No window method is called from here: this runs on the
@@ -258,8 +273,6 @@ pub fn open_teleprompter(app: AppHandle) -> Result<(), String> {
         state.teleprompter.mark_seen();
     }
 
-    // A fresh window starts with no pinning claim until the page reports one.
-    state.teleprompter.pinned.store(false, Ordering::Relaxed);
     let generation = state.teleprompter.poll_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let poll_app = app.clone();
     std::thread::spawn(move || poll(poll_app, generation));
@@ -319,13 +332,20 @@ fn poll(app: AppHandle, generation: u64) {
         let inside = match app.cursor_position() {
             Ok(cursor) => {
                 tracking = true;
-                let rect = Rect {
-                    x: position.x,
-                    y: position.y,
-                    width: outer.width,
-                    height: outer.height,
-                };
-                core::inside(rect, cursor.x, cursor.y, EDGE_MARGIN * scale)
+                let primary_scale = app
+                    .primary_monitor()
+                    .ok()
+                    .flatten()
+                    .map(|m| m.scale_factor())
+                    .unwrap_or(scale);
+                core::cursor_over_window(
+                    std::env::consts::OS == "macos",
+                    (cursor.x, cursor.y),
+                    (position.x, position.y),
+                    (outer.width, outer.height),
+                    scale,
+                    primary_scale,
+                )
             }
             Err(_) => {
                 tracking = false;
@@ -346,10 +366,15 @@ fn poll(app: AppHandle, generation: u64) {
         };
         if let Some(hovered) = changed {
             let _ = app.emit_to(LABEL, EV_TELEPROMPTER_HOVER, hovered);
+            // A genuine hover ends the recovery override.
+            if hovered {
+                state.teleprompter.force_interactive.store(false, Ordering::SeqCst);
+            }
         }
 
         let pinned = state.teleprompter.pinned.load(Ordering::Relaxed);
-        let want = core::ignore_cursor(hover.hovered, pinned, tracking);
+        let forced = state.teleprompter.force_interactive.load(Ordering::SeqCst);
+        let want = !forced && core::ignore_cursor(hover.hovered, pinned, tracking);
         if want != ignoring && window.set_ignore_cursor_events(want).is_ok() {
             ignoring = want;
         }
@@ -374,7 +399,11 @@ pub fn get_teleprompter(state: State<AppState>) -> Settings {
 
 #[tauri::command]
 pub fn save_teleprompter(settings: Settings, state: State<AppState>) -> Result<Settings, String> {
-    state.teleprompter.save(settings)
+    state.teleprompter.save(settings).map_err(|e| {
+        eprintln!("[teleprompter] {e}");
+        meeting_core::i18n::tr(state.config_snapshot().language, "teleprompter_save_failed")
+            .to_string()
+    })
 }
 
 /// Ask for a script file and return its text, without saving it.
@@ -400,10 +429,14 @@ pub fn import_teleprompter_script(app: AppHandle) -> Result<Option<String>, Stri
 
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if size > IMPORT_MAX_BYTES {
-        return Err(format!(
-            "the file is {:.1} MB; the limit is {} MB",
-            size as f64 / (1024.0 * 1024.0),
-            IMPORT_MAX_BYTES / (1024 * 1024)
+        let language = app.state::<AppState>().config_snapshot().language;
+        return Err(meeting_core::i18n::tr_args(
+            language,
+            "teleprompter_import_too_large",
+            &[
+                ("size", &format!("{:.1}", size as f64 / (1024.0 * 1024.0))),
+                ("limit", &(IMPORT_MAX_BYTES / (1024 * 1024)).to_string()),
+            ],
         ));
     }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
