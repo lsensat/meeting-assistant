@@ -358,6 +358,14 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
                     crate::pipeline::wav_duration(&found.path.join(crate::session::MIC_FILENAME));
             }
 
+            // A crash mid-summary leaves the dequeue-time index; extractions written since are
+            // on disk. Only Summary: Paused/Failed already synced it, and no other stage has the file.
+            if state.stage == Stage::Summary {
+                state.summary_chunk = state
+                    .summary_chunk
+                    .max(crate::pipeline::summary_chunks_done(&found.path));
+            }
+
             Some((found.path, state))
         })
         .collect()
@@ -419,6 +427,71 @@ mod scan_tests {
             "only the outstanding meeting may run"
         );
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Writes one meeting folder with a saved state and, optionally, a partial
+    /// summary holding `extractions` chunk results, then returns its scanned state.
+    fn scanned_summary_state(
+        root: &Path,
+        stage: Stage,
+        stored_chunk: usize,
+        extractions: Option<usize>,
+    ) -> MeetingState {
+        let id = "2026-10-01_10-00-00";
+        let folder = root.join(id);
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        let mut state = MeetingState::new(id.into(), String::new(), serde_json::Value::Null);
+        state.stage = stage;
+        state.summary_chunk = stored_chunk;
+        save(&folder, &state).expect("save");
+        if let Some(n) = extractions {
+            let items: Vec<String> = (0..n).map(|i| format!("chunk {i}")).collect();
+            std::fs::write(
+                folder.join(crate::pipeline::PARTIAL_SUMMARY),
+                serde_json::to_string(&items).expect("json"),
+            )
+            .expect("write partial");
+        }
+        scan(root)
+            .into_iter()
+            .find(|(_, s)| s.id == id)
+            .map(|(_, s)| s)
+            .expect("listed")
+    }
+
+    fn fresh_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ma-scan-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        root
+    }
+
+    /// A crash mid-summary leaves the dequeue-time index; the extractions on disk
+    /// are what the next run resumes from, so the scan must report them.
+    #[test]
+    fn a_summary_interrupted_by_a_crash_resumes_from_its_extractions_on_disk() {
+        let root = fresh_root("summary-disk");
+        let state = scanned_summary_state(&root, Stage::Summary, 0, Some(2));
+        assert_eq!(state.summary_chunk, 2);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Only Summary is reconciled: a failed meeting keeps the index it stored.
+    #[test]
+    fn a_failed_meeting_keeps_its_stored_summary_chunk() {
+        let root = fresh_root("failed-chunk");
+        let state = scanned_summary_state(&root, Stage::Failed, 0, Some(2));
+        assert_eq!(state.summary_chunk, 0);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The stored index is never moved backwards by a smaller file.
+    #[test]
+    fn a_stored_summary_chunk_is_not_lowered_by_the_file() {
+        let root = fresh_root("max-chunk");
+        let state = scanned_summary_state(&root, Stage::Summary, 3, Some(2));
+        assert_eq!(state.summary_chunk, 3);
         std::fs::remove_dir_all(&root).ok();
     }
 }

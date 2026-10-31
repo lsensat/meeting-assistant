@@ -2490,8 +2490,13 @@ fn run_job(
         Err(e) => {
             // Chunks extracted before the failure are on disk; without this the stale
             // index makes `summarize` truncate them and the retry redoes the work.
-            // Offsets are deliberately left alone: an Err in transcription writes no
-            // partial segments, so the stored offsets still match the file.
+            // Offsets advance only when the pipeline saved the partial that backs
+            // them; any other Err writes no partial segments, so the stored offsets
+            // still match the file.
+            if let Some(resume) = e.resume_point() {
+                meeting.mic_offset_seconds = resume.mic_offset_seconds;
+                meeting.system_offset_seconds = resume.system_offset_seconds;
+            }
             meeting.summary_chunk = pipeline::summary_chunks_done(&folder);
             let message = e.to_string();
             let _ = app.emit(EV_ERROR, message.clone());

@@ -53,6 +53,21 @@ pub enum PipelineError {
     Whisper(whisper::WhisperError),
     Summary(SummaryError),
     Io(std::io::Error),
+    /// Failed after earlier tracks were saved; `resume` matches transcript.partial.json.
+    Resumable {
+        resume: ResumePoint,
+        source: whisper::WhisperError,
+    },
+}
+
+impl PipelineError {
+    /// Where the next attempt can pick up, when this failure saved progress.
+    pub fn resume_point(&self) -> Option<ResumePoint> {
+        match self {
+            Self::Resumable { resume, .. } => Some(*resume),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for PipelineError {
@@ -61,6 +76,7 @@ impl std::fmt::Display for PipelineError {
             Self::Whisper(e) => write!(f, "{e}"),
             Self::Summary(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
+            Self::Resumable { source, .. } => write!(f, "{source}"),
         }
     }
 }
@@ -121,11 +137,28 @@ pub(crate) const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
 /// Per-chunk summary extractions from a paused run.
 pub(crate) const PARTIAL_SUMMARY: &str = "summary.partial.json";
 
+fn try_read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Option<Vec<T>> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
 fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    try_read_partial(path).unwrap_or_default()
+}
+
+/// Segments to resume with; zeroes the offsets when the file cannot back them.
+///
+/// Offsets that claim progress the file cannot show would skip audio that is no
+/// longer represented anywhere, so an unreadable file means starting over.
+fn resume_segments(file: &Path, resume: &mut ResumePoint) -> Vec<Segment> {
+    if resume.mic_offset_seconds <= 0.0 && resume.system_offset_seconds <= 0.0 {
+        return Vec::new();
+    }
+    try_read_partial(file).unwrap_or_else(|| {
+        eprintln!("[pipeline] {} unreadable; transcribing from the start", file.display());
+        resume.mic_offset_seconds = 0.0;
+        resume.system_offset_seconds = 0.0;
+        Vec::new()
+    })
 }
 
 /// Chunk extractions on disk: what the next run's `summarize` will resume from.
@@ -133,10 +166,14 @@ pub(crate) fn summary_chunks_done(folder: &Path) -> usize {
     read_partial::<String>(&folder.join(PARTIAL_SUMMARY)).len()
 }
 
-fn write_partial<T: serde::Serialize>(path: &Path, value: &T) {
-    if let Ok(text) = serde_json::to_string(value) {
-        let _ = std::fs::write(path, text);
-    }
+/// Written to a temp file and renamed, so a crash mid-write leaves the previous
+/// partial intact rather than a torn one.
+fn write_partial<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let text = serde_json::to_string(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Where to pick a paused meeting up from.
@@ -322,13 +359,11 @@ pub fn run(
         // gains a duplicate of everything already in it. If we are starting both
         // tracks from the beginning, whatever is in the partial is about to be
         // produced again and keeping it can only duplicate.
-        let mut segments: Vec<Segment> = if config.resume.mic_offset_seconds > 0.0
-            || config.resume.system_offset_seconds > 0.0
-        {
-            read_partial(&partial_segments_file)
-        } else {
-            Vec::new()
-        };
+        //
+        // An unreadable partial resets the offsets too (see `resume_segments`).
+        let mut segments = resume_segments(&partial_segments_file, &mut resume);
+        // What the file on disk still agrees with, if saving new progress fails.
+        let resume_at_start = resume;
 
         // No percentage here, deliberately.
         //
@@ -364,24 +399,40 @@ pub fn run(
         if mic.aborted {
             // Written before returning, so the work survives a quit as well as a
             // pause. Nothing distinguishes the two by the time the app restarts.
-            write_partial(&partial_segments_file, &segments);
+            if let Err(e) = write_partial(&partial_segments_file, &segments) {
+                eprintln!("[pipeline] could not save partial transcript: {e}");
+                return Ok(RunOutcome::Paused(resume_at_start)); // old file intact and matches old offsets
+            }
             return Ok(RunOutcome::Paused(resume));
         }
 
         // The system track continues it, so progress keeps climbing instead of
         // restarting when the first track finishes.
         control.set_base_seconds(mic_duration);
-        let system = transcriber.transcribe(
+        let system = match transcriber.transcribe(
             &system_file,
             &config.speaker_meeting,
             resume.system_offset_seconds,
             control,
-        )?;
+        ) {
+            Ok(system) => system,
+            // Same invariant as the mic.aborted pause: mic offset advanced, system
+            // offset unchanged, partial = old partial + new mic segments.
+            Err(e) => {
+                return Err(match write_partial(&partial_segments_file, &segments) {
+                    Ok(()) => PipelineError::Resumable { resume, source: e },
+                    Err(_) => PipelineError::Whisper(e), // old file + old offsets still agree
+                })
+            }
+        };
         segments.extend(system.segments);
         resume.system_offset_seconds = system.last_end_seconds;
 
         if system.aborted {
-            write_partial(&partial_segments_file, &segments);
+            if let Err(e) = write_partial(&partial_segments_file, &segments) {
+                eprintln!("[pipeline] could not save partial transcript: {e}");
+                return Ok(RunOutcome::Paused(resume_at_start)); // old file intact and matches old offsets
+            }
             return Ok(RunOutcome::Paused(resume));
         }
 
@@ -431,6 +482,9 @@ pub fn run(
         }
 
         std::fs::write(&transcript_file, &transcript)?;
+        // A freshly written transcript invalidates any extractions of an older one.
+        let _ = std::fs::remove_file(&partial_summary_file);
+        resume.summary_chunk = 0;
         on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
         (transcript, quiet_recording, segments.len())
     };
@@ -569,7 +623,9 @@ fn summarize(
 
     for chunk in to_extract.iter().skip(partials.len()) {
         if control.is_aborted() {
-            write_partial(partial_file, &partials);
+            if let Err(e) = write_partial(partial_file, &partials) {
+                eprintln!("[pipeline] could not save partial summary: {e}");
+            }
             return Ok(None);
         }
 
@@ -578,11 +634,15 @@ fn summarize(
         let extracted = summary::chat(&config.provider, system, &user)?;
         debug_timing("extract", chunk.len(), extracted.len(), started);
         partials.push(extracted);
-        write_partial(partial_file, &partials);
+        if let Err(e) = write_partial(partial_file, &partials) {
+            eprintln!("[pipeline] could not save partial summary: {e}");
+        }
     }
 
     if control.is_aborted() {
-        write_partial(partial_file, &partials);
+        if let Err(e) = write_partial(partial_file, &partials) {
+            eprintln!("[pipeline] could not save partial summary: {e}");
+        }
         return Ok(None);
     }
 
@@ -725,6 +785,82 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
+    }
+
+    #[test]
+    fn write_partial_round_trips_and_leaves_no_temp_file() {
+        let dir = temp_dir("write-partial");
+        let file = dir.join(PARTIAL_SUMMARY);
+        write_partial(&file, &vec!["a".to_string(), "b".to_string()]).expect("write");
+        assert_eq!(read_partial::<String>(&file), vec!["a", "b"]);
+        assert!(!dir.join("summary.partial.json.tmp").exists());
+        assert!(!file.with_extension("json.tmp").exists());
+    }
+
+    fn resume_at(mic: f64, system: f64) -> ResumePoint {
+        ResumePoint {
+            mic_offset_seconds: mic,
+            system_offset_seconds: system,
+            summary_chunk: 0,
+        }
+    }
+
+    #[test]
+    fn resume_segments_resets_offsets_when_the_file_is_torn() {
+        let dir = temp_dir("resume-torn");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        std::fs::write(&file, r#"[{"start":"#).expect("write");
+        let mut resume = resume_at(10.0, 5.0);
+        assert!(resume_segments(&file, &mut resume).is_empty());
+        assert_eq!(resume, resume_at(0.0, 0.0));
+    }
+
+    #[test]
+    fn resume_segments_resets_offsets_when_the_file_is_missing() {
+        let dir = temp_dir("resume-missing");
+        let mut resume = resume_at(10.0, 5.0);
+        assert!(resume_segments(&dir.join(PARTIAL_SEGMENTS), &mut resume).is_empty());
+        assert_eq!(resume, resume_at(0.0, 0.0));
+    }
+
+    #[test]
+    fn resume_segments_keeps_a_valid_file_and_its_offsets() {
+        let dir = temp_dir("resume-valid");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        let seg = Segment {
+            start: 1.0,
+            speaker: "YO".to_string(),
+            text: "hola".to_string(),
+        };
+        write_partial(&file, &vec![seg]).expect("write");
+        let mut resume = resume_at(10.0, 5.0);
+        assert_eq!(resume_segments(&file, &mut resume).len(), 1);
+        assert_eq!(resume, resume_at(10.0, 5.0));
+    }
+
+    #[test]
+    fn resume_segments_ignores_the_file_when_offsets_are_zero() {
+        let dir = temp_dir("resume-zero");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        std::fs::write(&file, r#"[{"start":1.0}]"#).expect("write");
+        let mut resume = resume_at(0.0, 0.0);
+        assert!(resume_segments(&file, &mut resume).is_empty());
+    }
+
+    #[test]
+    fn resume_point_is_only_carried_by_resumable_errors() {
+        let resume = resume_at(12.5, 0.0);
+        let err = PipelineError::Resumable {
+            resume,
+            source: whisper::WhisperError::Transcribe("boom".into()),
+        };
+        assert_eq!(err.resume_point(), Some(resume));
+        assert_eq!(
+            err.to_string(),
+            whisper::WhisperError::Transcribe("boom".into()).to_string()
+        );
+        assert_eq!(PipelineError::Whisper(whisper::WhisperError::Cancelled).resume_point(), None);
+        assert_eq!(PipelineError::Io(std::io::Error::other("x")).resume_point(), None);
     }
 
     #[test]
