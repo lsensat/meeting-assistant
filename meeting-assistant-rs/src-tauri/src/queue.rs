@@ -207,6 +207,7 @@ pub struct MeetingState {
     /// type or the provider between meetings must not reach back and rewrite
     /// what a meeting already waiting in the queue will produce. Stored as
     /// opaque JSON so `Config` can gain fields without a migration here.
+    /// Retry refreshes the summary/transcription keys, see `Queue::retry`.
     pub config: serde_json::Value,
 }
 
@@ -266,6 +267,7 @@ pub fn load(folder: &Path) -> Option<MeetingState> {
 /// Through a `.partial` and a rename, the same shape as the model download, so
 /// a crash mid-write cannot leave a truncated file that [`load`] would then
 /// reject — losing the resume point of a meeting that was nearly finished.
+/// The write is fsynced before the rename; see [`crate::pipeline::write_atomic`].
 pub fn save(folder: &Path, state: &MeetingState) -> std::io::Result<()> {
     let final_path = state_path(folder);
     let partial = final_path.with_extension("json.partial");
@@ -273,8 +275,7 @@ pub fn save(folder: &Path, state: &MeetingState) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    std::fs::write(&partial, text)?;
-    std::fs::rename(&partial, &final_path)
+    crate::pipeline::write_atomic(&partial, &final_path, text.as_bytes())
 }
 
 /// Every meeting folder under `output_folder`, oldest first.
@@ -357,6 +358,14 @@ pub fn scan(output_folder: &Path) -> Vec<(PathBuf, MeetingState)> {
                     crate::pipeline::wav_duration(&found.path.join(crate::session::MIC_FILENAME));
             }
 
+            // A crash mid-summary leaves the dequeue-time index; extractions written since are
+            // on disk. Only Summary: Paused/Failed already synced it, and no other stage has the file.
+            if state.stage == Stage::Summary {
+                state.summary_chunk = state
+                    .summary_chunk
+                    .max(crate::pipeline::summary_chunks_done(&found.path));
+            }
+
             Some((found.path, state))
         })
         .collect()
@@ -418,6 +427,71 @@ mod scan_tests {
             "only the outstanding meeting may run"
         );
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Writes one meeting folder with a saved state and, optionally, a partial
+    /// summary holding `extractions` chunk results, then returns its scanned state.
+    fn scanned_summary_state(
+        root: &Path,
+        stage: Stage,
+        stored_chunk: usize,
+        extractions: Option<usize>,
+    ) -> MeetingState {
+        let id = "2026-10-01_10-00-00";
+        let folder = root.join(id);
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        let mut state = MeetingState::new(id.into(), String::new(), serde_json::Value::Null);
+        state.stage = stage;
+        state.summary_chunk = stored_chunk;
+        save(&folder, &state).expect("save");
+        if let Some(n) = extractions {
+            let items: Vec<String> = (0..n).map(|i| format!("chunk {i}")).collect();
+            std::fs::write(
+                folder.join(crate::pipeline::PARTIAL_SUMMARY),
+                serde_json::to_string(&items).expect("json"),
+            )
+            .expect("write partial");
+        }
+        scan(root)
+            .into_iter()
+            .find(|(_, s)| s.id == id)
+            .map(|(_, s)| s)
+            .expect("listed")
+    }
+
+    fn fresh_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ma-scan-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        root
+    }
+
+    /// A crash mid-summary leaves the dequeue-time index; the extractions on disk
+    /// are what the next run resumes from, so the scan must report them.
+    #[test]
+    fn a_summary_interrupted_by_a_crash_resumes_from_its_extractions_on_disk() {
+        let root = fresh_root("summary-disk");
+        let state = scanned_summary_state(&root, Stage::Summary, 0, Some(2));
+        assert_eq!(state.summary_chunk, 2);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Only Summary is reconciled: a failed meeting keeps the index it stored.
+    #[test]
+    fn a_failed_meeting_keeps_its_stored_summary_chunk() {
+        let root = fresh_root("failed-chunk");
+        let state = scanned_summary_state(&root, Stage::Failed, 0, Some(2));
+        assert_eq!(state.summary_chunk, 0);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The stored index is never moved backwards by a smaller file.
+    #[test]
+    fn a_stored_summary_chunk_is_not_lowered_by_the_file() {
+        let root = fresh_root("max-chunk");
+        let state = scanned_summary_state(&root, Stage::Summary, 3, Some(2));
+        assert_eq!(state.summary_chunk, 3);
         std::fs::remove_dir_all(&root).ok();
     }
 }
@@ -769,6 +843,27 @@ mod tests {
 
 // ---------------------------------------------------------------- the queue
 
+/// `Config` keys a retry re-reads from the current settings, always.
+///
+/// `language` is deliberately absent: it decides the speaker labels written
+/// into the transcript, and the summary prompt must agree with them.
+const RETRY_SUMMARY_KEYS: [&str; 7] = [
+    "summary_provider",
+    "ollama_model",
+    "api_provider",
+    "api_base_url",
+    "api_model",
+    "summary_type",
+    "custom_summary_prompt",
+];
+
+/// `Config` keys a retry re-reads only while no transcript work exists yet.
+///
+/// `language` lives here because it picks the speaker labels (YO/REUNION vs
+/// ME/MEETING) in the transcript, which the summary prompt must match.
+const RETRY_TRANSCRIPTION_KEYS: [&str; 3] =
+    ["whisper_model", "transcription_language", "language"];
+
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
@@ -1060,8 +1155,21 @@ impl Queue {
         Some(job.folder)
     }
 
-    /// Put a failed meeting back in line.
-    pub fn retry(&self, id: &str) -> bool {
+    /// Put a failed meeting back in line, adopting the settings as they stand now.
+    ///
+    /// A failure is very often something Settings can fix — a model that is not
+    /// installed, the wrong provider — and the errors say so. If a retry reused
+    /// the settings frozen at enqueue it would fail the same way every time, so
+    /// the retry refreshes them from `current` (a `Config::to_json` value).
+    ///
+    /// What is refreshed is limited to what cannot corrupt work already done:
+    /// the summary settings always, and `whisper_model`, `transcription_language`
+    /// and `language` only while no transcript work exists, so one transcript
+    /// never mixes models or speaker-label languages.
+    /// When the summary settings change, summary chunks produced under the old
+    /// ones are discarded. Everything else (output folder, audio retention,
+    /// devices) stays as it was at enqueue.
+    pub fn retry(&self, id: &str, current: &serde_json::Value) -> bool {
         let mut inner = self.lock();
         let Some(job) = inner.jobs.iter_mut().find(|job| job.state.id == id) else {
             return false;
@@ -1081,6 +1189,43 @@ impl Queue {
             Stage::Queued
         };
         job.state.error = None;
+
+        let transcription_started = job.state.mic_offset_seconds > 0.0
+            || job.state.system_offset_seconds > 0.0
+            || job.folder.join(crate::pipeline::TRANSCRIPT_FILENAME).exists()
+            || job.folder.join(crate::pipeline::PARTIAL_SEGMENTS).exists();
+        let mut summary_changed = false;
+        // A legacy meeting.json may carry a null/non-object config; start from
+        // an empty object so refreshable keys still get adopted.
+        if !job.state.config.is_object() {
+            job.state.config = serde_json::json!({});
+        }
+        if let (Some(stored), Some(fresh)) =
+            (job.state.config.as_object_mut(), current.as_object())
+        {
+            let mut adopt = |key: &str| -> bool {
+                match fresh.get(key) {
+                    Some(value) if stored.get(key) != Some(value) => {
+                        stored.insert(key.to_string(), value.clone());
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            for key in RETRY_SUMMARY_KEYS {
+                summary_changed |= adopt(key);
+            }
+            if !transcription_started {
+                for key in RETRY_TRANSCRIPTION_KEYS {
+                    adopt(key);
+                }
+            }
+        }
+        if summary_changed {
+            job.state.summary_chunk = 0;
+            let _ = std::fs::remove_file(job.folder.join(crate::pipeline::PARTIAL_SUMMARY));
+        }
+
         let folder = job.folder.clone();
         let state = job.state.clone();
         drop(inner);
@@ -1267,13 +1412,139 @@ mod queue_tests {
     }
 
     #[test]
+    fn retry_adopts_current_summary_settings_and_drops_stale_chunks() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.config = serde_json::json!({
+            "ollama_model": "old", "whisper_model": "small", "output_folder": "/old"
+        });
+        failed.state.summary_chunk = 3;
+        queue.enqueue(failed);
+
+        let now = serde_json::json!({
+            "ollama_model": "new", "whisper_model": "large", "output_folder": "/new"
+        });
+        assert!(queue.retry("a", &now));
+
+        let inner = queue.lock();
+        let state = &inner.jobs[0].state;
+        assert_eq!(state.config["ollama_model"], "new");
+        assert_eq!(state.config["whisper_model"], "large", "nothing transcribed yet");
+        assert_eq!(state.config["output_folder"], "/old", "not a retry-refreshable setting");
+        assert_eq!(state.summary_chunk, 0, "chunks from the old model are discarded");
+    }
+
+    #[test]
+    fn retry_keeps_the_whisper_model_once_transcription_has_started() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.config = serde_json::json!({ "whisper_model": "small" });
+        failed.state.mic_offset_seconds = 10.0;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a", &serde_json::json!({ "whisper_model": "large" })));
+        assert_eq!(queue.lock().jobs[0].state.config["whisper_model"], "small");
+    }
+
+    fn retry_folder(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir()
+            .join(format!("ma-retry-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn retry_keeps_language_once_a_transcript_exists() {
+        let folder = retry_folder("lang-transcript");
+        std::fs::write(folder.join(crate::pipeline::TRANSCRIPT_FILENAME), "[00:00:01] YO: hola")
+            .unwrap();
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.folder = folder.clone();
+        failed.state.config = serde_json::json!({ "language": "es", "ollama_model": "old" });
+        queue.enqueue(failed);
+
+        let now = serde_json::json!({ "language": "en", "ollama_model": "new" });
+        assert!(queue.retry("a", &now));
+        {
+            let inner = queue.lock();
+            let config = &inner.jobs[0].state.config;
+            assert_eq!(config["language"], "es");
+            assert_eq!(config["ollama_model"], "new");
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+
+        // Transcription started but no transcript yet: still frozen.
+        let queue = Queue::new();
+        let mut failed = job("b", Stage::Failed);
+        failed.state.config = serde_json::json!({ "language": "es" });
+        failed.state.mic_offset_seconds = 10.0;
+        queue.enqueue(failed);
+        assert!(queue.retry("b", &serde_json::json!({ "language": "en" })));
+        assert_eq!(queue.lock().jobs[0].state.config["language"], "es");
+    }
+
+    #[test]
+    fn retry_keeps_summary_chunks_when_settings_unchanged() {
+        let folder = retry_folder("chunks-keep");
+        std::fs::write(folder.join(crate::pipeline::TRANSCRIPT_FILENAME), "[00:00:01] ME: hi")
+            .unwrap();
+        let partial = folder.join(crate::pipeline::PARTIAL_SUMMARY);
+        std::fs::write(&partial, "{}").unwrap();
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.folder = folder.clone();
+        failed.state.config = serde_json::json!({ "ollama_model": "same" });
+        failed.state.summary_chunk = 2;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a", &serde_json::json!({ "ollama_model": "same" })));
+        assert_eq!(queue.lock().jobs[0].state.summary_chunk, 2);
+        assert!(partial.exists());
+        assert_eq!(queue.view()[0].stage, Stage::Summary);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn retry_discards_summary_chunks_when_settings_change() {
+        let folder = retry_folder("chunks-drop");
+        std::fs::write(folder.join(crate::pipeline::TRANSCRIPT_FILENAME), "[00:00:01] ME: hi")
+            .unwrap();
+        let partial = folder.join(crate::pipeline::PARTIAL_SUMMARY);
+        std::fs::write(&partial, "{}").unwrap();
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.folder = folder.clone();
+        failed.state.config = serde_json::json!({ "ollama_model": "old" });
+        failed.state.summary_chunk = 2;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a", &serde_json::json!({ "ollama_model": "new" })));
+        assert_eq!(queue.lock().jobs[0].state.summary_chunk, 0);
+        assert!(!partial.exists());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn retry_adopts_settings_into_a_null_config() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.config = serde_json::Value::Null;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a", &serde_json::json!({ "ollama_model": "new" })));
+        assert_eq!(queue.lock().jobs[0].state.config["ollama_model"], "new");
+    }
+
+    #[test]
     fn retry_resumes_rather_than_restarting() {
         let queue = Queue::new();
         let mut failed = job("a", Stage::Failed);
         failed.state.mic_offset_seconds = 42.0;
         queue.enqueue(failed);
 
-        assert!(queue.retry("a"));
+        assert!(queue.retry("a", &serde_json::json!({})));
         let view = queue.view();
         assert_eq!(view[0].stage, Stage::Whisper, "work already done must not be repeated");
         assert!(view[0].error.is_none());
@@ -1290,7 +1561,7 @@ mod queue_tests {
         failed.folder = folder.clone();
         queue.enqueue(failed);
 
-        assert!(queue.retry("a"));
+        assert!(queue.retry("a", &serde_json::json!({})));
         assert_eq!(queue.view()[0].stage, Stage::Summary, "the transcript must not be redone");
         let _ = std::fs::remove_dir_all(&folder);
     }
@@ -1299,8 +1570,8 @@ mod queue_tests {
     fn retry_only_applies_to_failures() {
         let queue = Queue::new();
         queue.enqueue(job("a", Stage::Queued));
-        assert!(!queue.retry("a"));
-        assert!(!queue.retry("nonexistent"));
+        assert!(!queue.retry("a", &serde_json::json!({})));
+        assert!(!queue.retry("nonexistent", &serde_json::json!({})));
     }
 
     #[test]

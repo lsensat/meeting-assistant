@@ -53,6 +53,21 @@ pub enum PipelineError {
     Whisper(whisper::WhisperError),
     Summary(SummaryError),
     Io(std::io::Error),
+    /// Failed after earlier tracks were saved; `resume` matches transcript.partial.json.
+    Resumable {
+        resume: ResumePoint,
+        source: whisper::WhisperError,
+    },
+}
+
+impl PipelineError {
+    /// Where the next attempt can pick up, when this failure saved progress.
+    pub fn resume_point(&self) -> Option<ResumePoint> {
+        match self {
+            Self::Resumable { resume, .. } => Some(*resume),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for PipelineError {
@@ -61,6 +76,7 @@ impl std::fmt::Display for PipelineError {
             Self::Whisper(e) => write!(f, "{e}"),
             Self::Summary(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
+            Self::Resumable { source, .. } => write!(f, "{source}"),
         }
     }
 }
@@ -117,21 +133,111 @@ pub struct PipelineConfig {
 /// `.partial` like the model download, and for the same reason: a file that is
 /// not yet the real thing must not be mistaken for it. `transcript.txt` is
 /// written only when the transcription is complete.
-const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
+pub(crate) const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
 /// Per-chunk summary extractions from a paused run.
-const PARTIAL_SUMMARY: &str = "summary.partial.json";
+pub(crate) const PARTIAL_SUMMARY: &str = "summary.partial.json";
 
-fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+fn try_read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Option<Vec<T>> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn write_partial<T: serde::Serialize>(path: &Path, value: &T) {
-    if let Ok(text) = serde_json::to_string(value) {
-        let _ = std::fs::write(path, text);
+fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
+    try_read_partial(path).unwrap_or_default()
+}
+
+/// Segments to resume with; zeroes the offsets when the file cannot back them.
+///
+/// Offsets that claim progress the file cannot show would skip audio that is no
+/// longer represented anywhere, so an unreadable file means starting over.
+///
+/// The opposite mismatch is also possible. The partial is written *before* the
+/// worker saves `meeting.json` with the matching offsets, so a crash between the
+/// two leaves the file AHEAD of the stored offsets: it holds segments from a range
+/// the next run will transcribe again, and `build_transcript` sorts but never
+/// dedups. Each track's segments are therefore kept only while they start before
+/// that track's own offset.
+///
+/// The comparison is strict (`<`) and needs no exemption for a zero offset:
+/// - A saved segment always starts before the offset stored with it, because the
+///   offset is the end of the last segment whisper reported (`last_end_seconds`,
+///   computed from the same centisecond integers as `start`) and a segment ends
+///   after it starts. Only a zero-length final segment could start exactly at the
+///   offset, which is far rarer than the opposite case below.
+/// - A segment from the re-transcribed range can start exactly AT the offset (the
+///   VAD run begins at `resume_from_seconds`, so its first segment has a zero
+///   in-run timestamp), and `<` is what drops it.
+/// - A zero offset means that track produced nothing yet (a finished track always
+///   has a positive end, including empty or silent ones), so it has no valid
+///   segments to lose.
+///
+/// Unknown speaker labels are kept untouched.
+fn resume_segments(
+    file: &Path,
+    resume: &mut ResumePoint,
+    speaker_me: &str,
+    speaker_meeting: &str,
+) -> Vec<Segment> {
+    if resume.mic_offset_seconds <= 0.0 && resume.system_offset_seconds <= 0.0 {
+        return Vec::new();
     }
+    match try_read_partial::<Segment>(file) {
+        Some(mut segments) => {
+            segments.retain(|s| {
+                if s.speaker == speaker_me {
+                    s.start < resume.mic_offset_seconds
+                } else if s.speaker == speaker_meeting {
+                    s.start < resume.system_offset_seconds
+                } else {
+                    true
+                }
+            });
+            segments
+        }
+        None => {
+            eprintln!("[pipeline] {} unreadable; transcribing from the start", file.display());
+            resume.mic_offset_seconds = 0.0;
+            resume.system_offset_seconds = 0.0;
+            Vec::new()
+        }
+    }
+}
+
+/// Chunk extractions on disk: what the next run's `summarize` will resume from.
+pub(crate) fn summary_chunks_done(folder: &Path) -> usize {
+    read_partial::<String>(&folder.join(PARTIAL_SUMMARY)).len()
+}
+
+/// Written atomically (see [`write_atomic`]), so a crash mid-write leaves the
+/// previous partial intact rather than a torn one.
+fn write_partial<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let text = serde_json::to_string(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    write_atomic(&path.with_extension("json.tmp"), path, text.as_bytes())
+}
+
+/// Replaces `dest` with `bytes`, going through `tmp` and a rename.
+///
+/// The temp file is fsynced before the rename. Without that, a power cut after
+/// the rename can leave `dest` pointing at a file whose contents never reached
+/// the disk: renamed, but empty or truncated. The directory sync afterwards
+/// makes the rename itself durable. It is best-effort: not every platform or
+/// filesystem lets a directory be opened and synced, and a failure there does
+/// not fail the write, because the new contents are already in place.
+pub(crate) fn write_atomic(tmp: &Path, dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?; // contents on disk BEFORE the rename can reach disk
+    drop(file);
+    std::fs::rename(tmp, dest)?;
+    // Make the rename itself durable. Opening a directory only works on Unix; elsewhere skip.
+    #[cfg(unix)]
+    if let Some(dir) = dest.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Where to pick a paused meeting up from.
@@ -317,13 +423,16 @@ pub fn run(
         // gains a duplicate of everything already in it. If we are starting both
         // tracks from the beginning, whatever is in the partial is about to be
         // produced again and keeping it can only duplicate.
-        let mut segments: Vec<Segment> = if config.resume.mic_offset_seconds > 0.0
-            || config.resume.system_offset_seconds > 0.0
-        {
-            read_partial(&partial_segments_file)
-        } else {
-            Vec::new()
-        };
+        //
+        // An unreadable partial resets the offsets too (see `resume_segments`).
+        let mut segments = resume_segments(
+            &partial_segments_file,
+            &mut resume,
+            &config.speaker_me,
+            &config.speaker_meeting,
+        );
+        // What the file on disk still agrees with, if saving new progress fails.
+        let resume_at_start = resume;
 
         // No percentage here, deliberately.
         //
@@ -359,24 +468,40 @@ pub fn run(
         if mic.aborted {
             // Written before returning, so the work survives a quit as well as a
             // pause. Nothing distinguishes the two by the time the app restarts.
-            write_partial(&partial_segments_file, &segments);
+            if let Err(e) = write_partial(&partial_segments_file, &segments) {
+                eprintln!("[pipeline] could not save partial transcript: {e}");
+                return Ok(RunOutcome::Paused(resume_at_start)); // old file intact and matches old offsets
+            }
             return Ok(RunOutcome::Paused(resume));
         }
 
         // The system track continues it, so progress keeps climbing instead of
         // restarting when the first track finishes.
         control.set_base_seconds(mic_duration);
-        let system = transcriber.transcribe(
+        let system = match transcriber.transcribe(
             &system_file,
             &config.speaker_meeting,
             resume.system_offset_seconds,
             control,
-        )?;
+        ) {
+            Ok(system) => system,
+            // Same invariant as the mic.aborted pause: mic offset advanced, system
+            // offset unchanged, partial = old partial + new mic segments.
+            Err(e) => {
+                return Err(match write_partial(&partial_segments_file, &segments) {
+                    Ok(()) => PipelineError::Resumable { resume, source: e },
+                    Err(_) => PipelineError::Whisper(e), // old file + old offsets still agree
+                })
+            }
+        };
         segments.extend(system.segments);
         resume.system_offset_seconds = system.last_end_seconds;
 
         if system.aborted {
-            write_partial(&partial_segments_file, &segments);
+            if let Err(e) = write_partial(&partial_segments_file, &segments) {
+                eprintln!("[pipeline] could not save partial transcript: {e}");
+                return Ok(RunOutcome::Paused(resume_at_start)); // old file intact and matches old offsets
+            }
             return Ok(RunOutcome::Paused(resume));
         }
 
@@ -426,6 +551,9 @@ pub fn run(
         }
 
         std::fs::write(&transcript_file, &transcript)?;
+        // A freshly written transcript invalidates any extractions of an older one.
+        let _ = std::fs::remove_file(&partial_summary_file);
+        resume.summary_chunk = 0;
         on_progress(Progress::Stage(Stage::Whisper, StageState::Done));
         (transcript, quiet_recording, segments.len())
     };
@@ -492,7 +620,7 @@ pub fn run(
     )? {
         Some(summary) => summary,
         None => {
-            resume.summary_chunk = read_partial::<String>(&partial_summary_file).len();
+            resume.summary_chunk = summary_chunks_done(&folder);
             return Ok(RunOutcome::Paused(resume));
         }
     };
@@ -564,7 +692,9 @@ fn summarize(
 
     for chunk in to_extract.iter().skip(partials.len()) {
         if control.is_aborted() {
-            write_partial(partial_file, &partials);
+            if let Err(e) = write_partial(partial_file, &partials) {
+                eprintln!("[pipeline] could not save partial summary: {e}");
+            }
             return Ok(None);
         }
 
@@ -573,11 +703,15 @@ fn summarize(
         let extracted = summary::chat(&config.provider, system, &user)?;
         debug_timing("extract", chunk.len(), extracted.len(), started);
         partials.push(extracted);
-        write_partial(partial_file, &partials);
+        if let Err(e) = write_partial(partial_file, &partials) {
+            eprintln!("[pipeline] could not save partial summary: {e}");
+        }
     }
 
     if control.is_aborted() {
-        write_partial(partial_file, &partials);
+        if let Err(e) = write_partial(partial_file, &partials) {
+            eprintln!("[pipeline] could not save partial summary: {e}");
+        }
         return Ok(None);
     }
 
@@ -720,6 +854,167 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
+    }
+
+    #[test]
+    fn write_partial_round_trips_and_leaves_no_temp_file() {
+        let dir = temp_dir("write-partial");
+        let file = dir.join(PARTIAL_SUMMARY);
+        write_partial(&file, &vec!["a".to_string(), "b".to_string()]).expect("write");
+        assert_eq!(read_partial::<String>(&file), vec!["a", "b"]);
+        assert!(!dir.join("summary.partial.json.tmp").exists());
+        assert!(!file.with_extension("json.tmp").exists());
+    }
+
+    fn resume_at(mic: f64, system: f64) -> ResumePoint {
+        ResumePoint {
+            mic_offset_seconds: mic,
+            system_offset_seconds: system,
+            summary_chunk: 0,
+        }
+    }
+
+    #[test]
+    fn resume_segments_resets_offsets_when_the_file_is_torn() {
+        let dir = temp_dir("resume-torn");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        std::fs::write(&file, r#"[{"start":"#).expect("write");
+        let mut resume = resume_at(10.0, 5.0);
+        assert!(resume_segments(&file, &mut resume, "YO", "REUNION").is_empty());
+        assert_eq!(resume, resume_at(0.0, 0.0));
+    }
+
+    #[test]
+    fn resume_segments_resets_offsets_when_the_file_is_missing() {
+        let dir = temp_dir("resume-missing");
+        let mut resume = resume_at(10.0, 5.0);
+        assert!(resume_segments(&dir.join(PARTIAL_SEGMENTS), &mut resume, "YO", "REUNION").is_empty());
+        assert_eq!(resume, resume_at(0.0, 0.0));
+    }
+
+    #[test]
+    fn resume_segments_keeps_a_valid_file_and_its_offsets() {
+        let dir = temp_dir("resume-valid");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        let seg = Segment {
+            start: 1.0,
+            speaker: "YO".to_string(),
+            text: "hola".to_string(),
+        };
+        write_partial(&file, &vec![seg]).expect("write");
+        let mut resume = resume_at(10.0, 5.0);
+        assert_eq!(resume_segments(&file, &mut resume, "YO", "REUNION").len(), 1);
+        assert_eq!(resume, resume_at(10.0, 5.0));
+    }
+
+    fn seg(start: f64, speaker: &str) -> Segment {
+        Segment {
+            start,
+            speaker: speaker.to_string(),
+            text: "x".to_string(),
+        }
+    }
+
+    fn resumed(segs: Vec<Segment>, mic: f64, system: f64) -> Vec<(f64, String)> {
+        let dir = temp_dir("resume-filter");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        write_partial(&file, &segs).expect("write");
+        let mut resume = resume_at(mic, system);
+        resume_segments(&file, &mut resume, "YO", "REUNION")
+            .into_iter()
+            .map(|s| (s.start, s.speaker))
+            .collect()
+    }
+
+    #[test]
+    fn resume_segments_drops_each_track_past_its_own_offset() {
+        let kept = resumed(
+            vec![
+                seg(1.0, "YO"),
+                seg(9.9, "YO"),
+                seg(10.0, "YO"), // exactly at the offset: re-transcribed range
+                seg(12.0, "YO"),
+                seg(2.0, "REUNION"),
+                seg(5.0, "REUNION"),
+                seg(7.0, "REUNION"),
+            ],
+            10.0,
+            5.0,
+        );
+        assert_eq!(
+            kept,
+            vec![
+                (1.0, "YO".to_string()),
+                (9.9, "YO".to_string()),
+                (2.0, "REUNION".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_segments_keeps_unknown_speaker_labels() {
+        let kept = resumed(vec![seg(100.0, "OTRO"), seg(100.0, "YO")], 10.0, 5.0);
+        assert_eq!(kept, vec![(100.0, "OTRO".to_string())]);
+    }
+
+    #[test]
+    fn resume_segments_with_a_zero_mic_offset_has_no_valid_mic_segments_to_keep() {
+        // A finished mic track always reports a positive end (even when silent), so a
+        // zero offset means the mic produced nothing; system progress is untouched.
+        let kept = resumed(vec![seg(0.0, "YO"), seg(1.0, "REUNION")], 0.0, 5.0);
+        assert_eq!(kept, vec![(1.0, "REUNION".to_string())]);
+    }
+
+    #[test]
+    fn resume_segments_keeps_a_finished_mic_track_while_the_system_track_is_partial() {
+        let kept = resumed(vec![seg(30.0, "YO"), seg(3.0, "REUNION")], 60.0, 0.0);
+        assert_eq!(
+            kept,
+            vec![(30.0, "YO".to_string())]
+        );
+    }
+
+    #[test]
+    fn resume_segments_ignores_the_file_when_offsets_are_zero() {
+        let dir = temp_dir("resume-zero");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        std::fs::write(&file, r#"[{"start":1.0}]"#).expect("write");
+        let mut resume = resume_at(0.0, 0.0);
+        assert!(resume_segments(&file, &mut resume, "YO", "REUNION").is_empty());
+    }
+
+    #[test]
+    fn resume_point_is_only_carried_by_resumable_errors() {
+        let resume = resume_at(12.5, 0.0);
+        let err = PipelineError::Resumable {
+            resume,
+            source: whisper::WhisperError::Transcribe("boom".into()),
+        };
+        assert_eq!(err.resume_point(), Some(resume));
+        assert_eq!(
+            err.to_string(),
+            whisper::WhisperError::Transcribe("boom".into()).to_string()
+        );
+        assert_eq!(PipelineError::Whisper(whisper::WhisperError::Cancelled).resume_point(), None);
+        assert_eq!(PipelineError::Io(std::io::Error::other("x")).resume_point(), None);
+    }
+
+    #[test]
+    fn summary_chunks_done_counts_the_extractions_on_disk() {
+        let dir = temp_dir("summary-chunks");
+        let file = dir.join(PARTIAL_SUMMARY);
+
+        // Missing file: nothing extracted yet.
+        assert_eq!(summary_chunks_done(&dir), 0);
+
+        std::fs::write(&file, r#"["a","b","c"]"#).expect("write");
+        assert_eq!(summary_chunks_done(&dir), 3);
+
+        // A torn write must read as nothing, not as a partial count.
+        std::fs::write(&file, r#"["a","b"#).expect("write");
+        assert_eq!(summary_chunks_done(&dir), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

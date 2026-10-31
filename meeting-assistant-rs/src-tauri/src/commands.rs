@@ -2488,6 +2488,16 @@ fn run_job(
             };
         }
         Err(e) => {
+            // Chunks extracted before the failure are on disk; without this the stale
+            // index makes `summarize` truncate them and the retry redoes the work.
+            // Offsets advance only when the pipeline saved the partial that backs
+            // them; any other Err writes no partial segments, so the stored offsets
+            // still match the file.
+            if let Some(resume) = e.resume_point() {
+                meeting.mic_offset_seconds = resume.mic_offset_seconds;
+                meeting.system_offset_seconds = resume.system_offset_seconds;
+            }
+            meeting.summary_chunk = pipeline::summary_chunks_done(&folder);
             let message = e.to_string();
             let _ = app.emit(EV_ERROR, message.clone());
             meeting.stage = queue::Stage::Failed;
@@ -2584,7 +2594,11 @@ pub fn discard_job(app: AppHandle, id: String, state: State<AppState>) -> Result
 /// Put a failed meeting back in line, resuming rather than restarting.
 #[tauri::command(async)]
 pub fn retry_job(app: AppHandle, id: String, state: State<AppState>) -> Result<(), String> {
-    if !state.queue.retry(&id) {
+    // A retry adopts the current Settings; see `Queue::retry` for what is and
+    // is not refreshed.
+    let current = serde_json::from_str(&state.config_snapshot().to_json())
+        .unwrap_or(serde_json::Value::Null);
+    if !state.queue.retry(&id, &current) {
         return Err("that meeting is not waiting to be retried".into());
     }
     emit_queue_changed(&app);
