@@ -645,6 +645,10 @@ pub fn download_model(
 pub struct Transcriber {
     context: WhisperContext,
     language: Option<String>,
+    /// Terms from the teleprompter script, handed to Whisper as its
+    /// `initial_prompt` so names and jargon are spelled as the speaker wrote
+    /// them. `None` for almost every meeting. See [`Self::with_initial_prompt`].
+    initial_prompt: Option<String>,
 }
 
 
@@ -838,7 +842,25 @@ impl Transcriber {
         Ok(Self {
             context,
             language: language.map(|l| l.to_string()),
+            initial_prompt: None,
         })
+    }
+
+    /// Bias decoding towards the spelling of these terms.
+    ///
+    /// NUL bytes are stripped first: `FullParams::set_initial_prompt` builds a
+    /// `CString` and panics on one. A prompt that is blank afterwards is
+    /// dropped rather than passed as an empty string.
+    pub fn with_initial_prompt(mut self, prompt: Option<String>) -> Self {
+        self.initial_prompt = prompt
+            .map(|p| p.replace('\0', ""))
+            .filter(|p| !p.trim().is_empty());
+        if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
+            if let Some(p) = &self.initial_prompt {
+                eprintln!("[whisper] initial prompt: {} chars", p.chars().count());
+            }
+        }
+        self
     }
 
     /// Transcribe one track.
@@ -1025,6 +1047,10 @@ impl Transcriber {
 
             if let Some(language) = &self.language {
                 params.set_language(Some(language));
+            }
+
+            if let Some(prompt) = &self.initial_prompt {
+                params.set_initial_prompt(prompt);
             }
 
             // Token-level suppression of non-speech. Kept alongside real VAD

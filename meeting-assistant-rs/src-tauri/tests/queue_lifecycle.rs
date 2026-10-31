@@ -67,6 +67,7 @@ fn config_for(folder: &Path, output: &Path, title: &str, resume: ResumePoint) ->
         speaker_me: "ME".into(),
         speaker_meeting: "MEETING".into(),
         resume,
+        script: None,
     }
 }
 

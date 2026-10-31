@@ -10,6 +10,7 @@ use meeting_core::config::{Language, SummaryType};
 use meeting_core::i18n;
 use meeting_core::text::{self, Segment};
 use meeting_core::prompts;
+use meeting_core::teleprompter;
 
 use crate::summary::{self, ProviderConfig, SummaryError};
 use crate::session::{MIC_FILENAME, SYSTEM_FILENAME};
@@ -110,6 +111,9 @@ pub struct PipelineConfig {
     pub speaker_meeting: String,
     /// Where a previous, paused attempt got to. `Default` for a new meeting.
     pub resume: ResumePoint,
+    /// The teleprompter script for this meeting, if it is to be used. Feeds the
+    /// Whisper prompt and the final summary pass only.
+    pub script: Option<String>,
 }
 
 /// Segments from a paused run, so resuming appends instead of starting over.
@@ -295,7 +299,10 @@ pub fn run(
         let transcriber = Transcriber::load(
             &config.whisper_model,
             config.transcription_language.as_deref(),
-        )?;
+        )?
+        .with_initial_prompt(config.script.as_deref().map(|s| {
+            teleprompter::whisper_prompt(s, teleprompter::WHISPER_PROMPT_MAX_CHARS)
+        }).filter(|p| !p.is_empty()));
 
         // Only the microphone's length is needed here: it is where the system
         // track's share of the meeting's timeline begins. The queue worker measures
@@ -586,11 +593,18 @@ fn summarize(
     } else {
         prompts::combine_partials(&partials)
     };
-    let user = prompts::final_message(
+    // Only this pass sees the script: the extraction passes run on chunks of a
+    // local model's limited context, and the script would be repeated in each.
+    let script = config
+        .script
+        .as_deref()
+        .map(|s| teleprompter::summary_context(s, teleprompter::SUMMARY_SCRIPT_MAX_CHARS));
+    let user = prompts::final_message_with_script(
         config.language,
         config.summary_type,
         &config.custom_summary_prompt,
         &combined,
+        script.as_deref(),
     );
 
     let started = std::time::Instant::now();

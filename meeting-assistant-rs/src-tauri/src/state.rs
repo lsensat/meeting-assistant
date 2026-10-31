@@ -80,10 +80,17 @@ pub struct AppState {
     /// There is no UI at `setup` time, so the outcome parks here and
     /// `startup_check` emits it once somebody can read it.
     pub startup_mute_restore: Mutex<Option<String>>,
+    /// The teleprompter's script, settings and window placement. Kept apart
+    /// from `config`: it is written often (every few hundred milliseconds of
+    /// typing or resizing) and `save_config` replaces its whole file.
+    pub teleprompter: crate::teleprompter::TeleprompterState,
 }
 
 impl AppState {
     pub fn new(config_file: PathBuf, config: Config) -> Self {
+        let teleprompter = crate::teleprompter::TeleprompterState::load(
+            config_file.with_file_name("teleprompter.json"),
+        );
         Self {
             session: Mutex::new(None),
             config: Mutex::new(config),
@@ -96,6 +103,7 @@ impl AppState {
             pending: Mutex::new(None),
             meeting_log: Mutex::new(None),
             startup_mute_restore: Mutex::new(None),
+            teleprompter,
         }
     }
 

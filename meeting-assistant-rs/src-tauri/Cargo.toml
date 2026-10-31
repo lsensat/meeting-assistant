@@ -22,7 +22,10 @@ meeting-core = { path = "../crates/meeting-core" }
 # Windows dev machine — and without it a webview that fails to load is a white
 # rectangle with no way to ask it why. Right-click -> Inspect, or set MA_DEBUG=1
 # to have the windows open their own inspector. Remove once Windows is verified.
-tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools", "macos-private-api"] }
+# Only for `ResizeDirection`, which `tauri` takes in `Window::start_resize_dragging`
+# but does not re-export. Same major as the copy Tauri already pulls in.
+tauri-runtime = "2"
 # Native folder picker and "reveal in Finder/Explorer", replacing the Python's
 # `filedialog` and `os.startfile` (`app.py:689`).
 tauri-plugin-dialog = "2"

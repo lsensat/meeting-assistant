@@ -259,11 +259,52 @@ pub fn final_message(
     custom_prompt: &str,
     combined: &str,
 ) -> String {
+    final_message_with_script(language, summary_type, custom_prompt, combined, None)
+}
+
+/// What the model is told about a teleprompter script.
+fn script_header(language: Language) -> &'static str {
+    match language {
+        Language::Es => {
+            "Guion de referencia: texto que la persona preparó y que puede haber leído en voz alta durante la reunión. Úsalo solo para escribir bien nombres y términos y para entender el contexto. Recoge únicamente lo que la reunión de abajo confirma que se dijo."
+        }
+        Language::En => {
+            "Reference script: text the speaker prepared and may have read aloud during the meeting. Use it only to spell names and terms correctly and to understand context. Report only what the meeting below confirms was actually said."
+        }
+    }
+}
+
+fn script_footer(language: Language) -> &'static str {
+    match language {
+        Language::Es => "Fin del guion de referencia. A continuación, la reunión.",
+        Language::En => "End of the reference script. The meeting follows.",
+    }
+}
+
+/// [`final_message`] with an optional teleprompter script between the
+/// instructions and the meeting. A blank script is the same as none.
+pub fn final_message_with_script(
+    language: Language,
+    summary_type: SummaryType,
+    custom_prompt: &str,
+    combined: &str,
+    script: Option<&str>,
+) -> String {
+    let script_block = match script.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(script) => format!(
+            "{}\n\"\"\"\n{}\n\"\"\"\n{}\n\n",
+            script_header(language),
+            script,
+            script_footer(language)
+        ),
+        None => String::new(),
+    };
     format!(
-        "{}\n\n{}\n{}\n\n{}",
+        "{}\n\n{}\n{}\n\n{}{}",
         summary_instructions(language, summary_type, custom_prompt),
         no_invent(language),
         brevity(language),
+        script_block,
         combined
     )
 }
@@ -359,6 +400,39 @@ mod tests {
         let content = msg.find("PARTIALS").expect("content present");
         assert!(reminder < content, "reminder must precede the content");
         assert!(msg.ends_with("PARTIALS"));
+    }
+
+    #[test]
+    fn no_script_or_a_blank_one_leaves_the_final_message_unchanged() {
+        let plain = final_message(Language::En, SummaryType::Brief, "", "PARTIALS");
+        for script in [None, Some(""), Some("  \n\t ")] {
+            let msg =
+                final_message_with_script(Language::En, SummaryType::Brief, "", "PARTIALS", script);
+            assert_eq!(msg, plain);
+        }
+    }
+
+    #[test]
+    fn script_sits_between_the_instructions_and_the_meeting() {
+        for language in [Language::En, Language::Es] {
+            let msg = final_message_with_script(
+                language,
+                SummaryType::Brief,
+                "",
+                "PARTIALS",
+                Some("Acme Corp, Q3."),
+            );
+            assert!(!msg.contains("\\n"));
+            let instructions = msg.find(brevity(language)).expect("instructions");
+            let header = msg.find(script_header(language)).expect("header");
+            let script = msg.find("Acme Corp, Q3.").expect("script");
+            let footer = msg.find(script_footer(language)).expect("footer");
+            let content = msg.find("PARTIALS").expect("content");
+            assert!(instructions < header && header < script);
+            assert!(script < footer && footer < content);
+            assert!(msg.ends_with("PARTIALS"));
+            assert!(msg.contains("\"\"\"\nAcme Corp, Q3.\n\"\"\""));
+        }
     }
 
     #[test]

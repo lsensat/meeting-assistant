@@ -91,6 +91,7 @@ fn main() {
         // The CLI always processes a folder from the beginning. Resuming is the
         // app's concern; here `--folder` means "do this one, now".
         resume: pipeline::ResumePoint::default(),
+        script: None,
     };
 
     println!("folder  : {}", config.folder.display());

@@ -470,7 +470,7 @@ pub fn needs_setup(state: State<AppState>) -> bool {
 /// webview that fails to load has no console anyone can reach. This is the
 /// hatch. It is a no-op unless the variable is set, so it costs nothing in
 /// normal use.
-fn debug_inspect(window: &tauri::WebviewWindow) {
+pub(crate) fn debug_inspect(window: &tauri::WebviewWindow) {
     if std::env::var("MA_DEBUG").as_deref() == Ok("1") {
         window.open_devtools();
     }
@@ -1482,6 +1482,13 @@ pub fn start_recording(app: AppHandle, state: State<AppState>) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
 
+    // From here a teleprompter window that is open, or opens before the
+    // recording ends, marks this meeting's script as usable. See
+    // `teleprompter::TeleprompterState::take_for_meeting`.
+    state.teleprompter.note_recording_started(
+        app.get_webview_window(crate::teleprompter::LABEL).is_some(),
+    );
+
     // Say on disk what is happening, before anything can go wrong.
     //
     // `meeting.json` used to be written only when a recording *stopped*, so a
@@ -2169,6 +2176,9 @@ pub fn finalize_meeting(
         text::sanitize_name(&meeting_title),
         serde_json::from_str(&config.to_json()).unwrap_or(serde_json::Value::Null),
     );
+    // Snapshotted with the meeting, like the config: editing the script later
+    // must not change what an already queued meeting is transcribed with.
+    meeting.script = state.teleprompter.take_for_meeting();
     // The WAVs are final by now, so this is the cheapest moment to learn how
     // long the meeting was — and it is written with the rest of the state, so
     // the length survives a restart without re-reading the audio.
@@ -2282,6 +2292,7 @@ fn run_job(
             system_offset_seconds: meeting.system_offset_seconds,
             summary_chunk: meeting.summary_chunk,
         },
+        script: meeting.script.clone(),
     };
 
     let control = queue.control();

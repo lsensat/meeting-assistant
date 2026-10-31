@@ -20,6 +20,7 @@ pub mod platform;
 pub mod session;
 pub mod state;
 pub mod summary;
+pub mod teleprompter;
 pub mod tray;
 pub mod vad;
 pub mod whisper;

@@ -198,6 +198,16 @@ pub struct MeetingState {
     /// have swallowed the answer even when it worked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whisper_vad: Option<String>,
+    /// The teleprompter script, when the teleprompter was open during the
+    /// recording and the user allowed it to be used.
+    ///
+    /// Snapshotted at finalise for the same reason as `config`: editing the
+    /// script afterwards must not change a meeting already waiting. It feeds
+    /// Whisper's prompt and the final summary pass, nothing else.
+    ///
+    /// `#[serde(default)]` and no `SCHEMA_VERSION` bump, as for `whisper_tuning`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
     /// The failure from the last attempt, when `stage` is `Failed`.
     #[serde(default)]
     pub error: Option<String>,
@@ -224,6 +234,7 @@ impl MeetingState {
             timings: Timings::default(),
             whisper_tuning: None,
             whisper_vad: None,
+            script: None,
             error: None,
             config,
         }

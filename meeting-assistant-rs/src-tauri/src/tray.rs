@@ -41,6 +41,7 @@ const ID_FINALIZE: &str = "finalize";
 const ID_CANCEL: &str = "cancel";
 const ID_MUTE: &str = "mute";
 const ID_FOLDER: &str = "folder";
+const ID_TELEPROMPTER: &str = "teleprompter";
 const ID_SETTINGS: &str = "settings";
 const ID_SHOW: &str = "show";
 const ID_QUIT: &str = "quit";
@@ -178,6 +179,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
 
     let folder = MenuItem::with_id(app, ID_FOLDER, tr("tray_open_folder"), true, None::<&str>)?;
+    let teleprompter = MenuItem::with_id(
+        app,
+        ID_TELEPROMPTER,
+        tr("tray_teleprompter"),
+        true,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(app, ID_SETTINGS, tr("tray_settings"), true, None::<&str>)?;
     let show = MenuItem::with_id(app, ID_SHOW, tr("tray_show"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, ID_QUIT, tr("tray_quit"), true, None::<&str>)?;
@@ -197,6 +205,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &sys_menu,
             &sep()?,
             &folder,
+            &teleprompter,
             &settings,
             &sep()?,
             &show,
@@ -326,6 +335,16 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 .unwrap_or_else(|| app.state::<AppState>().config_snapshot().output_folder);
             let _ = crate::commands::open_path(app.clone(), folder.to_string_lossy().into_owned());
         }
+        ID_TELEPROMPTER => {
+            // Off the menu-event thread: building a webview from an event
+            // handler deadlocks on Windows (see `commands::open_setup`).
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = crate::teleprompter::open_teleprompter(app.clone()) {
+                    let _ = app.emit(crate::commands::EV_ERROR, e);
+                }
+            });
+        }
         ID_SETTINGS => {
             let _ = crate::commands::open_settings(app.clone());
         }
@@ -406,6 +425,7 @@ mod tests {
             "summary_no_speech_title",
             "summary_no_speech_body",
             "queue_stage_recording",
+            "tray_teleprompter",
         ] {
             for language in [Language::En, Language::Es] {
                 let text = meeting_core::i18n::tr(language, key);

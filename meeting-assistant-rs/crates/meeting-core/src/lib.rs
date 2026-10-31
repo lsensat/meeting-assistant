@@ -20,4 +20,5 @@ pub mod policy;
 pub mod progress;
 pub mod prompts;
 pub mod providers;
+pub mod teleprompter;
 pub mod text;
