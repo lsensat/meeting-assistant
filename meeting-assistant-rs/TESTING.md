@@ -277,5 +277,8 @@ this on both systems. Each step names what must be true afterwards.
 14. **Multi-DPI (Windows).** Move the window between a 100% and a 150% (or
     higher) monitor. It must keep its size and stay within the screen, and
     resizing must still follow the pointer.
-15. **Known limitation (macOS).** The window does not appear over a full-screen
+15. **Silence echo.** With a script loaded and near-silent audio, check the
+    transcript does not echo the script's term list (Whisper may print its
+    prompt on silence).
+16. **Known limitation (macOS).** The window does not appear over a full-screen
     app. Confirm that this is what happens, and that nothing crashes.

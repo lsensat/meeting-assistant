@@ -1992,11 +1992,17 @@ body.is-empty .tp-empty { display: flex; }
 
 .tp-controls {
   position: fixed;
-  left: 50%;
+  /* Centred without translateX: a left:50% box would wrap at half the width. */
+  left: 0;
+  right: 0;
   bottom: 12px;
-  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  margin: 0 auto;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 6px;
   padding: 6px;

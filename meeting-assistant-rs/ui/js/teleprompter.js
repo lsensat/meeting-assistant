@@ -64,6 +64,11 @@ let importInFlight = false;
 let lastPinned = null;
 /** @type {ReturnType<typeof setTimeout>|null} */
 let saveTimer = null;
+/**
+ * True once getTeleprompter() has resolved. Until then `settings` holds
+ * placeholders, and saving them would overwrite the user's teleprompter.json.
+ */
+let loaded = false;
 
 // --- display ------------------------------------------------------------------
 
@@ -140,6 +145,7 @@ function syncPinned() {
 // --- saving -----------------------------------------------------------------
 
 async function saveNow() {
+  if (!loaded) return;
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -157,6 +163,7 @@ async function saveNow() {
 
 /** @param {number} [delay] */
 function scheduleSave(delay = SAVE_DELAY_MS) {
+  if (!loaded) return;
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, delay);
 }
@@ -165,7 +172,13 @@ function scheduleSave(delay = SAVE_DELAY_MS) {
 function showError(message) {
   errorLine.textContent = message;
   errorLine.hidden = false;
+  // The error line lives in the editor panel, so it has to be open to be seen.
   if (!editorOpen()) setEditor(true);
+}
+
+/** Write out a debounced change now (window losing focus or being hidden). */
+function flushPending() {
+  if (saveTimer !== null) saveNow().catch(() => {});
 }
 
 // --- actions ----------------------------------------------------------------
@@ -205,26 +218,41 @@ function setFont(px) {
   scheduleSave();
 }
 
-/** @param {boolean} open */
+/**
+ * Open or close the editor. EVERY close commits the textarea (render + save),
+ * whichever route got here: Done, Esc, the Edit toggle, or opening Settings.
+ * @param {boolean} open
+ * @returns {Promise<void>} resolves when the commit's save has finished
+ */
 function setEditor(open) {
+  const wasOpen = editorOpen();
   editorPanel.hidden = !open;
   body.classList.toggle("is-editing", open);
   if (open) {
     settingsPanel.hidden = true;
     body.classList.remove("is-settings-open");
     scriptBox.value = settings.script;
+    // Before the script has loaded the box must not be editable: the error
+    // is shown, but nothing typed could ever be saved.
+    scriptBox.disabled = !loaded;
     pause();
     scriptBox.focus();
   } else {
     errorLine.hidden = true;
   }
   syncPinned();
+  if (!open && wasOpen && loaded) {
+    settings.script = scriptBox.value;
+    renderScript();
+    return saveNow();
+  }
+  return Promise.resolve();
 }
 
 function setSettings(open) {
   settingsPanel.hidden = !open;
   body.classList.toggle("is-settings-open", open);
-  if (open && editorOpen()) setEditor(false);
+  if (open && editorOpen()) setEditor(false).catch((e) => showError(String(e)));
   syncPinned();
 }
 
@@ -255,7 +283,7 @@ function perform(action) {
       closeWindow().catch((e) => showError(String(e)));
       break;
     case "closeEditor":
-      finishEditing();
+      finishEditing().catch((e) => showError(String(e)));
       break;
     default:
       break;
@@ -263,10 +291,7 @@ function perform(action) {
 }
 
 async function finishEditing() {
-  settings.script = scriptBox.value;
-  setEditor(false);
-  renderScript();
-  await saveNow();
+  await setEditor(false);
 }
 
 async function importScript() {
@@ -298,7 +323,9 @@ $("tp-slower").addEventListener("click", () => perform("slower"));
 $("tp-faster").addEventListener("click", () => perform("faster"));
 $("tp-smaller").addEventListener("click", () => perform("smaller"));
 $("tp-bigger").addEventListener("click", () => perform("bigger"));
-$("tp-edit").addEventListener("click", () => setEditor(!editorOpen()));
+$("tp-edit").addEventListener("click", () => {
+  setEditor(!editorOpen()).catch((e) => showError(String(e)));
+});
 $("tp-settings-toggle").addEventListener("click", () => setSettings(!settingsOpen()));
 $("tp-close").addEventListener("click", () => perform("close"));
 $("tp-import").addEventListener("click", importScript);
@@ -412,6 +439,12 @@ for (const edge of document.querySelectorAll(".tp-edge")) {
   element.addEventListener("pointercancel", release);
 }
 
+// Alt+F4 or a tray Quit gives no chance to run closeWindow(); save what is pending.
+window.addEventListener("blur", flushPending);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushPending();
+});
+
 // The window size changed: the viewport height did, so the end of the text moved.
 window.addEventListener("resize", () => {
   measure();
@@ -433,20 +466,28 @@ function frame(now) {
 // --- boot ---------------------------------------------------------------------
 
 async function boot() {
-  await loadCatalog();
-  setLanguage((await api.getConfig()).language);
-  localize();
-
-  settings = await api.getTeleprompter();
-  applyVars();
-  renderScript();
+  // Before any await: Rust may report the pointer leaving while we load.
   // The pointer starts over the window; Rust tells us when that stops being true.
   body.classList.add("is-hovered");
-  if (scriptEmpty()) setEditor(true);
-
   api.on(api.EVENTS.teleprompterHover, (hovered) => {
     body.classList.toggle("is-hovered", Boolean(hovered));
   });
+
+  // Own step: if this throws, nothing may be saved over the stored settings.
+  settings = await api.getTeleprompter();
+  loaded = true;
+
+  try {
+    await loadCatalog();
+    setLanguage((await api.getConfig()).language);
+  } catch (error) {
+    showError(String(error));
+  }
+  localize();
+  applyVars();
+  renderScript();
+  if (scriptEmpty() && !editorOpen()) setEditor(true);
+
   api.on(api.EVENTS.configChanged, async () => {
     try {
       setLanguage((await api.getConfig()).language);

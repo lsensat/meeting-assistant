@@ -195,4 +195,36 @@ test("every translation key used exists in en and es", () => {
   assert.deepEqual(missing, [], `missing translations: ${missing.join(", ")}`);
 });
 
+// Wiring guarantees that need a webview to exercise, pinned at the source level.
+test("boot registers the hover listener before any await", () => {
+  const js = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "js/teleprompter.js"), "utf8");
+  const boot = js.slice(js.indexOf("async function boot()"));
+  assert.ok(boot.indexOf("teleprompterHover") > 0);
+  assert.ok(boot.indexOf("teleprompterHover") < boot.search(/await (api|load)/));
+});
+
+test("saving is gated on the script having loaded", () => {
+  const js = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "js/teleprompter.js"), "utf8");
+  assert.match(js, /async function saveNow\(\) \{\s*if \(!loaded\) return;/);
+  assert.match(js, /function scheduleSave\([^)]*\) \{\s*if \(!loaded\) return;/);
+  assert.ok(js.indexOf("loaded = true") > js.indexOf("await api.getTeleprompter()"));
+  assert.ok(js.indexOf("loaded = true") < js.indexOf("await loadCatalog()"));
+});
+
+test("every editor close commits through setEditor; flushes on blur and hide", () => {
+  const js = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "js/teleprompter.js"), "utf8");
+  assert.match(js, /if \(!open && wasOpen && loaded\) \{\s*settings\.script = scriptBox\.value;\s*renderScript\(\);\s*return saveNow\(\);/);
+  assert.match(js, /addEventListener\("blur", flushPending\)/);
+  assert.match(js, /visibilityState === "hidden"/);
+});
+
+test("controls bar wraps instead of overflowing a narrow window", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "css/app.css"), "utf8");
+  const rule = css.match(/\n\.tp-controls \{[^}]*\}/)[0];
+  assert.match(rule, /flex-wrap: wrap/);
+  assert.match(rule, /justify-content: center/);
+  assert.match(rule, /max-width: calc\(100vw - 24px\)/);
+  assert.doesNotMatch(rule.replace(/\/\*.*?\*\//gs, ""), /translateX/);
+});
+
 console.log(`teleprompter: ${passed} tests pass.`);
