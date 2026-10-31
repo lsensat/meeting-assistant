@@ -769,6 +769,21 @@ mod tests {
 
 // ---------------------------------------------------------------- the queue
 
+/// `Config` keys a retry re-reads from the current settings, always.
+const RETRY_SUMMARY_KEYS: [&str; 8] = [
+    "summary_provider",
+    "ollama_model",
+    "api_provider",
+    "api_base_url",
+    "api_model",
+    "summary_type",
+    "custom_summary_prompt",
+    "language",
+];
+
+/// `Config` keys a retry re-reads only while no transcript work exists yet.
+const RETRY_TRANSCRIPTION_KEYS: [&str; 2] = ["whisper_model", "transcription_language"];
+
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
@@ -1060,8 +1075,20 @@ impl Queue {
         Some(job.folder)
     }
 
-    /// Put a failed meeting back in line.
-    pub fn retry(&self, id: &str) -> bool {
+    /// Put a failed meeting back in line, adopting the settings as they stand now.
+    ///
+    /// A failure is very often something Settings can fix — a model that is not
+    /// installed, the wrong provider — and the errors say so. If a retry reused
+    /// the settings frozen at enqueue it would fail the same way every time, so
+    /// the retry refreshes them from `current` (a `Config::to_json` value).
+    ///
+    /// What is refreshed is limited to what cannot corrupt work already done:
+    /// the summary settings always, and the transcription model and language
+    /// only while no transcript exists, so one transcript never mixes models.
+    /// When the summary settings change, summary chunks produced under the old
+    /// ones are discarded. Everything else (output folder, audio retention,
+    /// devices) stays as it was at enqueue.
+    pub fn retry(&self, id: &str, current: &serde_json::Value) -> bool {
         let mut inner = self.lock();
         let Some(job) = inner.jobs.iter_mut().find(|job| job.state.id == id) else {
             return false;
@@ -1081,6 +1108,38 @@ impl Queue {
             Stage::Queued
         };
         job.state.error = None;
+
+        let transcription_started = job.state.mic_offset_seconds > 0.0
+            || job.state.system_offset_seconds > 0.0
+            || job.folder.join(crate::pipeline::TRANSCRIPT_FILENAME).exists()
+            || job.folder.join(crate::pipeline::PARTIAL_SEGMENTS).exists();
+        let mut summary_changed = false;
+        if let (Some(stored), Some(fresh)) =
+            (job.state.config.as_object_mut(), current.as_object())
+        {
+            let mut adopt = |key: &str| -> bool {
+                match fresh.get(key) {
+                    Some(value) if stored.get(key) != Some(value) => {
+                        stored.insert(key.to_string(), value.clone());
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            for key in RETRY_SUMMARY_KEYS {
+                summary_changed |= adopt(key);
+            }
+            if !transcription_started {
+                for key in RETRY_TRANSCRIPTION_KEYS {
+                    adopt(key);
+                }
+            }
+        }
+        if summary_changed {
+            job.state.summary_chunk = 0;
+            let _ = std::fs::remove_file(job.folder.join(crate::pipeline::PARTIAL_SUMMARY));
+        }
+
         let folder = job.folder.clone();
         let state = job.state.clone();
         drop(inner);
@@ -1267,13 +1326,48 @@ mod queue_tests {
     }
 
     #[test]
+    fn retry_adopts_current_summary_settings_and_drops_stale_chunks() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.config = serde_json::json!({
+            "ollama_model": "old", "whisper_model": "small", "output_folder": "/old"
+        });
+        failed.state.summary_chunk = 3;
+        queue.enqueue(failed);
+
+        let now = serde_json::json!({
+            "ollama_model": "new", "whisper_model": "large", "output_folder": "/new"
+        });
+        assert!(queue.retry("a", &now));
+
+        let inner = queue.lock();
+        let state = &inner.jobs[0].state;
+        assert_eq!(state.config["ollama_model"], "new");
+        assert_eq!(state.config["whisper_model"], "large", "nothing transcribed yet");
+        assert_eq!(state.config["output_folder"], "/old", "not a retry-refreshable setting");
+        assert_eq!(state.summary_chunk, 0, "chunks from the old model are discarded");
+    }
+
+    #[test]
+    fn retry_keeps_the_whisper_model_once_transcription_has_started() {
+        let queue = Queue::new();
+        let mut failed = job("a", Stage::Failed);
+        failed.state.config = serde_json::json!({ "whisper_model": "small" });
+        failed.state.mic_offset_seconds = 10.0;
+        queue.enqueue(failed);
+
+        assert!(queue.retry("a", &serde_json::json!({ "whisper_model": "large" })));
+        assert_eq!(queue.lock().jobs[0].state.config["whisper_model"], "small");
+    }
+
+    #[test]
     fn retry_resumes_rather_than_restarting() {
         let queue = Queue::new();
         let mut failed = job("a", Stage::Failed);
         failed.state.mic_offset_seconds = 42.0;
         queue.enqueue(failed);
 
-        assert!(queue.retry("a"));
+        assert!(queue.retry("a", &serde_json::json!({})));
         let view = queue.view();
         assert_eq!(view[0].stage, Stage::Whisper, "work already done must not be repeated");
         assert!(view[0].error.is_none());
@@ -1290,7 +1384,7 @@ mod queue_tests {
         failed.folder = folder.clone();
         queue.enqueue(failed);
 
-        assert!(queue.retry("a"));
+        assert!(queue.retry("a", &serde_json::json!({})));
         assert_eq!(queue.view()[0].stage, Stage::Summary, "the transcript must not be redone");
         let _ = std::fs::remove_dir_all(&folder);
     }
@@ -1299,8 +1393,8 @@ mod queue_tests {
     fn retry_only_applies_to_failures() {
         let queue = Queue::new();
         queue.enqueue(job("a", Stage::Queued));
-        assert!(!queue.retry("a"));
-        assert!(!queue.retry("nonexistent"));
+        assert!(!queue.retry("a", &serde_json::json!({})));
+        assert!(!queue.retry("nonexistent", &serde_json::json!({})));
     }
 
     #[test]

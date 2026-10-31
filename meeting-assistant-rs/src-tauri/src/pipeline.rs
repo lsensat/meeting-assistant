@@ -117,9 +117,9 @@ pub struct PipelineConfig {
 /// `.partial` like the model download, and for the same reason: a file that is
 /// not yet the real thing must not be mistaken for it. `transcript.txt` is
 /// written only when the transcription is complete.
-const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
+pub(crate) const PARTIAL_SEGMENTS: &str = "transcript.partial.json";
 /// Per-chunk summary extractions from a paused run.
-const PARTIAL_SUMMARY: &str = "summary.partial.json";
+pub(crate) const PARTIAL_SUMMARY: &str = "summary.partial.json";
 
 fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
     std::fs::read_to_string(path)
