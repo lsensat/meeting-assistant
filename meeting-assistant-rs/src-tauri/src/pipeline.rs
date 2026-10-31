@@ -166,14 +166,37 @@ pub(crate) fn summary_chunks_done(folder: &Path) -> usize {
     read_partial::<String>(&folder.join(PARTIAL_SUMMARY)).len()
 }
 
-/// Written to a temp file and renamed, so a crash mid-write leaves the previous
-/// partial intact rather than a torn one.
+/// Written atomically (see [`write_atomic`]), so a crash mid-write leaves the
+/// previous partial intact rather than a torn one.
 fn write_partial<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let text = serde_json::to_string(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    write_atomic(&path.with_extension("json.tmp"), path, text.as_bytes())
+}
+
+/// Replaces `dest` with `bytes`, going through `tmp` and a rename.
+///
+/// The temp file is fsynced before the rename. Without that, a power cut after
+/// the rename can leave `dest` pointing at a file whose contents never reached
+/// the disk: renamed, but empty or truncated. The directory sync afterwards
+/// makes the rename itself durable. It is best-effort: not every platform or
+/// filesystem lets a directory be opened and synced, and a failure there does
+/// not fail the write, because the new contents are already in place.
+pub(crate) fn write_atomic(tmp: &Path, dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?; // contents on disk BEFORE the rename can reach disk
+    drop(file);
+    std::fs::rename(tmp, dest)?;
+    // Make the rename itself durable. Opening a directory only works on Unix; elsewhere skip.
+    #[cfg(unix)]
+    if let Some(dir) = dest.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Where to pick a paused meeting up from.

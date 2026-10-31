@@ -267,6 +267,7 @@ pub fn load(folder: &Path) -> Option<MeetingState> {
 /// Through a `.partial` and a rename, the same shape as the model download, so
 /// a crash mid-write cannot leave a truncated file that [`load`] would then
 /// reject — losing the resume point of a meeting that was nearly finished.
+/// The write is fsynced before the rename; see [`crate::pipeline::write_atomic`].
 pub fn save(folder: &Path, state: &MeetingState) -> std::io::Result<()> {
     let final_path = state_path(folder);
     let partial = final_path.with_extension("json.partial");
@@ -274,8 +275,7 @@ pub fn save(folder: &Path, state: &MeetingState) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    std::fs::write(&partial, text)?;
-    std::fs::rename(&partial, &final_path)
+    crate::pipeline::write_atomic(&partial, &final_path, text.as_bytes())
 }
 
 /// Every meeting folder under `output_folder`, oldest first.
