@@ -149,16 +149,57 @@ fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
 ///
 /// Offsets that claim progress the file cannot show would skip audio that is no
 /// longer represented anywhere, so an unreadable file means starting over.
-fn resume_segments(file: &Path, resume: &mut ResumePoint) -> Vec<Segment> {
+///
+/// The opposite mismatch is also possible. The partial is written *before* the
+/// worker saves `meeting.json` with the matching offsets, so a crash between the
+/// two leaves the file AHEAD of the stored offsets: it holds segments from a range
+/// the next run will transcribe again, and `build_transcript` sorts but never
+/// dedups. Each track's segments are therefore kept only while they start before
+/// that track's own offset.
+///
+/// The comparison is strict (`<`) and needs no exemption for a zero offset:
+/// - A saved segment always starts before the offset stored with it, because the
+///   offset is the end of the last segment whisper reported (`last_end_seconds`,
+///   computed from the same centisecond integers as `start`) and a segment ends
+///   after it starts. Only a zero-length final segment could start exactly at the
+///   offset, which is far rarer than the opposite case below.
+/// - A segment from the re-transcribed range can start exactly AT the offset (the
+///   VAD run begins at `resume_from_seconds`, so its first segment has a zero
+///   in-run timestamp), and `<` is what drops it.
+/// - A zero offset means that track produced nothing yet (a finished track always
+///   has a positive end, including empty or silent ones), so it has no valid
+///   segments to lose.
+///
+/// Unknown speaker labels are kept untouched.
+fn resume_segments(
+    file: &Path,
+    resume: &mut ResumePoint,
+    speaker_me: &str,
+    speaker_meeting: &str,
+) -> Vec<Segment> {
     if resume.mic_offset_seconds <= 0.0 && resume.system_offset_seconds <= 0.0 {
         return Vec::new();
     }
-    try_read_partial(file).unwrap_or_else(|| {
-        eprintln!("[pipeline] {} unreadable; transcribing from the start", file.display());
-        resume.mic_offset_seconds = 0.0;
-        resume.system_offset_seconds = 0.0;
-        Vec::new()
-    })
+    match try_read_partial::<Segment>(file) {
+        Some(mut segments) => {
+            segments.retain(|s| {
+                if s.speaker == speaker_me {
+                    s.start < resume.mic_offset_seconds
+                } else if s.speaker == speaker_meeting {
+                    s.start < resume.system_offset_seconds
+                } else {
+                    true
+                }
+            });
+            segments
+        }
+        None => {
+            eprintln!("[pipeline] {} unreadable; transcribing from the start", file.display());
+            resume.mic_offset_seconds = 0.0;
+            resume.system_offset_seconds = 0.0;
+            Vec::new()
+        }
+    }
 }
 
 /// Chunk extractions on disk: what the next run's `summarize` will resume from.
@@ -384,7 +425,12 @@ pub fn run(
         // produced again and keeping it can only duplicate.
         //
         // An unreadable partial resets the offsets too (see `resume_segments`).
-        let mut segments = resume_segments(&partial_segments_file, &mut resume);
+        let mut segments = resume_segments(
+            &partial_segments_file,
+            &mut resume,
+            &config.speaker_me,
+            &config.speaker_meeting,
+        );
         // What the file on disk still agrees with, if saving new progress fails.
         let resume_at_start = resume;
 
@@ -834,7 +880,7 @@ mod tests {
         let file = dir.join(PARTIAL_SEGMENTS);
         std::fs::write(&file, r#"[{"start":"#).expect("write");
         let mut resume = resume_at(10.0, 5.0);
-        assert!(resume_segments(&file, &mut resume).is_empty());
+        assert!(resume_segments(&file, &mut resume, "YO", "REUNION").is_empty());
         assert_eq!(resume, resume_at(0.0, 0.0));
     }
 
@@ -842,7 +888,7 @@ mod tests {
     fn resume_segments_resets_offsets_when_the_file_is_missing() {
         let dir = temp_dir("resume-missing");
         let mut resume = resume_at(10.0, 5.0);
-        assert!(resume_segments(&dir.join(PARTIAL_SEGMENTS), &mut resume).is_empty());
+        assert!(resume_segments(&dir.join(PARTIAL_SEGMENTS), &mut resume, "YO", "REUNION").is_empty());
         assert_eq!(resume, resume_at(0.0, 0.0));
     }
 
@@ -857,8 +903,75 @@ mod tests {
         };
         write_partial(&file, &vec![seg]).expect("write");
         let mut resume = resume_at(10.0, 5.0);
-        assert_eq!(resume_segments(&file, &mut resume).len(), 1);
+        assert_eq!(resume_segments(&file, &mut resume, "YO", "REUNION").len(), 1);
         assert_eq!(resume, resume_at(10.0, 5.0));
+    }
+
+    fn seg(start: f64, speaker: &str) -> Segment {
+        Segment {
+            start,
+            speaker: speaker.to_string(),
+            text: "x".to_string(),
+        }
+    }
+
+    fn resumed(segs: Vec<Segment>, mic: f64, system: f64) -> Vec<(f64, String)> {
+        let dir = temp_dir("resume-filter");
+        let file = dir.join(PARTIAL_SEGMENTS);
+        write_partial(&file, &segs).expect("write");
+        let mut resume = resume_at(mic, system);
+        resume_segments(&file, &mut resume, "YO", "REUNION")
+            .into_iter()
+            .map(|s| (s.start, s.speaker))
+            .collect()
+    }
+
+    #[test]
+    fn resume_segments_drops_each_track_past_its_own_offset() {
+        let kept = resumed(
+            vec![
+                seg(1.0, "YO"),
+                seg(9.9, "YO"),
+                seg(10.0, "YO"), // exactly at the offset: re-transcribed range
+                seg(12.0, "YO"),
+                seg(2.0, "REUNION"),
+                seg(5.0, "REUNION"),
+                seg(7.0, "REUNION"),
+            ],
+            10.0,
+            5.0,
+        );
+        assert_eq!(
+            kept,
+            vec![
+                (1.0, "YO".to_string()),
+                (9.9, "YO".to_string()),
+                (2.0, "REUNION".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_segments_keeps_unknown_speaker_labels() {
+        let kept = resumed(vec![seg(100.0, "OTRO"), seg(100.0, "YO")], 10.0, 5.0);
+        assert_eq!(kept, vec![(100.0, "OTRO".to_string())]);
+    }
+
+    #[test]
+    fn resume_segments_with_a_zero_mic_offset_has_no_valid_mic_segments_to_keep() {
+        // A finished mic track always reports a positive end (even when silent), so a
+        // zero offset means the mic produced nothing; system progress is untouched.
+        let kept = resumed(vec![seg(0.0, "YO"), seg(1.0, "REUNION")], 0.0, 5.0);
+        assert_eq!(kept, vec![(1.0, "REUNION".to_string())]);
+    }
+
+    #[test]
+    fn resume_segments_keeps_a_finished_mic_track_while_the_system_track_is_partial() {
+        let kept = resumed(vec![seg(30.0, "YO"), seg(3.0, "REUNION")], 60.0, 0.0);
+        assert_eq!(
+            kept,
+            vec![(30.0, "YO".to_string())]
+        );
     }
 
     #[test]
@@ -867,7 +980,7 @@ mod tests {
         let file = dir.join(PARTIAL_SEGMENTS);
         std::fs::write(&file, r#"[{"start":1.0}]"#).expect("write");
         let mut resume = resume_at(0.0, 0.0);
-        assert!(resume_segments(&file, &mut resume).is_empty());
+        assert!(resume_segments(&file, &mut resume, "YO", "REUNION").is_empty());
     }
 
     #[test]
