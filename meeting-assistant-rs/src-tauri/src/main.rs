@@ -5,6 +5,7 @@
 
 use meeting_assistant::commands;
 use meeting_assistant::platform;
+use meeting_assistant::teleprompter;
 use meeting_assistant::state::AppState;
 use meeting_core::config::Config;
 
@@ -104,6 +105,15 @@ fn main() {
             commands::set_processing_paused,
             commands::discard_job,
             commands::retry_job,
+            teleprompter::open_teleprompter,
+            teleprompter::close_teleprompter,
+            teleprompter::get_teleprompter,
+            teleprompter::save_teleprompter,
+            teleprompter::import_teleprompter_script,
+            teleprompter::teleprompter_set_pinned,
+            teleprompter::teleprompter_start_drag,
+            teleprompter::teleprompter_start_resize,
+            teleprompter::teleprompter_resize_by,
         ])
         .setup(|app| {
             let state = tauri::Manager::state::<AppState>(app);

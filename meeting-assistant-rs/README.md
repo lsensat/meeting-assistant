@@ -185,6 +185,18 @@ See `spikes/loopback-probe/RESULTS-macos.md` for what these measured, including
 a post-mortem of a zero-frame result that turned out to be a testing error
 rather than a bug.
 
+## Teleprompter
+
+The teleprompter is a window you open from the tray menu. It is meant to be
+hidden from screen sharing and recordings, on a best-effort basis. Its script
+and settings are kept in `teleprompter.json`, next to `config.json`.
+
+The script feeds the pipeline only for a meeting recorded while the window was
+open, and only when "Use this script for the transcript and summary" is on. It
+gives Whisper the names and terms to spell correctly, and it gives the summary
+its context. With an API summary provider, that script is sent online along
+with the transcript, the same way the transcript is.
+
 ## Ollama
 
 Must be installed and running; the app starts it if it can find it. Looked up on

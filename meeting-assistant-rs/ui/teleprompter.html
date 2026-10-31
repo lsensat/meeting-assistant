@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" class="tp">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teleprompter</title>
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="js/theme-boot.js"></script>
+</head>
+<body class="tp-body is-hovered">
+  <div id="tp-stage" class="tp-stage">
+    <div id="tp-viewport" class="tp-viewport">
+      <div id="tp-text" class="tp-text"></div>
+    </div>
+    <p id="tp-empty" class="tp-empty" data-i18n="teleprompter_empty"></p>
+
+    <div id="tp-controls" class="tp-controls" role="toolbar">
+      <button id="tp-play" class="tp-btn" type="button" data-i18n-title="teleprompter_play" data-i18n-label="teleprompter_play">▶</button>
+      <button id="tp-restart" class="tp-btn" type="button" data-i18n-title="teleprompter_restart" data-i18n-label="teleprompter_restart">⏮</button>
+      <button id="tp-slower" class="tp-btn" type="button" data-i18n-title="teleprompter_slower" data-i18n-label="teleprompter_slower">⏪</button>
+      <span id="tp-speed-value" class="tp-value"></span>
+      <button id="tp-faster" class="tp-btn" type="button" data-i18n-title="teleprompter_faster" data-i18n-label="teleprompter_faster">⏩</button>
+      <button id="tp-smaller" class="tp-btn" type="button" data-i18n-title="teleprompter_smaller" data-i18n-label="teleprompter_smaller">A−</button>
+      <span id="tp-font-value" class="tp-value"></span>
+      <button id="tp-bigger" class="tp-btn" type="button" data-i18n-title="teleprompter_bigger" data-i18n-label="teleprompter_bigger">A+</button>
+      <button id="tp-edit" class="tp-btn" type="button" data-i18n-title="teleprompter_edit" data-i18n-label="teleprompter_edit">✎</button>
+      <button id="tp-settings-toggle" class="tp-btn" type="button" data-i18n-title="teleprompter_settings" data-i18n-label="teleprompter_settings">⚙</button>
+      <button id="tp-close" class="tp-btn tp-btn--close" type="button" data-i18n-title="teleprompter_close" data-i18n-label="teleprompter_close">✕</button>
+    </div>
+
+    <section id="tp-settings" class="tp-panel" hidden>
+      <label class="tp-field">
+        <span data-i18n="teleprompter_text_opacity"></span>
+        <input id="tp-text-opacity" type="range" min="20" max="100" step="5" />
+      </label>
+      <label class="tp-field">
+        <span data-i18n="teleprompter_overlay_opacity"></span>
+        <input id="tp-overlay-opacity" type="range" min="0" max="100" step="5" />
+      </label>
+      <label class="tp-field tp-field--check">
+        <input id="tp-use-in-pipeline" type="checkbox" />
+        <span data-i18n="teleprompter_use_in_pipeline"></span>
+      </label>
+      <p class="tp-hint" data-i18n="teleprompter_use_in_pipeline_hint"></p>
+      <p class="tp-hint" data-i18n="teleprompter_keys_hint"></p>
+    </section>
+
+    <section id="tp-editor" class="tp-panel" hidden>
+      <textarea id="tp-script" class="tp-script" spellcheck="false"></textarea>
+      <div class="tp-editor-actions">
+        <button id="tp-import" class="tp-btn tp-btn--text" type="button" data-i18n="teleprompter_import"></button>
+        <button id="tp-done" class="tp-btn tp-btn--text tp-btn--primary" type="button" data-i18n="teleprompter_done"></button>
+      </div>
+      <p id="tp-error" class="tp-error" hidden></p>
+    </section>
+  </div>
+
+  <div class="tp-edge tp-edge--n" data-edge="n"></div>
+  <div class="tp-edge tp-edge--s" data-edge="s"></div>
+  <div class="tp-edge tp-edge--e" data-edge="e"></div>
+  <div class="tp-edge tp-edge--w" data-edge="w"></div>
+  <div class="tp-edge tp-edge--ne" data-edge="ne"></div>
+  <div class="tp-edge tp-edge--nw" data-edge="nw"></div>
+  <div class="tp-edge tp-edge--se" data-edge="se"></div>
+  <div class="tp-edge tp-edge--sw" data-edge="sw"></div>
+  <script type="module" src="js/teleprompter.js"></script>
+</body>
+</html>

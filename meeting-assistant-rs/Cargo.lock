@@ -2367,6 +2367,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tauri-runtime",
  "whisper-rs",
  "windows 0.61.3",
 ]
