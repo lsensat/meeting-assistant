@@ -128,6 +128,11 @@ fn read_partial<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
         .unwrap_or_default()
 }
 
+/// Chunk extractions on disk: what the next run's `summarize` will resume from.
+pub(crate) fn summary_chunks_done(folder: &Path) -> usize {
+    read_partial::<String>(&folder.join(PARTIAL_SUMMARY)).len()
+}
+
 fn write_partial<T: serde::Serialize>(path: &Path, value: &T) {
     if let Ok(text) = serde_json::to_string(value) {
         let _ = std::fs::write(path, text);
@@ -492,7 +497,7 @@ pub fn run(
     )? {
         Some(summary) => summary,
         None => {
-            resume.summary_chunk = read_partial::<String>(&partial_summary_file).len();
+            resume.summary_chunk = summary_chunks_done(&folder);
             return Ok(RunOutcome::Paused(resume));
         }
     };
@@ -720,6 +725,24 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
+    }
+
+    #[test]
+    fn summary_chunks_done_counts_the_extractions_on_disk() {
+        let dir = temp_dir("summary-chunks");
+        let file = dir.join(PARTIAL_SUMMARY);
+
+        // Missing file: nothing extracted yet.
+        assert_eq!(summary_chunks_done(&dir), 0);
+
+        std::fs::write(&file, r#"["a","b","c"]"#).expect("write");
+        assert_eq!(summary_chunks_done(&dir), 3);
+
+        // A torn write must read as nothing, not as a partial count.
+        std::fs::write(&file, r#"["a","b"#).expect("write");
+        assert_eq!(summary_chunks_done(&dir), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
