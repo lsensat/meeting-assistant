@@ -2346,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-assistant"
-version = "0.2.30"
+version = "0.2.31"
 dependencies = [
  "chrono",
  "cpal",
@@ -2374,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-core"
-version = "0.2.30"
+version = "0.2.31"
 dependencies = [
  "serde",
  "serde_json",
