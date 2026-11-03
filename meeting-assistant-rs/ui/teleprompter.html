@@ -17,9 +17,9 @@
     <div id="tp-controls" class="tp-controls" role="toolbar">
       <button id="tp-play" class="tp-btn" type="button" data-i18n-title="teleprompter_play" data-i18n-label="teleprompter_play">▶</button>
       <button id="tp-restart" class="tp-btn" type="button" data-i18n-title="teleprompter_restart" data-i18n-label="teleprompter_restart">⏮</button>
-      <button id="tp-slower" class="tp-btn" type="button" data-i18n-title="teleprompter_slower" data-i18n-label="teleprompter_slower">⏪</button>
+      <button id="tp-slower" class="tp-btn" type="button" data-i18n-title="teleprompter_slower" data-i18n-label="teleprompter_slower"><svg class="tp-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9L2 8zM14 3.5v9L8 8z"/></svg></button>
       <span id="tp-speed-value" class="tp-value"></span>
-      <button id="tp-faster" class="tp-btn" type="button" data-i18n-title="teleprompter_faster" data-i18n-label="teleprompter_faster">⏩</button>
+      <button id="tp-faster" class="tp-btn" type="button" data-i18n-title="teleprompter_faster" data-i18n-label="teleprompter_faster"><svg class="tp-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9L14 8zM2 3.5v9L8 8z"/></svg></button>
       <button id="tp-smaller" class="tp-btn" type="button" data-i18n-title="teleprompter_smaller" data-i18n-label="teleprompter_smaller">A−</button>
       <span id="tp-font-value" class="tp-value"></span>
       <button id="tp-bigger" class="tp-btn" type="button" data-i18n-title="teleprompter_bigger" data-i18n-label="teleprompter_bigger">A+</button>
@@ -43,6 +43,9 @@
       </label>
       <p class="tp-hint" data-i18n="teleprompter_use_in_pipeline_hint"></p>
       <p class="tp-hint" data-i18n="teleprompter_keys_hint"></p>
+      <div class="tp-editor-actions">
+        <button id="tp-settings-done" class="tp-btn tp-btn--text tp-btn--primary" type="button" data-i18n="teleprompter_done"></button>
+      </div>
     </section>
 
     <section id="tp-editor" class="tp-panel" hidden>

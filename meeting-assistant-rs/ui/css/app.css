@@ -2029,6 +2029,7 @@ body.is-empty .tp-empty { display: flex; }
   user-select: none;
   -webkit-user-select: none;
 }
+.tp-icon { width: 14px; height: 14px; fill: currentColor; pointer-events: none; }
 .tp-btn:hover { background: var(--steel); }
 .tp-btn:active { box-shadow: var(--bevel-pressed); }
 .tp-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
@@ -2112,6 +2113,7 @@ body.is-empty .tp-empty { display: flex; }
   justify-content: space-between;
   gap: 8px;
 }
+#tp-settings .tp-editor-actions { justify-content: flex-end; }
 
 .tp-error {
   margin: 0;
