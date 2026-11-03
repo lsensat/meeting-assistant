@@ -327,6 +327,7 @@ $("tp-edit").addEventListener("click", () => {
   setEditor(!editorOpen()).catch((e) => showError(String(e)));
 });
 $("tp-settings-toggle").addEventListener("click", () => setSettings(!settingsOpen()));
+$("tp-settings-done").addEventListener("click", () => setSettings(false));
 $("tp-close").addEventListener("click", () => perform("close"));
 $("tp-import").addEventListener("click", importScript);
 $("tp-done").addEventListener("click", () => {
@@ -359,6 +360,12 @@ document.addEventListener("keydown", (event) => {
   const target = /** @type {HTMLElement} */ (event.target);
   const control =
     target instanceof HTMLInputElement && (target.type === "range" || target.type === "checkbox");
+  // The settings panel covers the toolbar, so Esc has to be able to dismiss it.
+  if (event.key === "Escape" && settingsOpen()) {
+    event.preventDefault();
+    setSettings(false);
+    return;
+  }
   const action = keyAction(event.key, { editing: editorOpen() });
   if (!action) return;
   if (control && action !== "close") return;
